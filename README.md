@@ -2,6 +2,8 @@
 
 HomeBot 是一个面向家庭场景的轻量级机器人项目，采用 **分层模块化架构** 和 **ZeroMQ** 通信总线，支持手机遥控、语音交互、模仿学习、人跟随等多种应用。
 
+<img width="400" height="500" alt="效果图" src="https://github.com/user-attachments/assets/972daf26-fcf7-42d6-bbcd-2da5bf5c6ad2" />
+
 ## 系统架构
 
 ```
