@@ -2,6 +2,8 @@
 
 HomeBot 是一个面向家庭场景的轻量级机器人项目，包含硬件设计和软件实现。
 
+<img width="400" height="500" alt="效果图" src="https://github.com/user-attachments/assets/972daf26-fcf7-42d6-bbcd-2da5bf5c6ad2" />
+
 
 ## 项目结构
 
