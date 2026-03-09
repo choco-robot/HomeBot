@@ -6,6 +6,7 @@ from .config import (
     ChassisConfig,
     ZMQConfig,
     LoggingConfig,
+    HumanFollowConfig,
     get_config,
     set_config,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "ChassisConfig",
     "ZMQConfig",
     "LoggingConfig",
+    "HumanFollowConfig",
     "get_config",
     "set_config",
 ]
