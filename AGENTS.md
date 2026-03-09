@@ -69,7 +69,7 @@ homebot/
 │   │   │   ├── core/          # SLAM 核心算法
 │   │   │   ├── planning/      # 路径规划
 │   │   │   ├── services/      # 导航服务 (Odom, SLAM)
-│   │   │   ├── applications/  # 导航应用 (目标点跟随)
+│   │   │   ├── applications/  # 导航应用 (目标点跟随、全局导航)
 │   │   │   ├── simulation/    # Matplotlib 导航模拟器
 │   │   │   └── visualization/ # Viser 3D SLAM 可视化
 │   │   ├── examples/          # 示例代码
@@ -371,6 +371,10 @@ python -m navigation.services.slam_service --mock-lidar --mock-tag
 # 启动 Viser 3D 可视化（新终端）
 python -m navigation.visualization
 # 或指定端口：python -m navigation.visualization --port 8080
+
+# 启动全局自主导航（新终端）
+python -m navigation.applications.navigation --goal-x 2.0 --goal-y 1.5
+# 或调整参数：python -m navigation.applications.navigation --inflation 0.25 --lookahead 0.5
 ```
 
 终端 7 - 语音交互服务（可选）：
