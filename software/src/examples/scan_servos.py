@@ -105,8 +105,3 @@ if __name__ == "__main__":
     else:
         servos = scan_servos(args.port, args.baud)
         
-        if servos and len(servos) >= 3:
-            print("\n建议的底盘配置:")
-            print(f"  left_front_id={servos[0][0]}")
-            print(f"  right_front_id={servos[1][0]}")
-            print(f"  rear_id={servos[2][0]}")

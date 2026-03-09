@@ -8,8 +8,8 @@ from dataclasses import dataclass, field, asdict
 class CameraConfig:
     """摄像头配置"""
     device_id: int = 0
-    width: int = 640
-    height: int = 480
+    width: int = 1920     # 摄像头原始分辨率
+    height: int = 1080
     fps: int = 30
 
 
@@ -31,7 +31,7 @@ class ArmConfig:
 class ChassisConfig:
     """底盘配置 - 从机器人配置文件读取"""
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM15"
+    serial_port: str = "/dev/tty.usbmodem5AE60527771"
     baudrate: int = 1000000
     
     # 舵机ID映射
@@ -49,7 +49,7 @@ class ChassisConfig:
     default_wheel_speed: int = 3250  # 舵机最大速度
     
     # ZeroMQ地址
-    service_addr: str = "tcp://127.0.0.1:5556"
+    service_addr: str = "tcp://*:5556"
 
 
 @dataclass
@@ -67,6 +67,42 @@ class LoggingConfig:
 
 
 @dataclass
+class HumanFollowConfig:
+    """人体跟随配置（YOLO26版）"""
+    # 模型配置
+    model_path: str = "models/yolo26n.onnx"     # YOLO26 nano (~2.4MB)
+    conf_threshold: float = 0.5               # 检测置信度阈值
+    
+    # 跟踪配置
+    max_tracking_age: int = 30                # 最大丢失帧数
+    min_iou_threshold: float = 0.3            # IoU匹配阈值
+    target_selection: str = "center"          # 目标选择策略: center/largest/closest
+    
+    # 推理优化（边缘设备）
+    inference_size: int = 320                 # 输入分辨率 320x320
+    use_half_precision: bool = False          # FP16半精度推理（需GPU支持）
+    
+    # 跟随控制配置
+    target_distance: float = 1.5              # 目标距离（米）
+    kp_linear: float = 0.5                    # 线速度P系数（归一化误差后）
+    kp_angular: float = 1.0                   # 角速度P系数（归一化误差后）
+    max_linear_speed: float = 0.3             # 最大线速度 (m/s)
+    max_angular_speed: float = 0.8            # 最大角速度 (rad/s)
+    dead_zone_x: int = 150                    # 水平死区（像素），约8%画面宽度
+    dead_zone_area: float = 0.1               # 面积死区（相对值）
+    
+    # 安全配置
+    timeout_ms: int = 1000                    # 通信超时
+    stop_on_lost: bool = True                 # 丢失目标时是否停止
+    search_on_lost: bool = True               # 丢失时是否旋转搜索
+    lost_patience: int = 60                   # 丢失容忍帧数（约2秒@30fps）
+    
+    # ZeroMQ配置
+    chassis_service_addr: str = "tcp://*:5556"
+    vision_sub_addr: str = "tcp://*:5560"
+
+
+@dataclass
 class Config:
     """全局配置"""
     camera: CameraConfig = field(default_factory=CameraConfig)
@@ -74,6 +110,7 @@ class Config:
     chassis: ChassisConfig = field(default_factory=ChassisConfig)
     zmq: ZMQConfig = field(default_factory=ZMQConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    human_follow: HumanFollowConfig = field(default_factory=HumanFollowConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -87,7 +124,8 @@ class Config:
             arm=ArmConfig(**data.get("arm", {})),
             chassis=ChassisConfig(**data.get("chassis", {})),
             zmq=ZMQConfig(**data.get("zmq", {})),
-            logging=LoggingConfig(**data.get("logging", {}))
+            logging=LoggingConfig(**data.get("logging", {})),
+            human_follow=HumanFollowConfig(**data.get("human_follow", {}))
         )
 
 

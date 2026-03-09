@@ -143,7 +143,10 @@ class VisionService:
 
 
 class VisionSubscriber:
-    """视觉订阅者 - 用于其他应用订阅 VisionService 发布的图像帧."""
+    """视觉订阅者 - 用于其他应用订阅 VisionService 发布的图像帧.
+    
+    使用后台线程持续接收图像，始终保持最新帧，避免延迟累积。
+    """
     
     def __init__(self, sub_addr: str = "tcp://localhost:5560"):
         """
@@ -153,51 +156,101 @@ class VisionSubscriber:
             sub_addr: VisionService 的 PUB 地址
         """
         from common.zmq_helper import create_socket
+        from threading import Lock, Thread
+        
         self._sub_socket = create_socket(zmq.SUB, bind=False, address=sub_addr)
-        self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")  # subscribe all
+        self._sub_socket.setsockopt(zmq.RCVHWM, 1)
+        self._sub_socket.setsockopt(zmq.CONFLATE, 1)
+        self._sub_socket.setsockopt(zmq.SUBSCRIBE, b"")
+        self._sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
+        
+        # 后台线程相关
+        self._latest_frame = None
+        self._frame_lock = Lock()
+        self._running = False
+        self._thread = None
+        self._frame_id = 0
+        
         logger.info(f"VisionSubscriber connected to {sub_addr}")
 
-    def read_frame(self, timeout: int = 1000):
-        """读取一帧图像.
-        
-        Args:
-            timeout: 接收超时时间 (毫秒)
-            
-        Returns:
-            (frame_id, frame) 元组,如果超时返回 (None, None)
-        """
+    def start(self):
+        """启动后台接收线程."""
+        if self._running:
+            return
+        self._running = True
+        from threading import Thread
+        self._thread = Thread(target=self._receive_loop, daemon=True)
+        self._thread.start()
+        logger.info("VisionSubscriber started background receiver")
+
+    def stop(self):
+        """停止后台接收线程."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        if self._sub_socket:
+            self._sub_socket.close()
+        logger.info("VisionSubscriber stopped")
+
+    def _receive_loop(self):
+        """后台线程持续接收图像帧."""
         import cv2
         import numpy as np
         
-        self._sub_socket.setsockopt(zmq.RCVTIMEO, timeout)
+        while self._running:
+            try:
+                parts = self._sub_socket.recv_multipart()
+                if len(parts) == 2:
+                    frame_id_str = parts[0].decode()
+                    buf = parts[1]
+                    img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+                    if img is not None:
+                        with self._frame_lock:
+                            self._latest_frame = img
+                            try:
+                                self._frame_id = int(frame_id_str)
+                            except ValueError:
+                                self._frame_id += 1
+            except zmq.Again:
+                # 超时，继续循环
+                continue
+            except Exception as e:
+                logger.warning(f"VisionSubscriber receive error: {e}")
+
+    def read_frame(self, timeout: int = 1000):
+        """读取最新帧图像（非阻塞，从内存直接获取）.
         
-        try:
-            parts = self._sub_socket.recv_multipart()
-            if len(parts) == 2:
-                frame_id = parts[0].decode()
-                buf = parts[1]
-                img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
-                return frame_id, img
-            else:
-                logger.warning(f"unexpected message parts: {len(parts)}")
+        Args:
+            timeout: 保留参数，兼容性用途（实际不阻塞等待）
+            
+        Returns:
+            (frame_id, frame) 元组,如果没有帧返回 (None, None)
+        """
+        with self._frame_lock:
+            if self._latest_frame is None:
                 return None, None
-        except zmq.Again:
-            # 超时
-            return None, None
+            return self._frame_id, self._latest_frame.copy()
 
     def read_loop(self, callback=None, display: bool = False):
         """持续读取图像帧.
+        
+        注意：需要先用 start() 启动后台线程，否则 read_frame 会返回空。
         
         Args:
             callback: 每帧的回调函数,接收 (frame_id, frame) 参数
             display: 是否显示图像
         """
         import cv2
+        import time
         
-        logger.info("VisionSubscriber started reading")
+        if not self._running:
+            self.start()
+        
+        logger.info("VisionSubscriber read_loop started")
+        
         try:
             while True:
-                frame_id, frame = self.read_frame(timeout=1000)
+                frame_id, frame = self.read_frame()
                 if frame is not None:
                     if callback:
                         callback(frame_id, frame)
@@ -205,6 +258,9 @@ class VisionSubscriber:
                         cv2.imshow('VisionSubscriber', frame)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
+                else:
+                    # 没有帧时短暂休眠避免CPU占用过高
+                    time.sleep(0.001)
         except KeyboardInterrupt:
             logger.info("VisionSubscriber interrupted")
         finally:
@@ -212,3 +268,6 @@ class VisionSubscriber:
                 cv2.destroyAllWindows()
 
 
+# from services.vision_service import VisionSubscriber
+# vs=VisionSubscriber()
+# vs.read_loop(display=True)
