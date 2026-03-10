@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HomeBot 底盘服务启动器
-跨平台启动器，支持 Windows/Linux/macOS
+HomeBot 运动控制服务启动器
+同时启动底盘服务和机械臂服务，支持 Windows/Linux/macOS
 """
 
 import os
@@ -15,11 +15,15 @@ from pathlib import Path
 
 def print_header():
     """打印启动标题"""
-    print("=" * 50)
-    print("   HomeBot 底盘服务启动器")
-    print("=" * 50)
+    print("=" * 60)
+    print("       HomeBot 运动控制服务启动器")
+    print("=" * 60)
     print()
-    print("串口从 configs/config.py 读取，默认 COM3")
+    print("功能: 同时启动底盘服务和机械臂服务")
+    print("       - 底盘服务: tcp://*:5556")
+    print("       - 机械臂服务: tcp://*:5557")
+    print()
+    print("串口配置从 configs/config.py 读取")
     print("可通过 --port 参数临时覆盖")
     print()
 
@@ -103,8 +107,11 @@ def main():
     if extra_args:
         print(f"[命令行参数] {' '.join(extra_args)}")
     
-    print("[启动] 正在启动底盘服务...")
-    print("[提示] 按Ctrl+C停止")
+    print("[启动] 正在启动运动控制服务...")
+    print("       - 底盘服务 (tcp://*:5556)")
+    print("       - 机械臂服务 (tcp://*:5557)")
+    print()
+    print("[提示] 按 Ctrl+C 停止所有服务")
     print()
     
     # 切换到 src 目录
@@ -116,8 +123,8 @@ def main():
         input("\nPress Enter to exit...")
         sys.exit(1)
     
-    # 构建命令
-    cmd = [sys.executable, "-m", "services.motion_service.chassis_service"] + extra_args
+    # 构建命令：同时启动底盘和机械臂服务
+    cmd = [sys.executable, "-m", "services.motion_service", "--service", "both"] + extra_args
     
     # 启动服务
     try:

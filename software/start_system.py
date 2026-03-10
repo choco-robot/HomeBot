@@ -18,10 +18,12 @@ from pathlib import Path
 # 服务配置
 SERVICES = [
     {
-        "name": "Chassis Arbiter",
-        "module": "services.motion_service.chassis_service",
-        "port": 5556,
-        "desc": "Chassis Service"
+        "name": "Motion Service",
+        "module": "services.motion_service",
+        "port": 5556,  # 底盘服务端口
+        "port2": 5557,  # 机械臂服务端口
+        "desc": "Chassis + Arm Service",
+        "args": ["--service", "both"]
     },
     {
         "name": "Vision Service",
@@ -107,11 +109,21 @@ def check_ports():
     
     occupied = []
     for svc in SERVICES:
+        # 检查主端口
         if check_port(svc["port"]):
             print(f"[WARN] Port {svc['port']} is occupied ({svc['desc']})")
             occupied.append(svc)
         else:
             print(f"[OK] Port {svc['port']} is available")
+        
+        # 检查第二端口（如果有）
+        if "port2" in svc:
+            if check_port(svc["port2"]):
+                print(f"[WARN] Port {svc['port2']} is occupied ({svc['desc']} - Arm)")
+                if svc not in occupied:
+                    occupied.append(svc)
+            else:
+                print(f"[OK] Port {svc['port2']} is available")
     
     print()
     return occupied
@@ -165,6 +177,10 @@ def start_service(svc, src_dir):
     print(f"[Start] Starting {svc['name']}...")
     
     cmd = [sys.executable, "-m", svc["module"]]
+    
+    # 添加额外参数（如果有）
+    if "args" in svc:
+        cmd.extend(svc["args"])
     
     # 在新窗口中启动（跨平台）
     if platform.system() == "Windows":
@@ -246,8 +262,10 @@ def main():
     for svc in SERVICES:
         if svc["name"] == "Web Control":
             print(f"   - {svc['name']} (Flask: http://0.0.0.0:{svc['port']})")
+        elif svc["name"] == "Motion Service":
+            print(f"   - {svc['name']} (ZeroMQ: tcp://127.0.0.1:{svc['port']} & :{svc['port2']})")
         else:
-            proto = "ZeroMQ" if "Chassis" in svc["name"] else "Camera"
+            proto = "Camera" if "Vision" in svc["name"] else "ZeroMQ"
             print(f"   - {svc['name']} ({proto}: tcp://127.0.0.1:{svc['port']})")
     print()
     print("URL: http://localhost:5000")

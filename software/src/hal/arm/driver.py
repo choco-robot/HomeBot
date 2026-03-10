@@ -67,17 +67,23 @@ class ArmDriver:
     控制多关节机械臂的位置
     """
 
-    def __init__(self, config: Optional[ArmConfig] = None):
+    def __init__(self, config: Optional[ArmConfig] = None, bus: Optional[FTServoBus] = None):
         """
         初始化机械臂驱动
 
         Args:
             config: 机械臂配置
+            bus: 外部传入的舵机总线实例（用于共享串口），为None则自己创建
         """
         self.config = config or ArmConfig()
 
-        # 舵机总线
-        self.bus = FTServoBus(self.config.port, self.config.baudrate)
+        # 舵机总线 - 支持外部传入（共享模式）或自己创建（独立模式）
+        if bus is not None:
+            self.bus = bus
+            self._shared_bus = True
+        else:
+            self.bus = FTServoBus(self.config.port, self.config.baudrate)
+            self._shared_bus = False
 
         # 当前关节角度（度）
         self._current_angles: Dict[str, float] = {}
@@ -90,16 +96,24 @@ class ArmDriver:
     def initialize(self) -> bool:
         """
         初始化机械臂
-        - 连接串口
+        - 连接串口（仅独立模式）
         - 设置位置模式
         - 使能扭矩
         - 移动到初始位置
         """
         print("[Arm] Initializing...")
 
-        if not self.bus.connect():
-            print("[Arm] Failed to connect to servo bus")
-            return False
+        # 如果是共享总线模式，检查总线是否已连接
+        if self._shared_bus:
+            if not self.bus.is_connected():
+                print("[Arm] Shared bus not connected")
+                return False
+            print("[Arm] Using shared servo bus")
+        else:
+            # 独立模式，自己连接串口
+            if not self.bus.connect():
+                print("[Arm] Failed to connect to servo bus")
+                return False
 
         # 使能扭矩
         self.bus.torque_enable()
@@ -197,7 +211,7 @@ class ArmDriver:
             self._current_angles[joint_name] = angle
 
         if wait:
-            self._wait_for_move(servo_id)
+            self._wait_for_move(servo_id, position)
 
         return success
 
@@ -218,8 +232,9 @@ class ArmDriver:
         if speed is None:
             speed = self.config.default_speed
 
-        # 准备同步写入数据
-        positions: Dict[int, Tuple[int, int, int]] = {}
+        # 逐个写入位置（sync_write_positions 可能不兼容）
+        all_success = True
+        servo_targets = []  # [(servo_id, target_position), ...]
 
         for joint_name, angle in angles.items():
             if joint_name not in self.config.joint_ids:
@@ -233,19 +248,24 @@ class ArmDriver:
             servo_id = self.config.joint_ids[joint_name]
             position = self._angle_to_pos(angle)
 
-            positions[servo_id] = (position, speed, self.config.default_acc)
+            # 写入位置
+            success = self.bus.write_position(
+                servo_id, position, speed, self.config.default_acc
+            )
+            if not success:
+                all_success = False
+                print(f"[Arm] Failed to set {joint_name} (ID {servo_id})")
+            
+            servo_targets.append((servo_id, position))
             self._current_angles[joint_name] = angle
 
-        # 同步写入
-        success = self.bus.sync_write_positions(positions)
-
-        if wait and positions:
+        if wait and servo_targets:
             # 等待所有舵机运动完成
             time.sleep(0.1)
-            for servo_id in positions.keys():
-                self._wait_for_move(servo_id)
+            for servo_id, target_pos in servo_targets:
+                self._wait_for_move(servo_id, target_pos)
 
-        return success
+        return all_success
 
     def move_to_home(self, speed: Optional[int] = None) -> bool:
         """移动到初始位置"""
@@ -285,13 +305,26 @@ class ArmDriver:
             self._gripper_open = False
         return success
 
-    def _wait_for_move(self, servo_id: int, timeout: float = 5.0) -> bool:
-        """等待舵机运动完成"""
+    def _wait_for_move(self, servo_id: int, target_position: int, 
+                        timeout: float = 5.0, tolerance: int = 20) -> bool:
+        """
+        等待舵机运动到目标位置
+        
+        Args:
+            servo_id: 舵机ID
+            target_position: 目标位置值
+            timeout: 超时时间（秒）
+            tolerance: 位置容差（编码值）
+            
+        Returns:
+            是否成功到达目标位置
+        """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            state = self.bus.get_state(servo_id)
-            if state is None or not state.moving:
-                return True
+            current_pos = self.bus.read_position(servo_id)
+            if current_pos is not None:
+                if abs(current_pos - target_position) <= tolerance:
+                    return True
             time.sleep(0.05)
         return False
 
@@ -347,7 +380,9 @@ class ArmDriver:
         time.sleep(0.5)
         self.disable_torque()
         time.sleep(0.1)
-        self.bus.disconnect()
+        # 仅独立模式需要断开总线
+        if not self._shared_bus:
+            self.bus.disconnect()
         self._initialized = False
         print("[Arm] Closed")
 

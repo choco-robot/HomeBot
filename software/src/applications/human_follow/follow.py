@@ -98,8 +98,18 @@ class HumanFollowApp:
             
             # 2. 初始化检测器
             logger.info("加载检测模型...")
+            # 构建模型绝对路径（基于项目根目录）
+            import os
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            # 从 software/src/applications/human_follow/ 定位到项目根目录
+            project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
+            model_path = os.path.join(project_root, self.config.model_path)
+            if not os.path.exists(model_path):
+                logger.error(f"模型文件不存在: {model_path}")
+                return False
+            logger.info(f"模型路径: {model_path}")
             self.detector = HumanDetector(
-                model_path=self.config.model_path,
+                model_path=model_path,
                 conf_threshold=self.config.conf_threshold,
                 inference_size=self.config.inference_size,
                 use_half=self.config.use_half_precision

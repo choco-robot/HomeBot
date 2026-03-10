@@ -14,6 +14,8 @@ import time
 import platform
 from threading import Thread, Lock, Event
 from typing import Optional, Dict, Any, Generator
+import subprocess
+import signal
 
 from flask import Flask, render_template, send_from_directory, request, Response
 from flask_socketio import SocketIO, emit
@@ -24,6 +26,7 @@ import zmq
 
 DEFAULT_ARBITER_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_VISION_ADDR = "tcp://127.0.0.1:5560"
+DEFAULT_ARM_ADDR = "tcp://127.0.0.1:5557"
 
 
 class ZMQClient:
@@ -123,6 +126,102 @@ class ZMQClient:
         self._socket.setsockopt(zmq.RCVTIMEO, 100)
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.connect(self.arbiter_addr)
+    
+    def disconnect(self):
+        """断开连接"""
+        if self._socket:
+            self._socket.close()
+        if self._context:
+            self._context.term()
+        self._connected = False
+
+
+class ArmClient:
+    """
+    机械臂ZeroMQ客户端 - 连接ArmService
+    """
+    
+    SOURCE_NAME = "web"
+    PRIORITY = 1
+    
+    def __init__(self, arm_addr: str = DEFAULT_ARM_ADDR):
+        self.arm_addr = arm_addr
+        self._context: Optional[zmq.Context] = None
+        self._socket: Optional[zmq.Socket] = None
+        self._connected = False
+        
+    def connect(self) -> bool:
+        """连接到机械臂服务"""
+        try:
+            self._context = zmq.Context()
+            self._socket = self._context.socket(zmq.REQ)
+            self._socket.setsockopt(zmq.RCVTIMEO, 500)  # 500ms超时
+            self._socket.setsockopt(zmq.LINGER, 0)
+            self._socket.connect(self.arm_addr)
+            self._connected = True
+            print(f"[Arm] 已连接到机械臂服务: {self.arm_addr}")
+            return True
+        except Exception as e:
+            print(f"[Arm] 连接失败: {e}")
+            return False
+    
+    def send_command(self, joints: Dict[str, float], speed: int = 1000, 
+                     source: str = None, priority: int = None) -> Dict[str, Any]:
+        """发送机械臂关节角度指令"""
+        if not self._connected or self._socket is None:
+            return {"success": False, "message": "未连接"}
+        
+        request = {
+            "source": source or self.SOURCE_NAME,
+            "joints": joints,
+            "speed": speed,
+            "priority": priority if priority is not None else self.PRIORITY
+        }
+        
+        try:
+            if self._socket.poll(500, zmq.POLLOUT):
+                self._socket.send_json(request)
+                if self._socket.poll(500, zmq.POLLIN):
+                    response = self._socket.recv_json()
+                    return response
+                else:
+                    print("[Arm] 接收响应超时")
+                    return {"success": False, "message": "接收超时"}
+            else:
+                print("[Arm] socket 不可写")
+                return {"success": False, "message": "socket 不可写"}
+        except Exception as e:
+            print(f"[Arm] 发送失败: {e}")
+            return {"success": False, "message": str(e)}
+    
+    def move_to_home(self) -> Dict[str, Any]:
+        """
+        机械臂回到复位位置（rest_position）
+        从配置文件读取休息位置
+        """
+        # 导入配置获取休息位置
+        try:
+            import os
+            import sys
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            sys.path.insert(0, os.path.join(current_dir, '..', '..'))
+            from configs import get_config
+            config = get_config()
+            rest_position = config.arm.rest_position
+            print(f"[Arm] 归位到休息位置: {rest_position}")
+            return self.send_command(rest_position, speed=800, source="web", priority=2)
+        except Exception as e:
+            print(f"[Arm] 获取休息位置失败: {e}")
+            # 使用默认位置
+            default_home = {
+                "base": 0,
+                "shoulder": 45,
+                "elbow": 90,
+                "wrist_flex": 0,
+                "wrist_roll": 0,
+                "gripper": 45
+            }
+            return self.send_command(default_home, speed=800, source="web", priority=2)
     
     def disconnect(self):
         """断开连接"""
@@ -290,9 +389,11 @@ class VideoStreamClient:
 class ZMQBridge:
     """ZeroMQ桥接器 - 后台线程发送指令，使用队列避免并发问题"""
     
-    def __init__(self, arbiter_addr: Optional[str] = None):
+    def __init__(self, arbiter_addr: Optional[str] = None, arm_addr: Optional[str] = None):
         self.arbiter_addr = arbiter_addr or DEFAULT_ARBITER_ADDR
+        self.arm_addr = arm_addr or DEFAULT_ARM_ADDR
         self.client = ZMQClient(self.arbiter_addr)
+        self.arm_client = ArmClient(self.arm_addr)
         self._running = False
         self._thread: Optional[Thread] = None
         self._current_cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0}
@@ -305,10 +406,14 @@ class ZMQBridge:
         self._cmd_queue = queue.Queue(maxsize=10)
         
     def connect(self) -> bool:
-        if self.client.connect():
+        chassis_ok = self.client.connect()
+        arm_ok = self.arm_client.connect()
+        if chassis_ok:
             self._connected = True
-            return True
-        return False
+            print("[Bridge] 底盘服务连接成功")
+        if arm_ok:
+            print("[Bridge] 机械臂服务连接成功")
+        return chassis_ok
     
     def start(self):
         if not self._connected:
@@ -324,6 +429,7 @@ class ZMQBridge:
         if self._thread:
             self._thread.join(timeout=1.0)
         self.client.disconnect()
+        self.arm_client.disconnect()
         print("[Bridge] 已停止")
     
     def update_command(self, vx: float, vy: float, vz: float):
@@ -347,10 +453,18 @@ class ZMQBridge:
             return {"success": False, "message": "命令队列已满"}
     
     def send_home(self) -> Dict[str, Any]:
-        """发送归位命令 - 放入队列"""
+        """发送归位命令 - 放入队列，同时触发机械臂归位"""
         import queue
         result_holder = {'response': None}
         event = Event()
+        
+        # 同时发送机械臂归位命令（不阻塞）
+        try:
+            print("[Bridge] 发送机械臂归位命令...")
+            arm_response = self.arm_client.move_to_home()
+            print(f"[Bridge] 机械臂归位响应: {arm_response}")
+        except Exception as e:
+            print(f"[Bridge] 机械臂归位失败: {e}")
         
         try:
             self._cmd_queue.put_nowait(('home', result_holder, event))
@@ -442,6 +556,10 @@ app.config['SECRET_KEY'] = 'homebot-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 zmq_bridge: Optional[ZMQBridge] = None
 video_client: Optional[VideoStreamClient] = None
+
+# 人体跟随进程
+human_follow_process: Optional[subprocess.Popen] = None
+human_follow_lock = Lock()
 
 
 @app.route('/')
@@ -563,7 +681,7 @@ def handle_emergency_stop():
 
 @socketio.on('home')
 def handle_home():
-    print("[Socket] 归位命令")
+    print("[Socket] 归位命令（底盘+机械臂）")
     if zmq_bridge:
         response = zmq_bridge.send_home()
         emit('server_response', {
@@ -578,20 +696,161 @@ def handle_home():
 @socketio.on('get_status')
 def handle_get_status():
     if zmq_bridge:
-        emit('server_status', zmq_bridge.get_status())
+        status = zmq_bridge.get_status()
+        # 添加人体跟随状态
+        with human_follow_lock:
+            status['human_follow_active'] = human_follow_process is not None and human_follow_process.poll() is None
+        emit('server_status', status)
+
+
+@socketio.on('toggle_human_follow')
+def handle_toggle_human_follow(data):
+    """处理人体跟随开关请求"""
+    global human_follow_process
+    
+    requested_state = data.get('active', False)
+    print(f"[Socket] 人体跟随请求: {'启动' if requested_state else '停止'}")
+    
+    with human_follow_lock:
+        is_running = (human_follow_process is not None and 
+                      human_follow_process.poll() is None)
+        
+        if requested_state and not is_running:
+            # 启动人体跟随
+            try:
+                # 检查是否在紧急停止状态
+                if zmq_bridge:
+                    arbiter_status = zmq_bridge.get_status()
+                    if arbiter_status.get('emergency_locked', False):
+                        emit('server_response', {
+                            'status': 'human_follow',
+                            'success': False,
+                            'active': False,
+                            'message': '底盘已锁定，请先归位解锁'
+                        })
+                        return
+                
+                # 启动人体跟随进程
+                src_dir = os.path.join(os.path.dirname(__file__), '..', '..')
+                cmd = [sys.executable, '-m', 'applications.human_follow']
+                
+                # 设置环境变量
+                env = os.environ.copy()
+                env['PYTHONPATH'] = src_dir + os.pathsep + env.get('PYTHONPATH', '')
+                
+                print(f"[HumanFollow] 启动进程: {' '.join(cmd)}")
+                
+                # 使用subprocess.Popen启动
+                human_follow_process = subprocess.Popen(
+                    cmd,
+                    cwd=src_dir,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
+                )
+                
+                # 给进程一点时间启动
+                import time
+                time.sleep(1.0)
+                
+                # 检查进程是否成功启动
+                if human_follow_process.poll() is None:
+                    print(f"[HumanFollow] 进程已启动 (PID: {human_follow_process.pid})")
+                    emit('server_response', {
+                        'status': 'human_follow',
+                        'success': True,
+                        'active': True,
+                        'message': '人体跟随已启动'
+                    })
+                    # 广播状态给所有客户端
+                    socketio.emit('follow_status', {'active': True})
+                else:
+                    returncode = human_follow_process.returncode
+                    stdout, stderr = human_follow_process.communicate(timeout=1)
+                    error_msg = stderr.decode('utf-8', errors='ignore') if stderr else f'返回码: {returncode}'
+                    print(f"[HumanFollow] 进程启动失败: {error_msg}")
+                    human_follow_process = None
+                    emit('server_response', {
+                        'status': 'human_follow',
+                        'success': False,
+                        'active': False,
+                        'message': f'启动失败: {error_msg}'
+                    })
+                    
+            except Exception as e:
+                print(f"[HumanFollow] 启动异常: {e}")
+                import traceback
+                traceback.print_exc()
+                human_follow_process = None
+                emit('server_response', {
+                    'status': 'human_follow',
+                    'success': False,
+                    'active': False,
+                    'message': f'启动异常: {str(e)}'
+                })
+                
+        elif not requested_state and is_running:
+            # 停止人体跟随
+            try:
+                print(f"[HumanFollow] 停止进程 (PID: {human_follow_process.pid})")
+                
+                # 发送终止信号
+                if sys.platform == 'win32':
+                    human_follow_process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    human_follow_process.send_signal(signal.SIGTERM)
+                
+                # 等待进程终止
+                try:
+                    human_follow_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    print("[HumanFollow] 进程未及时终止，强制杀死")
+                    human_follow_process.kill()
+                    human_follow_process.wait()
+                
+                print("[HumanFollow] 进程已停止")
+                human_follow_process = None
+                
+                emit('server_response', {
+                    'status': 'human_follow',
+                    'success': True,
+                    'active': False,
+                    'message': '人体跟随已停止'
+                })
+                # 广播状态给所有客户端
+                socketio.emit('follow_status', {'active': False})
+                
+            except Exception as e:
+                print(f"[HumanFollow] 停止异常: {e}")
+                emit('server_response', {
+                    'status': 'human_follow',
+                    'success': False,
+                    'active': True,
+                    'message': f'停止异常: {str(e)}'
+                })
+        else:
+            # 状态没有变化
+            emit('server_response', {
+                'status': 'human_follow',
+                'success': True,
+                'active': is_running,
+                'message': '状态未变化'
+            })
 
 
 def run_server(host: str = '0.0.0.0', port: int = 5000,
                arbiter_addr: Optional[str] = None,
-               vision_addr: Optional[str] = None, debug: bool = False):
+               vision_addr: Optional[str] = None,
+               arm_addr: Optional[str] = None, debug: bool = False):
     global zmq_bridge, video_client
     
     print("=" * 60)
     print("HomeBot 网页控制端")
     print("=" * 60)
     
-    # 初始化底盘控制桥接
-    zmq_bridge = ZMQBridge(arbiter_addr=arbiter_addr)
+    # 初始化底盘控制桥接（同时连接机械臂服务）
+    zmq_bridge = ZMQBridge(arbiter_addr=arbiter_addr, arm_addr=arm_addr)
     if not zmq_bridge.start():
         print("[警告] 无法连接到底盘服务")
     
@@ -607,6 +866,7 @@ def run_server(host: str = '0.0.0.0', port: int = 5000,
         print("[OK] 视觉服务连接成功")
     
     print(f"[配置] 底盘服务: {zmq_bridge.arbiter_addr}")
+    print(f"[配置] 机械臂服务: {zmq_bridge.arm_addr}")
     print(f"[配置] 视觉服务: {video_client.vision_addr}")
     print(f"[网络] Web服务器: http://{host}:{port}")
     print(f"[视频] 视频流地址: http://{host}:{port}/video_feed")
@@ -629,6 +889,25 @@ def run_server(host: str = '0.0.0.0', port: int = 5000,
     except KeyboardInterrupt:
         print("\n[关闭] 正在关闭...")
     finally:
+        # 停止人体跟随进程
+        global human_follow_process
+        with human_follow_lock:
+            if human_follow_process is not None:
+                try:
+                    if human_follow_process.poll() is None:
+                        print("[HumanFollow] 关闭服务器时停止跟随进程")
+                        if sys.platform == 'win32':
+                            human_follow_process.send_signal(signal.CTRL_BREAK_EVENT)
+                        else:
+                            human_follow_process.send_signal(signal.SIGTERM)
+                        human_follow_process.wait(timeout=2)
+                except:
+                    try:
+                        human_follow_process.kill()
+                    except:
+                        pass
+                human_follow_process = None
+        
         zmq_bridge.stop()
         video_client.stop()
 
@@ -643,6 +922,8 @@ def main():
                        help='底盘服务地址 (默认: tcp://127.0.0.1:5556)')
     parser.add_argument('--vision', dest='vision_addr', default=None,
                        help='视觉服务地址 (默认: tcp://127.0.0.1:5560)')
+    parser.add_argument('--arm', dest='arm_addr', default=None,
+                       help='机械臂服务地址 (默认: tcp://127.0.0.1:5557)')
     parser.add_argument('--debug', action='store_true')
     
     args = parser.parse_args()

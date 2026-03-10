@@ -19,6 +19,9 @@ class RobotController {
         this.isArbiterConnected = false;
         this.emergencyLocked = false;
         
+        // 人体跟随状态
+        this.isHumanFollowActive = false;
+        
         // 控制使能标志
         this.isControlEnabled = true;
         
@@ -48,6 +51,7 @@ class RobotController {
         this.startSendLoop();
         this.startStatusPolling();
         this.updateFps();
+        this.updateFollowStatus(false);
     }
     
     // ========== 视频流初始化 ==========
@@ -252,6 +256,25 @@ class RobotController {
                 } else {
                     this.showToast('归位失败: ' + (data.message || ''), 'error');
                 }
+            } else if (data.status === 'human_follow') {
+                // 人体跟随状态变化
+                if (data.active !== undefined) {
+                    this.isHumanFollowActive = data.active;
+                    this.updateFollowStatus(data.active);
+                    if (data.success) {
+                        this.showToast(data.active ? '人体跟随已启动' : '人体跟随已停止', 'success');
+                    } else {
+                        this.showToast('人体跟随操作失败: ' + (data.message || ''), 'error');
+                    }
+                }
+            }
+        });
+        
+        // 人体跟随状态更新
+        this.socket.on('follow_status', (data) => {
+            if (data.active !== undefined) {
+                this.isHumanFollowActive = data.active;
+                this.updateFollowStatus(data.active);
             }
         });
         
@@ -341,6 +364,47 @@ class RobotController {
         document.getElementById('btnHome').addEventListener('click', () => {
             this.goHome();
         });
+        
+        // 人体跟随按钮
+        document.getElementById('btnFollow').addEventListener('click', () => {
+            this.toggleHumanFollow();
+        });
+    }
+    
+    // ========== 人体跟随控制 ==========
+    toggleHumanFollow() {
+        console.log('[Control] 切换人体跟随状态');
+        
+        if (this.isConnected) {
+            const newState = !this.isHumanFollowActive;
+            this.socket.emit('toggle_human_follow', { active: newState });
+            this.showToast(newState ? '正在启动人体跟随...' : '正在停止人体跟随...', 'info');
+        } else {
+            this.showToast('未连接，无法控制人体跟随', 'error');
+        }
+    }
+    
+    updateFollowStatus(active) {
+        const followBtn = document.getElementById('btnFollow');
+        const statusDot = document.getElementById('followStatusDot');
+        
+        if (followBtn) {
+            if (active) {
+                followBtn.textContent = '关闭跟随';
+                followBtn.classList.add('active');
+            } else {
+                followBtn.textContent = '打开跟随';
+                followBtn.classList.remove('active');
+            }
+        }
+        
+        if (statusDot) {
+            if (active) {
+                statusDot.classList.add('connected');
+            } else {
+                statusDot.classList.remove('connected');
+            }
+        }
     }
     
     // ========== 数据发送循环 ==========
