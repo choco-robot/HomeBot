@@ -1,9 +1,9 @@
 """
 底盘仲裁器 - 核心数据结构
-用于ChassisService的仲裁逻辑
+用于ChassisService和ArmService的仲裁逻辑
 """
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 
 
 @dataclass
@@ -24,6 +24,16 @@ class ArbiterResponse:
     message: str
     current_owner: str
     current_priority: int
+
+
+@dataclass
+class ArmResponse:
+    """机械臂服务响应数据结构"""
+    success: bool
+    message: str
+    current_owner: str
+    current_priority: int
+    joint_states: Optional[Dict[str, float]] = None
 
 
 # 控制源优先级定义
@@ -50,14 +60,14 @@ class ChassisArbiterClient:
             timeout_ms: 请求超时时间
         """
         import zmq
-        from common.zmq_helper import create_socket
         
         self.service_addr = service_addr
         self.timeout_ms = timeout_ms
-        self._context = zmq.Context()
-        self._socket = create_socket(zmq.REQ, bind=False, address=service_addr)
+        self._context = zmq.Context.instance()
+        self._socket = self._context.socket(zmq.REQ)
         self._socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
         self._socket.setsockopt(zmq.LINGER, 0)
+        self._socket.connect(service_addr)
     
     def send_command(self, vx: float, vy: float, vz: float,
                     source: str = "auto", priority: int = 0) -> Optional[ArbiterResponse]:
@@ -107,6 +117,141 @@ class ChassisArbiterClient:
             
         except Exception as e:
             # 超时或错误，重建socket
+            import zmq
+            self._socket.close()
+            self._socket = self._context.socket(zmq.REQ)
+            self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+            self._socket.setsockopt(zmq.LINGER, 0)
+            self._socket.connect(self.service_addr)
+            return None
+    
+    def close(self):
+        """关闭客户端"""
+        if self._socket:
+            self._socket.close()
+        if self._context:
+            self._context.term()
+
+
+class ArmArbiterClient:
+    """
+    机械臂仲裁器客户端
+    用于向机械臂服务发送控制指令
+    """
+    
+    def __init__(self, service_addr: str = "tcp://127.0.0.1:5557", timeout_ms: int = 1000):
+        """
+        初始化客户端
+        
+        Args:
+            service_addr: 机械臂服务ZeroMQ地址
+            timeout_ms: 请求超时时间
+        """
+        import zmq
+        
+        self.service_addr = service_addr
+        self.timeout_ms = timeout_ms
+        self._context = zmq.Context.instance()
+        self._socket = self._context.socket(zmq.REQ)
+        self._socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+        self._socket.setsockopt(zmq.LINGER, 0)
+        self._socket.connect(service_addr)
+    
+    def send_joint_command(self, joints: list, source: str = "web", 
+                          priority: int = 0, speed: int = 1000) -> Optional[ArmResponse]:
+        """
+        发送关节角度指令
+        
+        Args:
+            joints: 6个关节的角度数组 [j1, j2, j3, j4, j5, j6]
+            source: 控制源
+            priority: 优先级（0表示自动根据source获取）
+            speed: 运动速度
+            
+        Returns:
+            ArmResponse: 响应，失败返回None
+        """
+        import time
+        from dataclasses import asdict
+        
+        if len(joints) != 6:
+            print("[ArmClient] 错误：需要提供6个关节角度")
+            return None
+        
+        # 自动获取优先级
+        if priority == 0 and source in PRIORITIES:
+            priority = PRIORITIES[source]
+        
+        command = {
+            "source": source,
+            "joints": joints,  # [j1, j2, j3, j4, j5, j6]
+            "speed": speed,
+            "priority": priority,
+            "timestamp": time.time()
+        }
+        
+        try:
+            self._socket.send_json(command)
+            response_data = self._socket.recv_json()
+            
+            return ArmResponse(
+                success=response_data.get("success", False),
+                message=response_data.get("message", ""),
+                current_owner=response_data.get("current_owner", ""),
+                current_priority=response_data.get("current_priority", 0),
+                joint_states=response_data.get("joint_states")
+            )
+            
+        except Exception as e:
+            # 超时或错误，重建socket
+            import zmq
+            self._socket.close()
+            self._socket = self._context.socket(zmq.REQ)
+            self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+            self._socket.setsockopt(zmq.LINGER, 0)
+            self._socket.connect(self.service_addr)
+            return None
+    
+    def send_joint_dict(self, joints_dict: Dict[str, float], source: str = "web",
+                       priority: int = 0, speed: int = 1000) -> Optional[ArmResponse]:
+        """
+        使用关节名称字典发送指令
+        
+        Args:
+            joints_dict: 关节角度字典，如 {"base": 0, "shoulder": 45, ...}
+            source: 控制源
+            priority: 优先级
+            speed: 运动速度
+            
+        Returns:
+            ArmResponse: 响应，失败返回None
+        """
+        import time
+        
+        if priority == 0 and source in PRIORITIES:
+            priority = PRIORITIES[source]
+        
+        command = {
+            "source": source,
+            "joints": joints_dict,
+            "speed": speed,
+            "priority": priority,
+            "timestamp": time.time()
+        }
+        
+        try:
+            self._socket.send_json(command)
+            response_data = self._socket.recv_json()
+            
+            return ArmResponse(
+                success=response_data.get("success", False),
+                message=response_data.get("message", ""),
+                current_owner=response_data.get("current_owner", ""),
+                current_priority=response_data.get("current_priority", 0),
+                joint_states=response_data.get("joint_states")
+            )
+            
+        except Exception as e:
             import zmq
             self._socket.close()
             self._socket = self._context.socket(zmq.REQ)

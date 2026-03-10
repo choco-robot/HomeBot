@@ -9,13 +9,30 @@ from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import IntEnum
 
+# 字节操作辅助函数（模块级别定义，确保始终可用）
+def _SMS_STS_LOBYTE(value):
+    return value & 0xFF
+
+def _SMS_STS_HIBYTE(value):
+    return (value >> 8) & 0xFF
+
 try:
     from scservo_sdk import *
+    # 如果 SDK 中没有定义这些函数，使用我们的实现
+    if 'SMS_STS_LOBYTE' not in dir():
+        SMS_STS_LOBYTE = _SMS_STS_LOBYTE
+    if 'SMS_STS_HIBYTE' not in dir():
+        SMS_STS_HIBYTE = _SMS_STS_HIBYTE
 except ImportError:
     # 模拟模式 - 用于开发和测试
     print("[FTServo] Warning: scservo_sdk not found, running in simulation mode")
     COMM_SUCCESS = 0
     BROADCAST_ID = 0xFE
+    SMS_STS_TORQUE_ENABLE = 40
+    
+    # 使用我们的辅助函数
+    SMS_STS_LOBYTE = _SMS_STS_LOBYTE
+    SMS_STS_HIBYTE = _SMS_STS_HIBYTE
 
     class sms_sts:
         def __init__(self, port_handler):

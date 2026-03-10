@@ -283,6 +283,25 @@
             transform: scale(0.95);
         }
         
+        .btn-follow {
+            background: linear-gradient(135deg, #00aa88, #008866);
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 170, 136, 0.4);
+        }
+        
+        .btn-follow:hover {
+            background: linear-gradient(135deg, #00ccaa, #00aa88);
+        }
+        
+        .btn-follow:active {
+            transform: scale(0.95);
+        }
+        
+        .btn-follow.active {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
+        }
+        
         /* 消息提示 */
         .toast {
             position: fixed;
@@ -397,8 +416,14 @@
             </div>
         </div>
         <div class="title">HomeBot</div>
-        <div class="status" style="font-size: 12px; color: #888;">
-            <span id="fps">-- FPS</span>
+        <div class="status-group">
+            <div class="status">
+                <div class="status-dot" id="followStatusDot"></div>
+                <span class="status-label">人体跟随</span>
+            </div>
+            <div class="status" style="font-size: 12px; color: #888;">
+                <span id="fps">-- FPS</span>
+            </div>
         </div>
     </div>
     
@@ -451,6 +476,7 @@
             <div class="footer">
                 <button class="btn btn-emergency" id="btnEmergency">紧急停止</button>
                 <button class="btn btn-home" id="btnHome">归位</button>
+                <button class="btn btn-follow" id="btnFollow">打开跟随</button>
             </div>
         </div>
     </div>

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """配置管理 - 集中管理所有硬件和系统配置"""
 import os
 from typing import Optional
@@ -16,15 +17,36 @@ class CameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM15"
+    serial_port: str = "/dev/tty.usbmodem5AE60527771"  # 与底盘共用串口
     baudrate: int = 1000000
-    # 舵机ID映射
+    # 舵机ID映射 (1-6号关节)
     base_id: int = 1
     shoulder_id: int = 2
     elbow_id: int = 3
     wrist_flex_id: int = 4
-    wrist_roll_id: int =5
+    wrist_roll_id: int = 5
     gripper_id: int = 6
+    # 关节角度限制 (度) 人工设置，AI勿动
+    joint_limits: dict = field(default_factory=lambda: {
+        "base": (-180, 180),
+        "shoulder": (0, 180),
+        "elbow": (0, 180),
+        "wrist_flex": (-90, 90),
+        "wrist_roll": (-180, 180),
+        "gripper": (0, 90),
+    })
+    # 默认速度/加速度
+    default_speed: int = 1000
+    default_acc: int = 50
+    # 休息位置/待机位置 (度) - 服务启动时自动恢复到此位置 人工设置，AI勿动
+    rest_position: dict = field(default_factory=lambda: {
+        "base": -90,         # J1: 基座旋转
+        "shoulder": 0,   # J2: 肩关节（自然下垂）
+        "elbow": 150,       # J3: 肘关节
+        "wrist_flex": 30,   # J4: 腕关节屈伸
+        "wrist_roll": 0,   # J5: 腕关节旋转
+        "gripper": 45,     # J6: 夹爪（半开）
+    })
 
 
 @dataclass
@@ -56,6 +78,8 @@ class ChassisConfig:
 class ZMQConfig:
     """ZeroMQ网络配置"""
     motion_service_addr: str = "tcp://*:5555"
+    chassis_service_addr: str = "tcp://*:5556"
+    arm_service_addr: str = "tcp://*:5557"      # 机械臂服务地址
     vision_pub_addr: str = "tcp://*:5560"
     speech_service_addr: str = "tcp://*:5570"
 
@@ -98,8 +122,8 @@ class HumanFollowConfig:
     lost_patience: int = 60                   # 丢失容忍帧数（约2秒@30fps）
     
     # ZeroMQ配置
-    chassis_service_addr: str = "tcp://*:5556"
-    vision_sub_addr: str = "tcp://*:5560"
+    chassis_service_addr: str = "tcp://localhost:5556"
+    vision_sub_addr: str = "tcp://localhost:5560"
 
 
 @dataclass

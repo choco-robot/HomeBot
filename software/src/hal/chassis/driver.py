@@ -18,19 +18,25 @@ class ChassisDriver:
     控制全向轮底盘的运动
     """
 
-    def __init__(self, config: Optional[ChassisConfig] = None):
+    def __init__(self, config: Optional[ChassisConfig] = None, bus: Optional[FTServoBus] = None):
         """
         初始化底盘驱动
 
         Args:
             config: 底盘配置，使用默认配置如果为None
+            bus: 外部传入的舵机总线实例（用于共享串口），为None则自己创建
         """
         self.config = config or ChassisConfig()
 
-        # 舵机总线
-        # 兼容 serial_port 和 port 两种属性名
-        port = getattr(self.config, 'serial_port', None) or getattr(self.config, 'port', 'COM3')
-        self.bus = FTServoBus(port, self.config.baudrate)
+        # 舵机总线 - 支持外部传入（共享模式）或自己创建（独立模式）
+        if bus is not None:
+            self.bus = bus
+            self._shared_bus = True
+        else:
+            # 兼容 serial_port 和 port 两种属性名
+            port = getattr(self.config, 'serial_port', None) or getattr(self.config, 'port', 'COM3')
+            self.bus = FTServoBus(port, self.config.baudrate)
+            self._shared_bus = False
 
         # ID映射
         self.wheel_ids = [
@@ -49,15 +55,23 @@ class ChassisDriver:
     def initialize(self) -> bool:
         """
         初始化底盘
-        - 连接串口
+        - 连接串口（仅独立模式）
         - 设置轮式模式
         - 使能扭矩
         """
         print("[Chassis] Initializing...")
 
-        if not self.bus.connect():
-            print("[Chassis] Failed to connect to servo bus")
-            return False
+        # 如果是共享总线模式，检查总线是否已连接
+        if self._shared_bus:
+            if not self.bus.is_connected():
+                print("[Chassis] Shared bus not connected")
+                return False
+            print("[Chassis] Using shared servo bus")
+        else:
+            # 独立模式，自己连接串口
+            if not self.bus.connect():
+                print("[Chassis] Failed to connect to servo bus")
+                return False
 
         # 设置所有舵机为轮式模式
         for servo_id in self.wheel_ids:
