@@ -114,6 +114,20 @@ python start_system.py
 
 启动时会检查端口占用，如有占用会提示处理。
 
+### 方式三：AI 助手控制（Picoclaw）
+
+通过 [Picoclaw（小龙虾）](docs/用Picoclaw小龙虾控制HomeBot.md) AI 助手实现自然语言控制：
+
+```
+"让机器人前进 20 厘米"
+"右转 90 度"
+"机器人看到了什么？"
+```
+
+Picoclaw 会自动解析指令并控制机器人，支持底盘运动、机械臂控制、视觉查询等功能。
+
+详情请查看 👉 [用 Picoclaw 控制 HomeBot 完整指南](docs/用Picoclaw小龙虾控制HomeBot.md)
+
 ### 方式二：手动启动（分窗口）
 
 **窗口 1 - 底盘服务：**
@@ -298,6 +312,8 @@ sub.read_loop(callback=process_frame)
 ```
 
 ## 扩展
+
+- **AI 助手控制** - 通过 [Picoclaw](docs/用Picoclaw小龙虾控制HomeBot.md) 用自然语言控制机器人
 
 可在后续迭代中添加：
 - **MQTT 桥接** - 云端远程控制
