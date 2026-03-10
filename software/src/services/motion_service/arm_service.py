@@ -146,7 +146,7 @@ class ArmService:
             self._current_priority = 0
     
     def _arbitrate(self, cmd: ArmCommand) -> ArmResponse:
-        """仲裁核心逻辑"""
+        """仲裁核心逻辑 - 优化版本，不读取关节状态以减少延迟"""
         with self._lock:
             self._check_timeout()
             
@@ -163,7 +163,7 @@ class ArmService:
                     message="指令已接受" if success else "执行失败",
                     current_owner=cmd.source,
                     current_priority=new_priority,
-                    joint_states=self.arm.get_all_joint_angles()
+                    joint_states=None  # 不读取关节状态，减少延迟
                 )
             
             elif new_priority >= self._current_priority:
@@ -179,7 +179,7 @@ class ArmService:
                     message=f"指令已接受（{msg}）" if success else "执行失败",
                     current_owner=cmd.source,
                     current_priority=new_priority,
-                    joint_states=self.arm.get_all_joint_angles()
+                    joint_states=None  # 不读取关节状态，减少延迟
                 )
             else:
                 return ArmResponse(
@@ -190,23 +190,59 @@ class ArmService:
                 )
     
     def _execute_to_hardware(self, cmd: ArmCommand) -> bool:
-        """执行指令到机械臂硬件"""
+        """执行指令到机械臂硬件 - 使用批量写入优化性能"""
         if not cmd.joint_angles:
             print("[ARM_SVC] [SKIP] 空关节角度指令")
             return True
-            
-        success = self.arm.set_joint_angles(cmd.joint_angles, speed=cmd.speed)
+        
+        # 使用批量写入替代逐个写入，性能提升约6倍
+        success = self._sync_write_joints(cmd.joint_angles, speed=cmd.speed)
+        
         status = "OK" if success else "FAIL"
         angles_str = ", ".join([f"{k}={v:.1f}" for k, v in cmd.joint_angles.items()])
         print(f"[ARM_SVC] [{status}] {angles_str} [from {cmd.source}]")
         return success
+    
+    def _sync_write_joints(self, joint_angles: Dict[str, float], speed: int) -> bool:
+        """
+        批量写入关节角度 - 性能优化版本
+        使用 sync_write_positions 替代逐个写入
+        """
+        if not self.arm._initialized:
+            return False
+        
+        # 构建批量写入参数: {servo_id: (position, speed, acc), ...}
+        positions = {}
+        
+        for joint_name, angle in joint_angles.items():
+            if joint_name not in self.arm.config.joint_ids:
+                continue
+            
+            # 限制角度范围
+            angle = self.arm._clamp_angle(joint_name, angle)
+            
+            # 获取舵机ID和目标位置
+            servo_id = self.arm.config.joint_ids[joint_name]
+            position = self.arm._angle_to_pos(angle)
+            
+            # 添加到批量写入字典
+            positions[servo_id] = (position, speed, self.arm.config.default_acc)
+            
+            # 更新缓存
+            self.arm._current_angles[joint_name] = angle
+        
+        if not positions:
+            return True
+        
+        # 批量写入所有舵机（只有一次串口通信）
+        return self.arm.bus.sync_write_positions(positions)
     
     def _parse_request(self, data: Dict[str, Any]) -> Optional[ArmCommand]:
         """解析REQ请求数据"""
         try:
             source = data.get("source", "")
             priority = int(data.get("priority", 0))
-            speed = int(data.get("speed", 1000))
+            speed = int(data.get("speed", 0))
             
             # 支持三种格式：
             # 1. 1-6号关节角度数组: {"joints": [0, 45, 90, 0, 0, 30]}
@@ -223,8 +259,11 @@ class ArmService:
                         if i in self.JOINT_NAMES:
                             joint_angles[self.JOINT_NAMES[i]] = float(angle)
                 elif isinstance(joints_data, dict):
-                    # 字典格式，直接使用
-                    joint_angles = {k: float(v) for k, v in joints_data.items()}
+                    if joints_data == {}:
+                        joint_angles = self._arm_config.home_position
+                    else:
+                        # 字典格式，直接使用
+                        joint_angles = {k: float(v) for k, v in joints_data.items()}
             else:
                 # 尝试从顶层解析关节角度
                 for i in range(1, 7):

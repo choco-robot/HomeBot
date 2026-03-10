@@ -22,8 +22,22 @@ class RobotController {
         // 人体跟随状态
         this.isHumanFollowActive = false;
         
+        // 机械臂状态
+        this.armAngles = { waist: 0, shoulder: 45, elbow: 90, wrist: 0, gripper: 45 };
+        this.gripperClosed = false;  // false=半开(45度), true=闭合(0度)
+        
         // 控制使能标志
         this.isControlEnabled = true;
+        
+        // 左手摇杆超时控制
+        this.leftJoystickLastActive = 0;  // 最后活动时间
+        this.leftJoystickTimeout = 1000;  // 1秒超时
+        this.leftJoystickStopped = true;  // 是否已发送停止命令
+        
+        // 右手摇杆持续发送控制
+        this.rightJoystickLastSent = 0;   // 最后发送时间
+        this.rightJoystickInterval = 50; // 发送间隔 100ms (10Hz) - 降低频率减少卡顿
+        this.rightJoystickActive = false; // 是否活跃（按下状态）
         
         // 数据发送控制
         this.sendInterval = null;
@@ -217,11 +231,12 @@ class RobotController {
             }
         });
         
-        this.socket.on('command_ack', (data) => {
-            if (data.success) {
-                this.updateDataDisplay(data.chassis);
-            }
-        });
+        // command_ack 响应已禁用（PUB-SUB模式优化）
+        // this.socket.on('command_ack', (data) => {
+        //     if (data.success) {
+        //         this.updateDataDisplay(data.chassis);
+        //     }
+        // });
         
         this.socket.on('server_status', (status) => {
             console.log('[Socket] 服务器状态:', status);
@@ -266,6 +281,17 @@ class RobotController {
                     } else {
                         this.showToast('人体跟随操作失败: ' + (data.message || ''), 'error');
                     }
+                }
+            } else if (data.status === 'arm') {
+                // 机械臂状态更新
+                this.updateArmDisplay(data);
+                if (data.gripper !== undefined) {
+                    this.updateGripperStatus(data.gripper);
+                }
+            } else if (data.status === 'gripper') {
+                // 夹爪状态反馈
+                if (data.closed !== undefined) {
+                    this.updateGripperStatus(data.closed);
                 }
             }
         });
@@ -329,14 +355,25 @@ class RobotController {
             const y = -Math.sin(angle) * distance;
             
             this.joystickData.left = { x, y };
+            this.leftJoystickLastActive = Date.now();
+            this.leftJoystickStopped = false;
             this.frameCount++;
         });
         
         this.leftJoystick.on('end', () => {
             this.joystickData.left = { x: 0, y: 0 };
+            this.leftJoystickLastActive = Date.now();  // 松开时也记录时间
         });
         
-        // 绑定右手摇杆事件（机械臂控制，预留）
+        // 绑定右手摇杆事件（机械臂控制）
+        // 逻辑：保持位置时持续发送，松开归零时不发送
+        this.rightJoystick.on('start', (evt, data) => {
+            this.rightJoystickActive = true;
+            // 立即发送一次初始值（循环会持续发送）
+            this.rightJoystickLastSent = 0;
+            console.log('[Joystick] 右手摇杆按下');
+        });
+        
         this.rightJoystick.on('move', (evt, data) => {
             const angle = data.angle.radian;
             const distance = Math.min(data.distance / 50, 1.0);
@@ -346,10 +383,13 @@ class RobotController {
             
             this.joystickData.right = { x, y };
             this.frameCount++;
+            // 保持 rightJoystickActive 为 true（由 start 事件设置）
         });
         
         this.rightJoystick.on('end', () => {
             this.joystickData.right = { x: 0, y: 0 };
+            this.rightJoystickActive = false;
+            console.log('[Joystick] 右手摇杆松开');
         });
     }
     
@@ -368,6 +408,11 @@ class RobotController {
         // 人体跟随按钮
         document.getElementById('btnFollow').addEventListener('click', () => {
             this.toggleHumanFollow();
+        });
+        
+        // 夹爪按钮
+        document.getElementById('btnGripper').addEventListener('click', () => {
+            this.toggleGripper();
         });
     }
     
@@ -407,41 +452,131 @@ class RobotController {
         }
     }
     
+    // ========== 夹爪控制 ==========
+    toggleGripper() {
+        console.log('[Control] 切换夹爪状态');
+        
+        if (this.isConnected) {
+            this.gripperClosed = !this.gripperClosed;
+            this.socket.emit('gripper_toggle', { closed: this.gripperClosed });
+            this.updateGripperStatus(this.gripperClosed);
+            this.showToast(this.gripperClosed ? '夹爪闭合' : '夹爪打开', 'success');
+        } else {
+            this.showToast('未连接，无法控制夹爪', 'error');
+        }
+    }
+    
+    updateGripperStatus(closed) {
+        const gripperBtn = document.getElementById('btnGripper');
+        const gripperStatus = document.getElementById('gripperStatus');
+        
+        if (gripperBtn) {
+            if (closed) {
+                gripperBtn.textContent = '松开';
+                gripperBtn.classList.add('closed');
+            } else {
+                gripperBtn.textContent = '夹爪';
+                gripperBtn.classList.remove('closed');
+            }
+        }
+        
+        if (gripperStatus) {
+            gripperStatus.textContent = closed ? '闭合' : '张开';
+        }
+        
+        this.gripperClosed = closed;
+    }
+    
+    // ========== 机械臂状态更新 ==========
+    updateArmDisplay(data) {
+        if (data) {
+            // 更新角度
+            if (data.angles) {
+                this.armAngles = { ...this.armAngles, ...data.angles };
+                const armBase = document.getElementById('armBase');
+                if (armBase) {
+                    armBase.textContent = `${Math.round(this.armAngles.base)}°`;
+                }
+            }
+            // 更新高度位置
+            if (data.position) {
+                const armZ = document.getElementById('armZ');
+                if (armZ) {
+                    armZ.textContent = `${Math.round(data.position.z)}mm`;
+                }
+            }
+        }
+    }
+    
     // ========== 数据发送循环 ==========
     startSendLoop() {
-        // 以20Hz频率发送数据
+        // 以50Hz频率发送数据（提高响应速度）
         this.sendInterval = setInterval(() => {
             this.sendJoystickData();
-        }, 50); // 50ms = 20Hz
+        }, 50); // 50ms ≈ 20Hz
     }
     
     sendJoystickData() {
         if (!this.isConnected) return;
         
-        // 如果处于紧急停止锁定状态，不发送控制命令
+        const now = Date.now();
+        
+        // ========== 右手摇杆（机械臂）- PUB-SUB模式 ==========
+        // 发后即忘，不等待响应
+        const { x: rx, y: ry } = this.joystickData.right;
+        
+        if (this.rightJoystickActive && !this.isHumanFollowActive) {
+            if (now - this.rightJoystickLastSent > this.rightJoystickInterval) {
+                // fire-and-forget: 发送但不等待响应
+                this.socket.emit('arm_joystick', { x: rx, y: ry });
+                this.rightJoystickLastSent = now;
+                // 本地更新显示（不依赖服务器响应）
+                this.updateArmDisplayLocal(rx, ry);
+            }
+        }
+        
+        // ========== 左手摇杆（底盘）- PUB-SUB模式 ==========
+        if (this.isHumanFollowActive) {
+            return;  // 人体跟随模式下不发送底盘命令
+        }
+        
+        // 如果处于紧急停止锁定状态，不发送底盘命令
         if (!this.isControlEnabled) {
-            // 确保发送一次停止命令
-            if (this.lastSentData !== JSON.stringify({left: {x: 0, y: 0}, right: {x: 0, y: 0}})) {
-                this.socket.emit('joystick_data', {left: {x: 0, y: 0}, right: {x: 0, y: 0}});
-                this.lastSentData = JSON.stringify({left: {x: 0, y: 0}, right: {x: 0, y: 0}});
+            if (!this.leftJoystickStopped) {
+                this.socket.emit('joystick_data', {left: {x: 0, y: 0}});
+                this.leftJoystickStopped = true;
             }
             return;
         }
         
-        // 检查数据是否有变化（减少不必要的传输）
-        const currentData = JSON.stringify(this.joystickData);
-        if (currentData === this.lastSentData) {
-            // 数据未变化，但超过100ms也要发送一次（保活）
-            if (!this.lastSendTime || Date.now() - this.lastSendTime > 100) {
-                // 继续发送
-            } else {
-                return;
+        const timeSinceLastActive = now - this.leftJoystickLastActive;
+        
+        // 检查左手摇杆是否超时（1秒未活动）
+        if (timeSinceLastActive > this.leftJoystickTimeout) {
+            if (!this.leftJoystickStopped) {
+                this.socket.emit('joystick_data', {left: {x: 0, y: 0}});
+                this.leftJoystickStopped = true;
             }
+            return;
         }
         
-        this.socket.emit('joystick_data', this.joystickData);
-        this.lastSentData = currentData;
-        this.lastSendTime = Date.now();
+        // 发送底盘命令（fire-and-forget）
+        this.socket.emit('joystick_data', {left: this.joystickData.left});
+        // 本地更新显示
+        this.updateDataDisplay({
+            vx: -this.joystickData.left.y * 0.5,
+            vz: this.joystickData.left.x * 1.0
+        });
+    }
+    
+    // 本地更新机械臂显示（不等待服务器）
+    updateArmDisplayLocal(x, y) {
+        // 简单的本地估计，实际角度由服务器状态更新
+        const armBase = document.getElementById('armBase');
+        if (armBase && x !== 0) {
+            const current = parseFloat(armBase.textContent) || 0;
+            armBase.textContent = Math.round(current + x * 2) + '°';
+        }
     }
     
     // ========== 控制命令 ==========

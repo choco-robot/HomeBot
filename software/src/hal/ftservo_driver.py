@@ -17,7 +17,7 @@ def _SMS_STS_HIBYTE(value):
     return (value >> 8) & 0xFF
 
 try:
-    from scservo_sdk import *
+    from .scservo_sdk import *
     # 如果 SDK 中没有定义这些函数，使用我们的实现
     if 'SMS_STS_LOBYTE' not in dir():
         SMS_STS_LOBYTE = _SMS_STS_LOBYTE
@@ -245,6 +245,15 @@ class FTServoBus:
             return None
         return position
 
+    def sync_read_positions(self, servo_ids: List[int]) -> Dict[int, Optional[int]]:
+        """同步读取多个舵机位置"""
+        if not self._connected:
+            return {sid: None for sid in servo_ids}
+
+        positions = {}
+        positions = self.packet_handler.SyncReadPos(servo_ids)
+        return positions
+
     def set_wheel_mode(self, servo_id: int) -> bool:
         """设置舵机为轮式模式（连续旋转）"""
         if not self._connected:
@@ -327,15 +336,7 @@ class FTServoBus:
             return True
 
         # 使用 GroupSyncWrite
-        for servo_id, (pos, speed, acc) in positions.items():
-            # 构建数据包: [acc, pos_l, pos_h, 0, 0, speed_l, speed_h]
-            txpacket = [
-                acc,
-                SMS_STS_LOBYTE(pos), SMS_STS_HIBYTE(pos),
-                0, 0,
-                SMS_STS_LOBYTE(speed), SMS_STS_HIBYTE(speed)
-            ]
-            self.packet_handler.SyncWritePosEx(servo_id, pos, speed, acc)
+        self.packet_handler.SyncWritePosEx(positions)
 
         return True
 

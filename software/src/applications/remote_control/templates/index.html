@@ -302,6 +302,21 @@
             box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
         }
         
+        .btn-gripper {
+            background: linear-gradient(135deg, #ffaa00, #cc8800);
+            color: white;
+            box-shadow: 0 4px 15px rgba(255, 170, 0, 0.4);
+        }
+        
+        .btn-gripper.closed {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
+        }
+        
+        .btn-gripper:active {
+            transform: scale(0.95);
+        }
+        
         /* 消息提示 */
         .toast {
             position: fixed;
@@ -450,6 +465,18 @@
                         <span class="data-label">旋转 Z:</span>
                         <span class="data-value" id="vz">0.00</span>
                     </div>
+                    <div class="data-row" style="margin-top: 8px; border-top: 1px solid #444; padding-top: 8px;">
+                        <span class="data-label">Base:</span>
+                        <span class="data-value" id="armBase" style="color: #4488ff;">--</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">高度 Z:</span>
+                        <span class="data-value" id="armZ" style="color: #00ff88;">--</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">夹爪:</span>
+                        <span class="data-value" id="gripperStatus" style="color: #ffaa00;">半开</span>
+                    </div>
                 </div>
                 
                 <!-- 左手摇杆 - 底盘控制 -->
@@ -462,7 +489,7 @@
                 <!-- 右手摇杆 - 机械臂控制 -->
                 <div class="joystick-zone">
                     <div class="joystick-container" id="rightJoystick">
-                        <div class="joystick-label">机械臂 (开发中)</div>
+                        <div class="joystick-label" id="rightJoystickLabel">机械臂控制</div>
                     </div>
                 </div>
             </div>
@@ -476,6 +503,7 @@
             <div class="footer">
                 <button class="btn btn-emergency" id="btnEmergency">紧急停止</button>
                 <button class="btn btn-home" id="btnHome">归位</button>
+                <button class="btn btn-gripper" id="btnGripper">夹爪</button>
                 <button class="btn btn-follow" id="btnFollow">打开跟随</button>
             </div>
         </div>

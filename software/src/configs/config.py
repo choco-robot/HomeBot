@@ -77,7 +77,6 @@ class ChassisConfig:
 @dataclass
 class ZMQConfig:
     """ZeroMQ网络配置"""
-    motion_service_addr: str = "tcp://*:5555"
     chassis_service_addr: str = "tcp://*:5556"
     arm_service_addr: str = "tcp://*:5557"      # 机械臂服务地址
     vision_pub_addr: str = "tcp://*:5560"
@@ -107,7 +106,7 @@ class HumanFollowConfig:
     use_half_precision: bool = False          # FP16半精度推理（需GPU支持）
     
     # 跟随控制配置
-    target_distance: float = 1.5              # 目标距离（米）
+    target_distance: float = 1.0              # 目标距离（米）
     kp_linear: float = 0.5                    # 线速度P系数（归一化误差后）
     kp_angular: float = 1.0                   # 角速度P系数（归一化误差后）
     max_linear_speed: float = 0.3             # 最大线速度 (m/s)
@@ -118,8 +117,8 @@ class HumanFollowConfig:
     # 安全配置
     timeout_ms: int = 1000                    # 通信超时
     stop_on_lost: bool = True                 # 丢失目标时是否停止
-    search_on_lost: bool = True               # 丢失时是否旋转搜索
-    lost_patience: int = 60                   # 丢失容忍帧数（约2秒@30fps）
+    search_on_lost: bool = False               # 丢失时是否旋转搜索
+    lost_patience: int = 30                   # 丢失容忍帧数（约2秒@30fps）
     
     # ZeroMQ配置
     chassis_service_addr: str = "tcp://localhost:5556"
