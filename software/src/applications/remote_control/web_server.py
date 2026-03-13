@@ -180,7 +180,7 @@ class ArmClient:
         }
         # 末端位置限制
         self._position_limits = {
-            "r_min": 20,
+            "r_min": -240,
             "r_max": 240,
             "z_min": -50,
             "z_max": 230
@@ -375,13 +375,16 @@ class ArmClient:
         
         return shoulder_deg, elbow_deg
     
-    def process_joystick(self, x: float, y: float) -> Dict[str, Any]:
+    def process_joystick(self, x: float, y: float, axis: str = 'base') -> Dict[str, Any]:
         """
         处理摇杆数据，使用逆运动学控制末端
         
         Args:
-            x: 左右方向 (-1~1), 控制 base 旋转
+            x: 左右方向 (-1~1)
+               - axis='base' 时: 控制 base 旋转
+               - axis='reach' 时: 控制前后伸缩（r值），1=前伸，-1=后缩
             y: 上下方向 (-1~1), 控制末端高度 (z)
+            axis: 控制模式，'base'=旋转+高度，'reach'=前后伸缩
         
         Returns:
             {成功与否, 新角度, 消息}
@@ -403,54 +406,86 @@ class ArmClient:
         new_angles = self._current_angles.copy()
         message_parts = []
         
-        # 1. 处理左右 (x) - 直接控制 base 旋转
-        if x != 0:
-            delta_base = x * self._delta_scale_angle
-            new_angles["base"] += delta_base
-            # 限幅
-            new_angles["base"] = max(-180, min(180, new_angles["base"]))
-            message_parts.append(f"base={new_angles['base']:.0f}°")
+        # 先更新当前正运动学位置
+        self._update_forward_kinematics()
         
-        # 2. 处理上下 (y) - 逆运动学控制末端高度
-        if y != 0:
-            # 更新当前正运动学位置
-            self._update_forward_kinematics()
-            
-            # 计算新的高度目标
-            # 注：前端 y 向上为负，向下为正，需要取反
-            delta_z = -y * self._delta_scale_pos  # y<0: 向上(z增加)，y>0: 向下(z减少)
-            target_z = self._current_position["z"] + delta_z
-            
-            # 高度限制
-            target_z = max(self._position_limits["z_min"], 
-                          min(self._position_limits["z_max"], target_z))
-            
-            # 保持当前水平距离 r 不变
-            target_r = self._current_position["r"]
-            
-            # 逆运动学计算
-            ik_result = self._inverse_kinematics(target_r, target_z)
-            
-            if ik_result:
-                shoulder_deg, elbow_deg = ik_result
+        if axis == 'reach':
+            # ===== 前后伸缩模式：x控制r值（水平距离） =====
+            if x != 0:
+                # x: 1=前伸(r增加), -1=后缩(r减少)
+                delta_r = x * self._delta_scale_pos * 2  # 增大系数使移动更明显
+                target_r = self._current_position["r"] + delta_r
                 
-                # 检查关节限制
-                if (self._joint_limits["shoulder"][0] <= shoulder_deg <= self._joint_limits["shoulder"][1] and
-                    self._joint_limits["elbow"][0] <= elbow_deg <= self._joint_limits["elbow"][1]):
-                    new_angles["shoulder"] = shoulder_deg
-                    new_angles["elbow"] = elbow_deg
-                    # 手腕保持水平：wrist_flex = 180 - shoulder - elbow
-                    wrist_flex = 180 - shoulder_deg - elbow_deg
-                    # 限制手腕角度范围
-                    wrist_flex = max(-90, min(90, wrist_flex))
-                    new_angles["wrist_flex"] = wrist_flex
-                    message_parts.append(f"z={target_z:.0f}mm")
+                # 限制r范围
+                target_r = max(self._position_limits["r_min"], 
+                              min(self._position_limits["r_max"], target_r))
+                
+                # 保持当前高度z不变
+                target_z = self._current_position["z"]
+                
+                # 逆运动学计算
+                ik_result = self._inverse_kinematics(target_r, target_z)
+                
+                if ik_result:
+                    shoulder_deg, elbow_deg = ik_result
+                    
+                    # 检查关节限制
+                    if (self._joint_limits["shoulder"][0] <= shoulder_deg <= self._joint_limits["shoulder"][1] and
+                        self._joint_limits["elbow"][0] <= elbow_deg <= self._joint_limits["elbow"][1]):
+                        new_angles["shoulder"] = shoulder_deg
+                        new_angles["elbow"] = elbow_deg
+                        message_parts.append(f"r={target_r:.0f}mm")
+                    else:
+                        message_parts.append("角度超限")
                 else:
-                    # 角度超出限制，保持原角度
-                    message_parts.append("角度超限")
-            else:
-                # 逆运动学无解（达到机械限位）
-                message_parts.append("达到极限")
+                    message_parts.append("达到极限")
+        else:
+            # ===== 默认模式：base旋转 + 高度控制 =====
+            # 1. 处理左右 (x) - 直接控制 base 旋转
+            if x != 0:
+                delta_base = x * self._delta_scale_angle
+                new_angles["base"] += delta_base
+                # 限幅
+                new_angles["base"] = max(-180, min(180, new_angles["base"]))
+                message_parts.append(f"base={new_angles['base']:.0f}°")
+            
+            # 2. 处理上下 (y) - 逆运动学控制末端高度
+            if y != 0:
+                # 计算新的高度目标
+                # 注：前端 y 向上为负，向下为正，需要取反
+                delta_z = -y * self._delta_scale_pos  # y<0: 向上(z增加)，y>0: 向下(z减少)
+                target_z = self._current_position["z"] + delta_z
+                
+                # 高度限制
+                target_z = max(self._position_limits["z_min"], 
+                              min(self._position_limits["z_max"], target_z))
+                
+                # 保持当前水平距离 r 不变
+                target_r = self._current_position["r"]
+                
+                # 逆运动学计算
+                ik_result = self._inverse_kinematics(target_r, target_z)
+                
+                if ik_result:
+                    shoulder_deg, elbow_deg = ik_result
+                    
+                    # 检查关节限制
+                    if (self._joint_limits["shoulder"][0] <= shoulder_deg <= self._joint_limits["shoulder"][1] and
+                        self._joint_limits["elbow"][0] <= elbow_deg <= self._joint_limits["elbow"][1]):
+                        new_angles["shoulder"] = shoulder_deg
+                        new_angles["elbow"] = elbow_deg
+                        # 手腕保持水平：wrist_flex = 180 - shoulder - elbow
+                        wrist_flex = 180 - shoulder_deg - elbow_deg
+                        # 限制手腕角度范围
+                        wrist_flex = max(-90, min(90, wrist_flex))
+                        new_angles["wrist_flex"] = wrist_flex
+                        message_parts.append(f"z={target_z:.0f}mm")
+                    else:
+                        # 角度超出限制，保持原角度
+                        message_parts.append("角度超限")
+                else:
+                    # 逆运动学无解（达到机械限位）
+                    message_parts.append("达到极限")
         
         # 确保手腕始终保持水平（无论是base旋转还是高度调整）
         new_angles["wrist_flex"] = 180 - new_angles["shoulder"] - new_angles["elbow"]
@@ -490,7 +525,7 @@ class ArmClient:
         
         response = self.send_command(
             {"gripper": angle},
-            speed=500,
+            speed=1000,
             priority=2
         )
         
@@ -875,16 +910,17 @@ class ZMQBridge:
         """获取夹爪状态 (True=闭合)"""
         return self.arm_client.get_gripper_state() if self.arm_client else False
     
-    def send_arm_joystick(self, x: float, y: float) -> Dict[str, Any]:
+    def send_arm_joystick(self, x: float, y: float, axis: str = 'base') -> Dict[str, Any]:
         """
         处理机械臂摇杆数据
-        x: 左右 (-1~1), 控制 waist 旋转
-        y: 上下 (-1~1), 控制 shoulder+elbow 联动
+        x: 左右 (-1~1) 或 前后 (-1~1)
+        y: 上下 (-1~1)
+        axis: '控制模式，'base'=旋转+高度，'reach'=前后伸缩
         """
         if not self.arm_client or not self.arm_client._connected:
             return {"success": False, "message": "机械臂未连接"}
         
-        return self.arm_client.process_joystick(x, y)
+        return self.arm_client.process_joystick(x, y, axis)
     
     def set_gripper(self, closed: bool) -> Dict[str, Any]:
         """设置夹爪状态"""
@@ -1071,7 +1107,9 @@ def handle_arm_joystick(data):
     立即返回确认，不等待执行结果（类似PUB-SUB）
     
     Args:
-        data: { x: 左右(-1~1), y: 上下(-1~1) }
+        data: { x: 左右(-1~1), y: 上下(-1~1), axis: '控制模式' }
+               axis='base': x控制base旋转，y控制高度（默认）
+               axis='reach': x控制前后伸缩（r值）
     """
     global _arm_joystick_last_time
     
@@ -1087,6 +1125,7 @@ def handle_arm_joystick(data):
     try:
         x = float(data.get('x', 0))
         y = float(data.get('y', 0))
+        axis = data.get('axis', 'base')  # 默认base模式
         
         # 死区处理 - 在服务器端也做一遍
         dead_zone = 0.1
@@ -1100,7 +1139,7 @@ def handle_arm_joystick(data):
             return
         
         # 发送给 ZMQBridge 处理（异步，立即返回）
-        zmq_bridge.send_arm_joystick(x, y)
+        zmq_bridge.send_arm_joystick(x, y, axis)
         
     except Exception as e:
         # 仅记录日志，不返回错误给客户端
@@ -1159,7 +1198,7 @@ def handle_toggle_human_follow(data):
                 src_dir = os.path.join(os.path.dirname(__file__), '..', '..')
                 cmd = [sys.executable, '-m', 'applications.human_follow']
                 
-                # 设置环境变量
+        # 设置环境变量
                 env = os.environ.copy()
                 env['PYTHONPATH'] = src_dir + os.pathsep + env.get('PYTHONPATH', '')
                 

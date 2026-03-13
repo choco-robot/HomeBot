@@ -317,6 +317,131 @@
             transform: scale(0.95);
         }
         
+        /* 机械臂移动按钮区域 */
+        .arm-buttons-zone {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 10px;
+            margin-left: 10px;
+        }
+        
+        .btn-arm-move {
+            width: 60px;
+            height: 55px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #4488ff, #2255cc);
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(68, 136, 255, 0.4);
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        .btn-arm-move:active {
+            transform: scale(0.92);
+            box-shadow: 0 2px 8px rgba(68, 136, 255, 0.5);
+        }
+        
+        .btn-arm-move .btn-icon {
+            font-size: 18px;
+            line-height: 1;
+            margin-bottom: 2px;
+        }
+        
+        .btn-arm-move .btn-text {
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        /* 响应式调整 */
+        @media (max-width: 480px) {
+            .arm-buttons-zone {
+                margin-left: 5px;
+                gap: 8px;
+            }
+            
+            .btn-arm-move {
+                width: 50px;
+                height: 48px;
+            }
+            
+            .btn-arm-move .btn-icon {
+                font-size: 16px;
+            }
+            
+            .btn-arm-move .btn-text {
+                font-size: 10px;
+            }
+            
+            /* 手机竖屏模式下，数据展示放在视频和摇杆之间 */
+            .control-area {
+                position: static;  /* 取消相对定位 */
+                display: flex;
+                flex-wrap: wrap;   /* 允许换行 */
+                padding: 10px 10px;
+                gap: 8px;
+                justify-content: center;
+                align-items: center;
+            }
+            
+            .data-display {
+                position: static;  /* 取消绝对定位 */
+                order: -1;         /* 放在最前面 */
+                flex-basis: 100%;  /* 占据整行 */
+                width: 100%;
+                transform: none;   /* 取消 transform 偏移 */
+                left: auto;
+                margin: -5px 0 20px 0;  /* 向上移动，底部留空间 */
+                padding: 6px 30%;
+                font-size: 10px;
+                box-sizing: border-box;
+            }
+            
+            .joystick-zone {
+                min-height: 100px;
+                flex: 1 1 0;       /* 允许伸缩，基础尺寸为0 */
+                min-width: 0;      /* 允许缩小到比内容还小 */
+            }
+            
+            .joystick-container {
+                width: 90px;
+                height: 90px;
+            }
+            
+            .arm-buttons-zone {
+                margin-left: 0;
+                flex: 0 0 auto;    /* 不伸缩，根据内容定宽 */
+            }
+        }
+        
+        @media (min-width: 768px) {
+            .arm-buttons-zone {
+                margin-left: 15px;
+                gap: 15px;
+            }
+            
+            .btn-arm-move {
+                width: 70px;
+                height: 65px;
+            }
+            
+            .btn-arm-move .btn-icon {
+                font-size: 22px;
+            }
+            
+            .btn-arm-move .btn-text {
+                font-size: 12px;
+            }
+        }
+        
         /* 消息提示 */
         .toast {
             position: fixed;
@@ -491,6 +616,18 @@
                     <div class="joystick-container" id="rightJoystick">
                         <div class="joystick-label" id="rightJoystickLabel">机械臂控制</div>
                     </div>
+                </div>
+                
+                <!-- 机械臂前后移动按钮 -->
+                <div class="arm-buttons-zone">
+                    <button class="btn-arm-move" id="btnArmForward" title="前伸">
+                        <span class="btn-icon">↑</span>
+                        <span class="btn-text">前伸</span>
+                    </button>
+                    <button class="btn-arm-move" id="btnArmBackward" title="后缩">
+                        <span class="btn-icon">↓</span>
+                        <span class="btn-text">后缩</span>
+                    </button>
                 </div>
             </div>
             

@@ -107,10 +107,10 @@ class HumanFollowConfig:
     
     # 跟随控制配置
     target_distance: float = 1.0              # 目标距离（米）
-    kp_linear: float = 0.5                    # 线速度P系数（归一化误差后）
-    kp_angular: float = 1.0                   # 角速度P系数（归一化误差后）
-    max_linear_speed: float = 0.3             # 最大线速度 (m/s)
-    max_angular_speed: float = 0.8            # 最大角速度 (rad/s)
+    kp_linear: float = 0.8                    # 线速度P系数（归一化误差后）
+    kp_angular: float = 1.5                   # 角速度P系数（归一化误差后）
+    max_linear_speed: float = 0.5             # 最大线速度 (m/s)
+    max_angular_speed: float = 2.0            # 最大角速度 (rad/s)
     dead_zone_x: int = 150                    # 水平死区（像素），约8%画面宽度
     dead_zone_area: float = 0.1               # 面积死区（相对值）
     

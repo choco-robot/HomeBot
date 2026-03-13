@@ -421,6 +421,42 @@ class RobotController {
         document.getElementById('btnGripper').addEventListener('click', () => {
             this.toggleGripper();
         });
+        
+        // 机械臂前伸按钮
+        const btnArmForward = document.getElementById('btnArmForward');
+        const btnArmBackward = document.getElementById('btnArmBackward');
+        
+        if (btnArmForward) {
+            btnArmForward.addEventListener('mousedown', () => this.startArmReach(1));
+            btnArmForward.addEventListener('mouseup', () => this.stopArmReach());
+            btnArmForward.addEventListener('mouseleave', () => this.stopArmReach());
+            btnArmForward.addEventListener('touchstart', (e) => { e.preventDefault(); this.startArmReach(1); });
+            btnArmForward.addEventListener('touchend', (e) => { e.preventDefault(); this.stopArmReach(); });
+        }
+        
+        if (btnArmBackward) {
+            btnArmBackward.addEventListener('mousedown', () => this.startArmReach(-1));
+            btnArmBackward.addEventListener('mouseup', () => this.stopArmReach());
+            btnArmBackward.addEventListener('mouseleave', () => this.stopArmReach());
+            btnArmBackward.addEventListener('touchstart', (e) => { e.preventDefault(); this.startArmReach(-1); });
+            btnArmBackward.addEventListener('touchend', (e) => { e.preventDefault(); this.stopArmReach(); });
+        }
+    }
+    
+    // ========== 机械臂前后移动控制 ==========
+    startArmReach(direction) {
+        // direction: 1=前伸, -1=后缩
+        this.armReachActive = true;
+        this.armReachDirection = direction;
+        console.log(`[Arm] 开始${direction > 0 ? '前伸' : '后缩'}`);
+    }
+    
+    stopArmReach() {
+        if (this.armReachActive) {
+            this.armReachActive = false;
+            this.armReachDirection = 0;
+            console.log('[Arm] 停止前后移动');
+        }
     }
     
     // ========== 人体跟随控制 ==========
@@ -535,10 +571,25 @@ class RobotController {
         if (this.rightJoystickActive && !this.isHumanFollowActive) {
             if (now - this.rightJoystickLastSent > this.rightJoystickInterval) {
                 // fire-and-forget: 发送但不等待响应
-                this.socket.emit('arm_joystick', { x: rx, y: ry });
+                // axis='base' 表示控制base旋转和高度
+                this.socket.emit('arm_joystick', { x: rx, y: ry, axis: 'base' });
                 this.rightJoystickLastSent = now;
                 // 本地更新显示（不依赖服务器响应）
                 this.updateArmDisplayLocal(rx, ry);
+            }
+        }
+        
+        // ========== 机械臂前后移动按钮 - PUB-SUB模式 ==========
+        if (this.armReachActive && !this.isHumanFollowActive) {
+            if (now - this.rightJoystickLastSent > this.rightJoystickInterval) {
+                // axis='reach' 表示控制前后伸缩（r值）
+                // x: -1=前伸, 1=后缩, y: 0
+                this.socket.emit('arm_joystick', { 
+                    x: -this.armReachDirection, 
+                    y: 0, 
+                    axis: 'reach' 
+                });
+                this.rightJoystickLastSent = now;
             }
         }
         
