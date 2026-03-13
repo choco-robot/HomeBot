@@ -22,8 +22,15 @@ class RobotController {
         // 人体跟随状态
         this.isHumanFollowActive = false;
         
-        // 机械臂状态
-        this.armAngles = { waist: 0, shoulder: 45, elbow: 90, wrist: 0, gripper: 45 };
+        // 机械臂状态 - 与复位位置(rest_position)保持一致
+        this.armAngles = { 
+            base: -90,       // 与复位位置一致
+            shoulder: 0,     // 与复位位置一致
+            elbow: 150,      // 与复位位置一致
+            wrist_flex: 30,  // 与复位位置一致
+            wrist_roll: -90, // 与复位位置一致
+            gripper: 45      // 与复位位置一致
+        };
         this.gripperClosed = false;  // false=半开(45度), true=闭合(0度)
         
         // 控制使能标志

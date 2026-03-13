@@ -156,17 +156,19 @@ class ArmClient:
         self._socket: Optional[zmq.Socket] = None
         self._connected = False
         
-        # 当前关节角度状态
+        # 当前关节角度状态 - 与复位位置(rest_position)保持一致
         self._current_angles = {
-            "base": 0,
-            "shoulder": 45,
-            "elbow": 90,
-            "wrist_flex": 45,
-            "wrist_roll": 0,
-            "gripper": 45
+            "base": -90,       # 与复位位置一致
+            "shoulder": 0,     # 与复位位置一致
+            "elbow": 150,      # 与复位位置一致
+            "wrist_flex": 30,  # 与复位位置一致
+            "wrist_roll": -90, # 与复位位置一致
+            "gripper": 45      # 与复位位置一致
         }
-        # 当前末端位置 (r, z)
-        self._current_position = {"r": 160.0, "z": 115.0}
+        # 当前末端位置 (r, z) - 通过正运动学计算得出：shoulder=0°, elbow=150°
+        # r = L1*cos(0) + L2*cos(150°) = 115 + 130*(-0.866) ≈ 2.4mm
+        # z = L1*sin(0) + L2*sin(150°) = 0 + 130*0.5 = 65mm
+        self._current_position = {"r": 2.4, "z": 65.0}
         # 关节限制（度）
         self._joint_limits = {
             "base": (-180, 180),
@@ -384,9 +386,9 @@ class ArmClient:
         Returns:
             {成功与否, 新角度, 消息}
         """
-        # 确保属性存在（防御性编程）
+        # 确保属性存在（防御性编程）- 与复位位置一致
         if not hasattr(self, '_current_position'):
-            self._current_position = {"r": 160.0, "z": 115.0}
+            self._current_position = {"r": 2.4, "z": 65.0}
         if not hasattr(self, '_delta_scale_angle'):
             self._delta_scale_angle = 2.0
         if not hasattr(self, '_delta_scale_pos'):
@@ -484,7 +486,7 @@ class ArmClient:
         Args:
             closed: True=闭合(0度), False=打开(45度)
         """
-        angle = 0 if closed else 45
+        angle = 0 if closed else 90
         
         response = self.send_command(
             {"gripper": angle},
