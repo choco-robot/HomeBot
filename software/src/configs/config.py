@@ -44,7 +44,7 @@ class ArmConfig:
         "shoulder": 0,   # J2: 肩关节（自然下垂）
         "elbow": 150,       # J3: 肘关节
         "wrist_flex": 30,   # J4: 腕关节屈伸
-        "wrist_roll": 0,   # J5: 腕关节旋转
+        "wrist_roll": -90,   # J5: 腕关节旋转
         "gripper": 45,     # J6: 夹爪（半开）
     })
 
