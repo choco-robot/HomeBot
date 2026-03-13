@@ -14,22 +14,43 @@
 
 ## 技能安装
 
-Picoclaw 通过技能系统扩展功能，已经为 HomeBot 开发了两个专用控制技能：
+Picoclaw 通过技能系统扩展功能，HomeBot 提供了以下专用控制技能：
 
-1. **homebot-controller** - 底盘运动控制
-2. **homebot-arm-controller** - 机械臂关节控制
-3. **what-does-robot-see** - 一键查询机器人摄像头视角
+| 技能名称 | 功能说明 |
+|---------|---------|
+| **homebot-controller** | 底盘运动控制（前进/后退/旋转） |
+| **homebot-arm-controller** | 机械臂关节控制 |
+| **what-does-robot-see** | 一键查询机器人摄像头视角 |
 
-这些技能默认已经随 Picoclaw 配置完成，如果没有可以手动安装：
+技能文件位于本仓库的 [`skills/`](https://github.com/choco-robot/homebot/tree/main/skills) 目录下。
+
+### 安装方式
+
+#### 方式一：通过 GitHub 链接直接安装（推荐）
+
+在 Picoclaw 中执行以下命令安装：
 
 ```bash
-# 在 Picoclaw 中搜索技能
-find_skills query="homebot"
+# 安装底盘控制技能
+install_skill url="https://github.com/choco-robot/homebot/tree/main/skills/homebot"
 
-# 安装技能
-install_skill slug="homebot-controller" registry="clawhub"
-install_skill slug="homebot-arm-controller" registry="clawhub"
 ```
+
+#### 方式二：本地手动安装
+
+1. 克隆 HomeBot 仓库到本地：
+```bash
+git clone https://github.com/choco-robot/homebot.git
+cd homebot/skills
+```
+
+2. 将技能目录复制到 Picoclaw 的技能目录中：
+```bash
+# 假设 Picoclaw 技能目录为 ~/.picoclaw/skills
+cp -r homebot ~/.picoclaw/skills/
+```
+
+3. 重启 Picoclaw 或刷新技能列表即可使用。
 
 ## 配置连接
 
@@ -192,6 +213,10 @@ for _ in range(4):
 
 - [Picoclaw 官方仓库](https://github.com/sipeed/picoclaw)
 - [HomeBot 项目主页](../README.md)
+- [Picoclaw 技能目录](../skills/) - 本地技能文件位置
+  - [homebot-controller](../skills/homebot-controller/) - 底盘控制技能
+  - [homebot-arm-controller](../skills/homebot-arm-controller/) - 机械臂控制技能
+  - [what-does-robot-see](../skills/what-does-robot-see/) - 视觉查询技能
 - [机械臂控制开发说明](../software/arm_service/README.md)
 - [底盘控制开发说明](../software/chassis_service/README.md)
 
