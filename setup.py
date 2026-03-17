@@ -7,10 +7,14 @@ setup(
     packages=find_packages(where="software/src"),
     package_dir={"": "software/src"},
     install_requires=[
-        "pyzmq",
-        "opencv-python",
-        "ftservo-python-sdk",
-        "pyserial",
+        "pyzmq>=25.0.0",
+        "opencv-python>=4.8.0",
+        "pyserial>=3.5",
+        "flask>=3.0.0",
+        "flask-socketio>=5.3.0",
+        "ultralytics>=8.3.0",
+        "numpy>=1.24.0",
+        "filterpy>=1.4.5",
     ],
     include_package_data=True,
 )

@@ -1,6 +1,5 @@
 pyzmq>=25.0.0
 opencv-python>=4.8.0
-ftservo-python-sdk>=1.0.0
 pyserial>=3.5
 flask>=3.0.0
 flask-socketio>=5.3.0
