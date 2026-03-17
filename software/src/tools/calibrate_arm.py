@@ -37,6 +37,84 @@ ARM_JOINTS = {
 
 # 飞特舵机寄存器地址
 SMS_STS_TORQUE_ENABLE = 40  # 扭矩使能/校准寄存器
+SMS_STS_MIN_ANGLE_LIMIT_L = 9   # 最小角度限制低字节
+SMS_STS_MIN_ANGLE_LIMIT_H = 10  # 最小角度限制高字节
+SMS_STS_MAX_ANGLE_LIMIT_L = 11  # 最大角度限制低字节
+SMS_STS_MAX_ANGLE_LIMIT_H = 12  # 最大角度限制高字节
+SMS_STS_LOCK = 55  # EEPROM锁定寄存器
+
+
+def set_angle_limits(bus: FTServoBus, servo_id: int, min_pos: int = 0, max_pos: int = 4096) -> bool:
+    """
+    设置舵机最大/最小角度限制
+    
+    步骤:
+        1. 解锁EEPROM
+        2. 写入最小角度限制 (0)
+        3. 写入最大角度限制 (4096)
+        4. 锁定EEPROM
+    
+    Args:
+        bus: 舵机总线实例
+        servo_id: 舵机ID
+        min_pos: 最小位置值 (默认0)
+        max_pos: 最大位置值 (默认4096)
+        
+    Returns:
+        是否设置成功
+    """
+    try:
+        print(f"  设置角度限制 [{min_pos}, {max_pos}]...")
+        
+        if bus.packet_handler and not bus._simulation:
+            # 解锁EEPROM
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_LOCK, 0)
+            if comm_result != 0:
+                print(f"  [错误] EEPROM解锁失败: {comm_result}")
+                return False
+            time.sleep(0.05)
+            
+            # 写入最小角度限制 (2字节，低字节在前)
+            min_l = min_pos & 0xFF
+            min_h = (min_pos >> 8) & 0xFF
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_MIN_ANGLE_LIMIT_L, min_l)
+            if comm_result != 0:
+                print(f"  [错误] 最小角度限制(低字节)写入失败: {comm_result}")
+                return False
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_MIN_ANGLE_LIMIT_H, min_h)
+            if comm_result != 0:
+                print(f"  [错误] 最小角度限制(高字节)写入失败: {comm_result}")
+                return False
+            time.sleep(0.05)
+            
+            # 写入最大角度限制 (2字节，低字节在前)
+            max_l = max_pos & 0xFF
+            max_h = (max_pos >> 8) & 0xFF
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_MAX_ANGLE_LIMIT_L, max_l)
+            if comm_result != 0:
+                print(f"  [错误] 最大角度限制(低字节)写入失败: {comm_result}")
+                return False
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_MAX_ANGLE_LIMIT_H, max_h)
+            if comm_result != 0:
+                print(f"  [错误] 最大角度限制(高字节)写入失败: {comm_result}")
+                return False
+            time.sleep(0.05)
+            
+            # 锁定EEPROM
+            comm_result, error = bus.packet_handler.write1ByteTxRx(servo_id, SMS_STS_LOCK, 1)
+            if comm_result != 0:
+                print(f"  [警告] EEPROM锁定失败: {comm_result}")
+            time.sleep(0.05)
+            
+            print(f"  [成功] 角度限制设置完成 [{min_pos}, {max_pos}]")
+            return True
+        else:
+            print(f"  [模拟模式] 跳过角度限制设置")
+            return True
+            
+    except Exception as e:
+        print(f"  [错误] 设置角度限制异常: {e}")
+        return False
 
 
 def calibrate_servo(bus: FTServoBus, servo_id: int, target_pos: int = 2048) -> bool:
@@ -88,7 +166,14 @@ def calibrate_servo(bus: FTServoBus, servo_id: int, target_pos: int = 2048) -> b
             print(f"  当前位置: {current_pos} (目标: 2048)")
             if abs(current_pos - 2048) < 10:
                 print(f"  [成功] 舵机 {servo_id} 校准完成！")
-                return True
+                
+                # 步骤5: 设置角度限制
+                print(f"  步骤5: 设置最大/最小角度限制...")
+                if set_angle_limits(bus, servo_id, min_pos=0, max_pos=4096):
+                    return True
+                else:
+                    print(f"  [警告] 角度限制设置失败")
+                    return False
             else:
                 print(f"  [警告] 位置偏差较大，请检查")
                 return False

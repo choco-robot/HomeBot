@@ -17,7 +17,7 @@ class CameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "/dev/tty.usbmodem5AE60527771"  # 与底盘共用串口
+    serial_port: str = "COM15"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -26,6 +26,9 @@ class ArmConfig:
     wrist_flex_id: int = 4
     wrist_roll_id: int = 5
     gripper_id: int = 6
+    # 连杆长度 (mm) 人工设置，AI勿动
+    upper_arm_length: float = 115.0  # 大臂长度 (L1)
+    forearm_length: float = 130.0    # 小臂长度 (L2)
     # 关节角度限制 (度) 人工设置，AI勿动
     joint_limits: dict = field(default_factory=lambda: {
         "base": (-180, 180),
@@ -53,7 +56,7 @@ class ArmConfig:
 class ChassisConfig:
     """底盘配置 - 从机器人配置文件读取"""
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "/dev/tty.usbmodem5AE60527771"
+    serial_port: str = "COM15"
     baudrate: int = 1000000
     
     # 舵机ID映射

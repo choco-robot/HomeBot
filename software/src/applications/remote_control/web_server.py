@@ -23,6 +23,7 @@ from flask_socketio import SocketIO, emit
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 import zmq
+from configs import get_config
 
 DEFAULT_ARBITER_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_VISION_ADDR = "tcp://127.0.0.1:5560"
@@ -146,38 +147,41 @@ class ArmClient:
     SOURCE_NAME = "web"
     PRIORITY = 1
     
-    # 机械臂连杆长度（mm）
-    L1 = 115  # 大臂
-    L2 = 130  # 小臂
-    
     def __init__(self, arm_addr: str = DEFAULT_ARM_ADDR):
         self.arm_addr = arm_addr
         self._context: Optional[zmq.Context] = None
         self._socket: Optional[zmq.Socket] = None
         self._connected = False
         
+        # 从配置读取机械臂参数
+        config = get_config()
+        self._arm_config = config.arm
+        
+        # 机械臂连杆长度（mm）
+        self.L1 = self._arm_config.upper_arm_length  # 大臂
+        self.L2 = self._arm_config.forearm_length    # 小臂
+        
         # 当前关节角度状态 - 与复位位置(rest_position)保持一致
+        rest_pos = self._arm_config.rest_position
         self._current_angles = {
-            "base": -90,       # 与复位位置一致
-            "shoulder": 0,     # 与复位位置一致
-            "elbow": 150,      # 与复位位置一致
-            "wrist_flex": 30,  # 与复位位置一致
-            "wrist_roll": -90, # 与复位位置一致
-            "gripper": 45      # 与复位位置一致
+            "base": rest_pos["base"],
+            "shoulder": rest_pos["shoulder"],
+            "elbow": rest_pos["elbow"],
+            "wrist_flex": rest_pos["wrist_flex"],
+            "wrist_roll": rest_pos["wrist_roll"],
+            "gripper": rest_pos["gripper"]
         }
-        # 当前末端位置 (r, z) - 通过正运动学计算得出：shoulder=0°, elbow=150°
-        # r = L1*cos(0) + L2*cos(150°) = 115 + 130*(-0.866) ≈ 2.4mm
-        # z = L1*sin(0) + L2*sin(150°) = 0 + 130*0.5 = 65mm
-        self._current_position = {"r": 2.4, "z": 65.0}
+        # 当前末端位置 (r, z) - 通过正运动学计算得出
+        # r = L1*cos(shoulder) + L2*cos(elbow)
+        # z = L1*sin(shoulder) + L2*sin(elbow)
+        import math
+        shoulder_rad = math.radians(self._current_angles["shoulder"])
+        elbow_rad = math.radians(self._current_angles["elbow"])
+        r = self.L1 * math.cos(shoulder_rad) + self.L2 * math.cos(elbow_rad)
+        z = self.L1 * math.sin(shoulder_rad) + self.L2 * math.sin(elbow_rad)
+        self._current_position = {"r": round(r, 1), "z": round(z, 1)}
         # 关节限制（度）
-        self._joint_limits = {
-            "base": (-180, 180),
-            "shoulder": (0, 180),
-            "elbow": (0, 180),
-            "wrist_flex": (-90, 90),
-            "wrist_roll": (-180, 180),
-            "gripper": (0, 90)
-        }
+        self._joint_limits = self._arm_config.joint_limits
         # 末端位置限制
         self._position_limits = {
             "r_min": -240,
