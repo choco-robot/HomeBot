@@ -185,9 +185,16 @@ def start_service(svc, src_dir):
     # 在新窗口中启动（跨平台）
     if platform.system() == "Windows":
         # Windows: 使用 start 命令
-        cmd_str = f"cd /d {src_dir} && python -m {svc['module']}"
+        # 构建完整的命令
+        cmd_parts = [f'"{sys.executable}"', "-m", svc["module"]]
+        if "args" in svc:
+            cmd_parts.extend(svc["args"])
+        cmd_str = " ".join(cmd_parts)
+        
+        # 使用 start 命令在新窗口中运行
+        # start "标题" cmd /k "命令" - 第一个引号是窗口标题
         subprocess.Popen(
-            f'start "{svc["name"]}" cmd /k {cmd_str}',
+            f'start "{svc["name"]}" cmd /k "cd /d \"{src_dir}\" && {cmd_str}"',
             shell=True
         )
     elif platform.system() == "Darwin":
