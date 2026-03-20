@@ -1,5 +1,9 @@
 # HomeBot
 
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS%20-orange)](https://github.com/yourusername/homebot)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 HomeBot 是一个面向家庭场景的轻量级机器人项目，采用 **分层模块化架构** 和 **ZeroMQ** 通信总线，支持手机遥控、语音交互、模仿学习、人体跟随等多种应用。
 
 <img width="400" height="500" alt="效果图" src="docs/images/效果图.png" />
@@ -21,6 +25,7 @@ homebot/
 │   │   ├── configs/           # 运行时配置 (config.py)
 │   │   ├── applications/      # 应用层
 │   │   │   ├── remote_control/    # 网页遥控端 (含视频流)
+│   │   │   ├── gamepad_control/   # 游戏手柄控制 (Xbox手柄)
 │   │   │   ├── human_follow/      # 人体跟随 (YOLO + 视觉伺服)
 │   │   │   ├── speech_interaction/# 语音交互
 │   │   │   └── imitation_learning/# 模仿学习
@@ -31,6 +36,7 @@ homebot/
 │   │   ├── hal/               # 硬件抽象层
 │   │   │   ├── camera/        # 摄像头驱动
 │   │   │   ├── chassis/       # 底盘驱动
+│   │   │   ├── gamepad/       # Xbox手柄驱动
 │   │   │   └── ftservo_driver.py  # 飞特舵机底层驱动
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
@@ -50,6 +56,7 @@ homebot/
 - **纯 Python 实现**，轻松跨平台（Windows、Linux、Mac、树莓派）
 - **ZeroMQ 通信总线**，低延迟，低资源消耗
 - **网页遥控端**，支持手机/平板/PC，实时视频流显示
+- **游戏手柄控制**，Xbox 手柄同时控制底盘和机械臂
 - **人体跟随**，基于 YOLO26 的视觉伺服自动跟随
 - **紧急停止锁定**，触发后需手动归位解锁，确保安全
 - **一键启动脚本**，自动检查端口占用，启动所有服务
@@ -120,7 +127,30 @@ http://<robot-ip>:5000
 - **紧急停止按钮**（红色，触发后锁定底盘）
 - **归位按钮**（蓝色，解锁紧急停止）
 
-### 控制方式2：AI 助手控制（Picoclaw）
+### 控制方式2：游戏手柄控制
+
+使用 Xbox 手柄同时控制底盘和机械臂：
+
+```bash
+# 1. 启动底盘服务
+cd software/src
+python -m services.motion_service.chassis_service
+
+# 2. 启动机械臂服务
+python -m services.motion_service.arm_service
+
+# 3. 启动游戏手柄控制
+python -m applications.gamepad_control
+```
+
+**控制映射**：
+- **底盘**：左摇杆（移动/旋转）+ LT/RT（平移）
+- **机械臂**：右摇杆（基座/伸缩）+ 十字键（升降/腕转）+ Y/A/B（腕翻）+ RB/LB（夹爪）
+- **系统**：Back（急停）/ Start（复位）
+
+详细使用说明 👉 [游戏手柄控制使用指南](docs/游戏手柄控制使用指南.md)
+
+### 控制方式3：AI 助手控制（Picoclaw）
 
 通过 [Picoclaw（小龙虾）](docs/用Picoclaw小龙虾控制HomeBot.md) AI 助手实现自然语言控制：
 
@@ -225,6 +255,9 @@ class HumanFollowConfig:
 # 底盘服务
 python -m services.motion_service.chassis_service [--port COM3]
 
+# 机械臂服务
+python -m services.motion_service.arm_service
+
 # 视觉服务  
 python -m services.vision_service [--display]
 
@@ -233,6 +266,9 @@ python -m applications.remote_control [--host 0.0.0.0] [--port 5000]
 
 # 人体跟随
 python -m applications.human_follow [--display]
+
+# 游戏手柄控制
+python -m applications.gamepad_control [--controller 0] [--verbose]
 ```
 
 ### 订阅图像流
@@ -268,6 +304,7 @@ sub.read_loop(callback=process_frame)
 ## 扩展
 
 - **AI 助手控制** - 通过 [Picoclaw](docs/用Picoclaw小龙虾控制HomeBot.md) 用自然语言控制机器人
+- **游戏手柄** - 使用 Xbox 手柄直接控制，详见 [游戏手柄控制使用指南](docs/游戏手柄控制使用指南.md)
 
 可在后续迭代中添加：
 - **MQTT 桥接** - 云端远程控制
@@ -278,4 +315,4 @@ sub.read_loop(callback=process_frame)
 
 ---
 
-*Last updated: 2026-03-10*
+*Last updated: 2026-03-17*

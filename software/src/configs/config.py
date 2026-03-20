@@ -83,13 +83,98 @@ class ZMQConfig:
     chassis_service_addr: str = "tcp://*:5556"
     arm_service_addr: str = "tcp://*:5557"      # 机械臂服务地址
     vision_pub_addr: str = "tcp://*:5560"
-    speech_service_addr: str = "tcp://*:5570"
+    speech_service_addr: str = "tcp://*:5570"   # 语音服务地址（备用）
+    wakeup_pub_addr: str = "tcp://*:5571"       # 唤醒+ASR PUB地址
 
 
 @dataclass
 class LoggingConfig:
     """日志配置"""
-    level: str = "INFO"
+    level: str = "DEBUG"
+
+
+@dataclass
+class SpeechConfig:
+    """语音引擎配置"""
+    # 模型路径
+    wakeup_model_path: str = "models/wakeup"
+    asr_model_path: str = "models/asr"
+    cache_dir: str = "cache"
+    
+    # ASR模型文件
+    asr_encoder_file: str = "encoder.int8.onnx"
+    asr_decoder_file: str = "decoder.onnx"
+    asr_joiner_file: str = "joiner.int8.onnx"
+    
+    # 唤醒模型文件
+    wakeup_encoder_file: str = "encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+    wakeup_decoder_file: str = "decoder-epoch-13-avg-2-chunk-16-left-64.onnx"
+    wakeup_joiner_file: str = "joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+    wakeup_keyword_file: str = "keywords.txt"
+    
+    # 音频参数
+    sample_rate: int = 16000
+    channels: int = 1
+    mic_index: int = 1
+    
+    # 唤醒词配置
+    wakeup_keyword: str = "你好小白"
+    wakeup_sensitivity: float = 0.3
+    
+    # ASR监听超时（秒）
+    listen_timeout: float = 1.5
+
+
+@dataclass
+class TTSConfig:
+    """火山引擎TTS配置"""
+    appid: str = ""                           # 应用ID
+    access_token: str = ""                    # 访问令牌
+    resource_id: str = "seed-tts-2.0"         # 资源ID
+    voice_type: str = "zh_female_vv_uranus_bigtts"  # 音色类型
+    encoding: str = "pcm"                     # 音频编码
+    endpoint: str = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
+    sample_rate: int = 16000                  # 输出采样率
+
+
+@dataclass
+class LLMConfig:
+    """LLM API配置"""
+    provider: str = "deepseek"                # 提供商: deepseek/qwen
+    api_key: str = ""                         # API密钥
+    api_url: str = "https://api.deepseek.com/v1"  # API地址
+    model: str = "deepseek-chat"              # 模型名称
+    temperature: float = 0.7                  # 温度参数
+    max_tokens: int = 512                     # 最大token数
+
+
+@dataclass
+class GamepadConfig:
+    """游戏手柄控制配置 - 同时控制底盘和机械臂"""
+    
+    # ========== 底盘控制参数 ==========
+    max_linear_speed: float = 0.5          # 最大线速度 (m/s)
+    max_angular_speed: float = 1.0         # 最大角速度 (rad/s)
+    trigger_deadzone: float = 0.1          # 扳机键死区
+    left_stick_deadzone: float = 0.15      # 左摇杆死区
+    
+    # ========== 机械臂控制参数 ==========
+    arm_base_step: float = 3.0             # 基座关节步进 (度/帧)
+    arm_elbow_step: float = 2.0            # 肘关节步进 (度/帧)
+    arm_shoulder_step: float = 2.0         # 肩关节步进 (度/帧)
+    arm_wrist_flex_step: float = 3.0       # 腕屈伸步进 (度/次)
+    arm_wrist_roll_step: float = 3.0       # 腕旋转步进 (度/帧)
+    arm_gripper_open: float = 90.0         # 夹爪打开角度
+    arm_gripper_close: float = 0.0         # 夹爪关闭角度
+    arm_speed: int = 800                   # 机械臂运动速度
+    right_stick_deadzone: float = 0.15     # 右摇杆死区
+    
+    # ========== 通信配置 ==========
+    chassis_service_addr: str = "tcp://localhost:5556"
+    arm_service_addr: str = "tcp://localhost:5557"
+    
+    # ========== 轮询配置 ==========
+    polling_interval: float = 0.02         # 50Hz (20ms)
 
 
 @dataclass
@@ -137,6 +222,10 @@ class Config:
     zmq: ZMQConfig = field(default_factory=ZMQConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     human_follow: HumanFollowConfig = field(default_factory=HumanFollowConfig)
+    speech: SpeechConfig = field(default_factory=SpeechConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    gamepad: GamepadConfig = field(default_factory=GamepadConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -151,7 +240,11 @@ class Config:
             chassis=ChassisConfig(**data.get("chassis", {})),
             zmq=ZMQConfig(**data.get("zmq", {})),
             logging=LoggingConfig(**data.get("logging", {})),
-            human_follow=HumanFollowConfig(**data.get("human_follow", {}))
+            human_follow=HumanFollowConfig(**data.get("human_follow", {})),
+            speech=SpeechConfig(**data.get("speech", {})),
+            tts=TTSConfig(**data.get("tts", {})),
+            llm=LLMConfig(**data.get("llm", {})),
+            gamepad=GamepadConfig(**data.get("gamepad", {}))
         )
 
 

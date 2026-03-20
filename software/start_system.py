@@ -32,6 +32,19 @@ SERVICES = [
         "desc": "Vision Service"
     },
     {
+        "name": "WakeupASR Service",
+        "module": "services.speech_service",
+        "port": 5571,
+        "desc": "Voice Wakeup + ASR (PUB)",
+        "args": ["wakeup"]
+    },
+    {
+        "name": "Speech Interaction",
+        "module": "applications.speech_interaction",
+        "port": None,  # SUB模式，不绑定端口
+        "desc": "Voice Dialogue + TTS (SUB)"
+    },
+    {
         "name": "Web Control",
         "module": "applications.remote_control",
         "port": 5000,
@@ -109,6 +122,11 @@ def check_ports():
     
     occupied = []
     for svc in SERVICES:
+        # 跳过无端口的服务（如SUB模式应用）
+        if svc.get("port") is None:
+            print(f"[OK] {svc['name']} (no port required)")
+            continue
+            
         # 检查主端口
         if check_port(svc["port"]):
             print(f"[WARN] Port {svc['port']} is occupied ({svc['desc']})")
@@ -267,7 +285,9 @@ def main():
     print()
     print("Services:")
     for svc in SERVICES:
-        if svc["name"] == "Web Control":
+        if svc.get("port") is None:
+            print(f"   - {svc['name']} ({svc['desc']})")
+        elif svc["name"] == "Web Control":
             print(f"   - {svc['name']} (Flask: http://0.0.0.0:{svc['port']})")
         elif svc["name"] == "Motion Service":
             print(f"   - {svc['name']} (ZeroMQ: tcp://127.0.0.1:{svc['port']} & :{svc['port2']})")
