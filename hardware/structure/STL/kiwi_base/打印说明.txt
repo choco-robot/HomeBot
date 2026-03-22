@@ -1,0 +1,6 @@
+PLA或PETG，15%填充
+1套包含
+drive_motor_mount_v2   	3个
+base_plate_layer1		1个
+base_plate_layer2		1个
+base_connector_47mm	3个
