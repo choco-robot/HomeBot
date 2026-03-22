@@ -73,3 +73,8 @@ configs/*.json
 *.SLDASM
 
 # 模型权重文件
+*.onnx
+*.pt
+*.pth
+
+*.stp

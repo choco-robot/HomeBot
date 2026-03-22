@@ -35,7 +35,7 @@ homebot/
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
 │   ├── models/                # 机器学习模型 (YOLO26 等)
-│   ├── tools/                 # 辅助脚本（模型下载等）
+│   ├── tools/                 # 辅助脚本（设备查看、校准、模型下载等）
 │   ├── start_system.py        # 跨平台系统启动器
 │   ├── start_human_follow.py  # 启动人体跟随
 │   └── start_chassis_service.py
@@ -93,6 +93,29 @@ class ChassisConfig:
 ```
 更多配置选项说明详见 [配置修改说明](docs/配置修改说明.md)
 
+### 设备信息查看工具
+
+快速查看系统中可用的串口、摄像头和麦克风设备，方便修改配置：
+
+```bash
+cd software
+python tools/list_devices.py
+```
+
+输出示例：
+```
+📟 串口: COM15
+   描述: USB-SERIAL CH340
+   
+📷 摄像头索引: 0
+   分辨率: 1920x1080
+   
+🎤 麦克风索引: 1
+   名称: 麦克风 (Realtek(R) Audio)
+```
+
+更多工具脚本（机械臂校准、模型下载等）详见 👉 [工具脚本使用指南](docs/工具脚本使用指南.md)
+
 ### 一键启动服务
 
 ```bash
@@ -149,21 +172,9 @@ HomeBot 提供基于 **YOLO26** 的实时人体跟随功能，支持视觉伺服
 | **控制算法** | 视觉伺服 (Visual Servoing) |
 | **控制优先级** | auto=3（可被 emergency 抢占）|
 
-### 快速开始
+### 快速体验
 
-```bash
-# 1. 启动底盘服务
-cd software/src
-python -m services.motion_service.chassis_service
-
-# 2. 启动视觉服务
-cd software/src
-python -m services.vision_service
-
-# 3. 启动人体跟随（终端 3）
-cd software
-python start_human_follow.py --display
-```
+启动系统服务后，在网页端点击人体跟随按钮即可，启动大约需要5-10秒钟（加载模型）。
 
 ### 运行模式
 
