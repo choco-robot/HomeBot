@@ -41,7 +41,7 @@ homebot/
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
 │   ├── models/                # 机器学习模型 (YOLO26 等)
-│   ├── tools/                 # 辅助脚本（模型下载等）
+│   ├── tools/                 # 辅助脚本（设备查看、校准、模型下载等）
 │   ├── start_system.py        # 跨平台系统启动器
 │   ├── start_human_follow.py  # 启动人体跟随
 │   └── start_chassis_service.py
@@ -99,6 +99,29 @@ class ChassisConfig:
     # 剩余配置略
 ```
 更多配置选项说明详见 [配置修改说明](docs/配置修改说明.md)
+
+### 设备信息查看工具
+
+快速查看系统中可用的串口、摄像头和麦克风设备，方便修改配置：
+
+```bash
+cd software
+python tools/list_devices.py
+```
+
+输出示例：
+```
+📟 串口: COM15
+   描述: USB-SERIAL CH340
+   
+📷 摄像头索引: 0
+   分辨率: 1920x1080
+   
+🎤 麦克风索引: 1
+   名称: 麦克风 (Realtek(R) Audio)
+```
+
+更多工具脚本（机械臂校准、模型下载等）详见 👉 [工具脚本使用指南](docs/工具脚本使用指南.md)
 
 ### 一键启动服务
 

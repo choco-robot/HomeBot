@@ -19,7 +19,7 @@ import os
 import time
 import argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src'))
 
 from configs import get_config
 from hal.ftservo_driver import FTServoBus
