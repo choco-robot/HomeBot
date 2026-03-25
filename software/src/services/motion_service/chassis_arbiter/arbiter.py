@@ -37,11 +37,13 @@ class ArmResponse:
 
 
 # 控制源优先级定义
+# 数值越大优先级越高
 PRIORITIES = {
-    "emergency": 4,
-    "auto": 3,
-    "voice": 2,
-    "web": 1,
+    "emergency": 4,   # 紧急停止（最高）
+    "gamepad": 3,     # 游戏手柄控制
+    "auto": 3,        # 自动模式（人体跟随等）
+    "voice": 2,       # 语音控制
+    "web": 1,         # Web 遥控（最低）
 }
 
 
@@ -128,9 +130,13 @@ class ChassisArbiterClient:
     def close(self):
         """关闭客户端"""
         if self._socket:
-            self._socket.close()
-        if self._context:
-            self._context.term()
+            try:
+                self._socket.close()
+            except:
+                pass
+            self._socket = None
+        # 注意：不要调用 _context.term()，因为使用的是单例模式
+        # zmq.Context.instance() 返回的全局上下文不应被单个客户端终止
 
 
 class ArmArbiterClient:
@@ -263,6 +269,10 @@ class ArmArbiterClient:
     def close(self):
         """关闭客户端"""
         if self._socket:
-            self._socket.close()
-        if self._context:
-            self._context.term()
+            try:
+                self._socket.close()
+            except:
+                pass
+            self._socket = None
+        # 注意：不要调用 _context.term()，因为使用的是单例模式
+        # zmq.Context.instance() 返回的全局上下文不应被单个客户端终止

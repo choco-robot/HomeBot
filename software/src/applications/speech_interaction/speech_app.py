@@ -77,6 +77,36 @@ class SpeechInteractionApp:
         except Exception as e:
             logger.error(f"MCP 客户端初始化失败: {e}")
         
+        # 后台预加载人体跟随模型
+        logger.info("正在后台预加载人体跟随模型...")
+        try:
+            from applications.speech_interaction.mcp_server import preload_human_follow_model, get_human_follow_preload_status
+            
+            # 在后台线程中预加载
+            import threading
+            def _preload():
+                result = preload_human_follow_model()
+                logger.info(f"人体跟随模型预加载结果: {result['status']}")
+            
+            preload_thread = threading.Thread(target=_preload, daemon=True)
+            preload_thread.start()
+            
+            # 等待最多20秒让预加载完成
+            logger.info("等待人体跟随模型预加载完成...")
+            preload_thread.join(timeout=20.0)
+            
+            # 获取预加载状态并通过 TTS 报告
+            status = get_human_follow_preload_status()
+            if status['status'] == 'success':
+                await self._speak("人体跟随功能已准备就绪")
+            elif status['status'] == 'error':
+                await self._speak("人体跟随模型加载失败，启动跟随功能可能会较慢")
+            else:
+                logger.warning(f"未知的预加载状态: {status}")
+                await self._speak("人体跟随模型加载超时")
+        except Exception as e:
+            logger.error(f"预加载人体跟随模型失败: {e}")
+        
         logger.info("等待语音输入...")
         logger.info("=" * 50)
         
@@ -170,6 +200,17 @@ class SpeechInteractionApp:
         self.is_running = False
         
         try:
+            # 停止人体跟随进程（如果正在运行）
+            logger.info("检查并停止人体跟随进程...")
+            try:
+                from applications.speech_interaction.mcp_server import stop_human_follow
+                result = stop_human_follow()
+                if result.get("status") == "success":
+                    logger.info("人体跟随进程已停止")
+                # 如果跟随未运行，也正常继续
+            except Exception as e:
+                logger.warning(f"停止人体跟随进程时出错: {e}")
+            
             # 释放TTS资源
             if self.tts_engine:
                 self.tts_engine.release()

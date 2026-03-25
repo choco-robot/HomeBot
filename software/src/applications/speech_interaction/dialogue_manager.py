@@ -72,6 +72,7 @@ class DialogueManager:
 - rotate_arm_right(angle): 机械臂基座右转，angle: 角度 5-180，默认 30
 - grab_object(): 执行抓取动作/关闭夹爪
 - release_object(): 执行释放/松开动作/打开夹爪
+- hold_object(): "帮我拿着这个" - 复合动作：复位→打开夹爪→等待2秒→关闭夹爪
 - move_arm_to_position(joint_angles): 移动机械臂到指定关节角度
 
 重要规则：

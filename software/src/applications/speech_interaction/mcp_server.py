@@ -8,6 +8,9 @@ import zmq
 import time
 import asyncio
 import threading
+import subprocess
+import sys
+import os
 from typing import Optional
 from fastmcp import FastMCP
 
@@ -96,7 +99,10 @@ class RobotControllerClient:
             self._arm_available = False
     
     def send_chassis_command(self, vx: float, vy: float, vz: float, duration_ms: int = 1000) -> dict:
-        """发送底盘控制命令
+        """发送底盘控制命令 - 持续发送以避免超时
+        
+        由于底盘服务有 1 秒超时机制，长时间移动需要持续发送速度指令
+        保持控制权，直到移动完成才发送停止命令。
         
         Args:
             vx: X方向线速度（m/s）
@@ -117,49 +123,61 @@ class RobotControllerClient:
                 "priority": 2
             }
             
-            # 发送命令（带超时）
-            try:
-                socket.send_json(command, flags=zmq.NOBLOCK)
-            except zmq.Again:
-                # 发送超时，重置 socket
-                self._reset_chassis_socket()
-                return {
-                    "status": "error", 
-                    "message": f"发送命令超时，底盘服务未响应（地址: {self.chassis_addr}）。请检查底盘服务是否已启动。"
-                }
+            # 持续发送命令，避免底盘服务 1 秒超时（每 200ms 发送一次）
+            start_time = time.time()
+            interval = 0.2  # 200ms 发送间隔，远小于 1 秒超时
+            last_response = None
             
-            # 接收响应（带超时）
-            try:
-                response = socket.recv_json()
-            except zmq.Again:
-                # 接收超时，重置 socket
-                self._reset_chassis_socket()
-                return {
-                    "status": "error", 
-                    "message": f"接收响应超时，底盘服务未响应（地址: {self.chassis_addr}）。请检查底盘服务是否已启动。"
-                }
-            
-            # 标记服务可用
-            self._chassis_available = True
-            
-            # 如果指定了持续时间，等待后发送停止命令
-            if duration_ms > 0:
-                time.sleep(duration_ms / 1000.0)
-                stop_command = {
-                    "source": "voice",
-                    "vx": 0,
-                    "vy": 0,
-                    "vz": 0,
-                    "priority": 2
-                }
+            while (time.time() - start_time) * 1000 < duration_ms:
+                # 发送命令（带超时）
                 try:
-                    socket.send_json(stop_command, flags=zmq.NOBLOCK)
-                    socket.recv_json()
+                    socket.send_json(command, flags=zmq.NOBLOCK)
                 except zmq.Again:
-                    # 停止命令超时，不重置 socket（移动命令已执行）
-                    logger.warning("停止命令超时，但移动命令可能已执行")
+                    # 发送超时，重置 socket
+                    self._reset_chassis_socket()
+                    return {
+                        "status": "error", 
+                        "message": f"发送命令超时，底盘服务未响应（地址: {self.chassis_addr}）。请检查底盘服务是否已启动。"
+                    }
+                
+                # 接收响应（带超时）
+                try:
+                    last_response = socket.recv_json()
+                except zmq.Again:
+                    # 接收超时，重置 socket
+                    self._reset_chassis_socket()
+                    return {
+                        "status": "error", 
+                        "message": f"接收响应超时，底盘服务未响应（地址: {self.chassis_addr}）。请检查底盘服务是否已启动。"
+                    }
+                
+                # 标记服务可用
+                self._chassis_available = True
+                
+                # 等待下一个周期（但不超过剩余时间）
+                elapsed_ms = (time.time() - start_time) * 1000
+                remaining_ms = duration_ms - elapsed_ms
+                if remaining_ms > interval * 1000:
+                    time.sleep(interval)
+                elif remaining_ms > 0:
+                    time.sleep(remaining_ms / 1000.0)
             
-            return {"status": "success", "data": response}
+            # 移动完成，发送停止命令
+            stop_command = {
+                "source": "voice",
+                "vx": 0,
+                "vy": 0,
+                "vz": 0,
+                "priority": 2
+            }
+            try:
+                socket.send_json(stop_command, flags=zmq.NOBLOCK)
+                socket.recv_json()
+            except zmq.Again:
+                # 停止命令超时，不重置 socket（移动命令已执行）
+                logger.warning("停止命令超时，但移动命令可能已执行")
+            
+            return {"status": "success", "data": last_response}
             
         except zmq.ZMQError as e:
             # ZeroMQ 错误，重置 socket
@@ -395,6 +413,102 @@ class RobotControllerClient:
 # 全局控制器客户端实例
 _controller_client: Optional[RobotControllerClient] = None
 
+# 人体跟随进程
+_human_follow_process: Optional[subprocess.Popen] = None
+_human_follow_log_files: list = []  # 存储日志文件句柄，用于后续关闭
+
+# 人体跟随预加载状态
+_human_follow_preload_result: Optional[dict] = None
+
+
+def preload_human_follow_model() -> dict:
+    """
+    预加载人体跟随模型
+    
+    在应用启动时后台加载模型，验证模型文件可用。
+    如果加载失败，返回错误信息供语音提示使用。
+    
+    Returns:
+        dict: 预加载结果，包含 status 和 message
+    """
+    global _human_follow_preload_result
+    
+    try:
+        logger.info("开始预加载人体跟随模型...")
+        
+        # 直接导入并初始化检测器，验证模型可加载
+        import sys
+        import os
+        
+        # 添加 src 到路径
+        current_file = os.path.abspath(__file__)
+        software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+        src_dir = os.path.join(software_dir, "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        
+        from applications.human_follow.detector import HumanDetector
+        from configs.config import get_config
+        
+        config = get_config().human_follow
+        
+        # 构建模型路径
+        model_path = os.path.join(software_dir, config.model_path)
+        if not os.path.exists(model_path):
+            _human_follow_preload_result = {
+                "status": "error",
+                "message": f"模型文件不存在: {model_path}"
+            }
+            logger.error(f"人体跟随模型文件不存在: {model_path}")
+            return _human_follow_preload_result
+        
+        logger.info(f"加载模型: {model_path}")
+        
+        # 初始化检测器（加载模型到内存）
+        detector = HumanDetector(
+            model_path=model_path,
+            conf_threshold=config.conf_threshold,
+            inference_size=config.inference_size,
+            use_half=config.use_half_precision
+        )
+        
+        if not detector.initialize():
+            _human_follow_preload_result = {
+                "status": "error",
+                "message": "模型初始化失败"
+            }
+            logger.error("人体跟随模型初始化失败")
+            return _human_follow_preload_result
+        
+        # 预加载成功，释放资源（模型文件已在系统缓存中）
+        detector.release()
+        
+        _human_follow_preload_result = {
+            "status": "success",
+            "message": "人体跟随模型预加载成功"
+        }
+        logger.info("人体跟随模型预加载成功")
+            
+    except Exception as e:
+        _human_follow_preload_result = {
+            "status": "error",
+            "message": f"预加载异常: {str(e)}"
+        }
+        logger.error(f"预加载人体跟随模型异常: {e}")
+    
+    return _human_follow_preload_result
+
+
+def get_human_follow_preload_status() -> dict:
+    """
+    获取人体跟随模型预加载状态
+    
+    Returns:
+        dict: 预加载结果，如果尚未预加载则返回 None
+    """
+    global _human_follow_preload_result
+    return _human_follow_preload_result or {"status": "unknown", "message": "尚未预加载"}
+
 
 def get_controller() -> RobotControllerClient:
     """获取机器人控制器客户端（单例）"""
@@ -482,7 +596,7 @@ def turn_left(angle: float, speed: float = 0.5) -> dict:
         duration_ms = int((angle_rad / speed) * 1000)
         duration_ms = min(duration_ms, 5000)
         
-        result = controller.send_chassis_command(0, 0, speed, duration_ms)
+        result = controller.send_chassis_command(0, 0, -speed, duration_ms)
         success = result.get("status") == "success"
         
         return {
@@ -511,7 +625,7 @@ def turn_right(angle: float, speed: float = 0.5) -> dict:
         duration_ms = int((angle_rad / speed) * 1000)
         duration_ms = min(duration_ms, 5000)
         
-        result = controller.send_chassis_command(0, 0, -speed, duration_ms)
+        result = controller.send_chassis_command(0, 0, speed, duration_ms)
         success = result.get("status") == "success"
         
         return {
@@ -936,6 +1050,63 @@ def grab_object(gripper_angle: float = 0.0) -> dict:
             
     except Exception as e:
         logger.error(f"抓取动作失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool
+def hold_object() -> dict:
+    """执行"帮我拿着这个"动作序列
+    
+    这是一个复合动作，用于响应用户"帮我拿着这个"的指令：
+    1. 机械臂复位到初始姿态
+    2. 打开夹爪准备接收物体
+    3. 等待2秒让用户放置物体
+    4. 关闭夹爪抓住物体
+    
+    Returns:
+        动作执行结果
+    """
+    try:
+        logger.info("执行'帮我拿着这个'动作序列")
+        
+        # 步骤1：机械臂复位
+        reset_result = reset_arm()
+        if reset_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"机械臂复位失败: {reset_result.get('message', '未知错误')}"
+            }
+        
+        # 短暂等待机械臂到达位置
+        time.sleep(0.5)
+        
+        # 步骤2：打开夹爪
+        release_result = release_object(gripper_angle=90.0)
+        if release_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"打开夹爪失败: {release_result.get('message', '未知错误')}"
+            }
+        
+        # 步骤3：等待2秒，让用户放置物体
+        logger.info("等待用户放置物体...")
+        time.sleep(2.0)
+        
+        # 步骤4：关闭夹爪抓住物体
+        grab_result = grab_object(gripper_angle=0.0)
+        if grab_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"关闭夹爪失败: {grab_result.get('message', '未知错误')}"
+            }
+        
+        return {
+            "status": "success",
+            "message": "已帮您拿好物体"
+        }
+        
+    except Exception as e:
+        logger.error(f"执行'帮我拿着这个'动作失败: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -1487,6 +1658,275 @@ def what_does_robot_see(prompt: str = "请描述这张图片的内容") -> dict:
         }
 
 
+@mcp.tool
+def start_human_follow() -> dict:
+    """启动人体跟随功能
+    
+    启动人体跟随应用，机器人会自动检测并跟随画面中的人体。
+    当用户说"跟着我"、"来跟我走"、"启动跟随"等指令时调用此工具。
+    
+    Returns:
+        启动结果
+    """
+    global _human_follow_process, _human_follow_preload_result
+    
+    try:
+        # 检查预加载状态
+        if _human_follow_preload_result:
+            if _human_follow_preload_result['status'] == 'error':
+                logger.warning(f"人体跟随模型预加载失败，启动可能较慢: {_human_follow_preload_result['message']}")
+            else:
+                logger.info("人体跟随模型已预加载，启动会更快")
+        
+        # 检查是否已经在运行
+        if _human_follow_process is not None:
+            # 检查进程是否还在运行
+            if _human_follow_process.poll() is None:
+                return {
+                    "status": "success",
+                    "message": "人体跟随已经在运行中"
+                }
+            else:
+                # 进程已结束，清理
+                _human_follow_process = None
+        
+        # 构建启动命令
+        # 获取项目根目录（software/src 的父目录）
+        current_file = os.path.abspath(__file__)
+        # current_file: .../software/src/applications/speech_interaction/mcp_server.py
+        software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+        src_dir = os.path.join(software_dir, "src")
+        
+        # 使用 sys.executable 确保使用相同的 Python 解释器
+        cmd = [
+            sys.executable,
+            "-m",
+            "applications.human_follow"
+        ]
+        
+        logger.info(f"启动人体跟随: {' '.join(cmd)}")
+        logger.info(f"工作目录: {src_dir}")
+        
+        # 启动进程
+        # 使用 creationflags 在 Windows 上不显示控制台窗口
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        
+        # 将输出重定向到文件，避免PIPE导致阻塞
+        log_dir = os.path.join(software_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        stdout_file = open(os.path.join(log_dir, "human_follow_stdout.log"), "w")
+        stderr_file = open(os.path.join(log_dir, "human_follow_stderr.log"), "w")
+        
+        # 存储文件句柄用于后续关闭
+        global _human_follow_log_files
+        _human_follow_log_files = [stdout_file, stderr_file]
+        
+        _human_follow_process = subprocess.Popen(
+            cmd,
+            cwd=src_dir,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **kwargs
+        )
+        
+        # 关闭父进程中的文件句柄（子进程已经继承了）
+        stdout_file.close()
+        stderr_file.close()
+        
+        # 等待更长时间让进程初始化（模型加载需要时间）
+        logger.info("等待人体跟随进程初始化...")
+        time.sleep(3.0)
+        
+        # 检查进程是否仍在运行
+        if _human_follow_process.poll() is not None:
+            # 进程已退出，读取错误信息
+            time.sleep(0.5)  # 等待日志写入文件
+            with open(os.path.join(log_dir, "human_follow_stderr.log"), "r") as f:
+                error_msg = f.read()
+            if not error_msg:
+                with open(os.path.join(log_dir, "human_follow_stdout.log"), "r") as f:
+                    error_msg = f.read()
+            _human_follow_process = None
+            logger.error(f"人体跟随启动失败: {error_msg}")
+            return {
+                "status": "error",
+                "message": f"人体跟随启动失败: {error_msg[:200] if error_msg else '进程异常退出'}"
+            }
+        
+        # 再等待几秒钟让服务完全初始化
+        logger.info("等待服务完全初始化...")
+        time.sleep(2.0)
+        
+        # 再次检查进程状态
+        if _human_follow_process.poll() is not None:
+            time.sleep(0.5)  # 等待日志写入文件
+            with open(os.path.join(log_dir, "human_follow_stderr.log"), "r") as f:
+                error_msg = f.read()
+            if not error_msg:
+                with open(os.path.join(log_dir, "human_follow_stdout.log"), "r") as f:
+                    error_msg = f.read()
+            _human_follow_process = None
+            logger.error(f"人体跟随启动后异常退出: {error_msg[:500]}")
+            return {
+                "status": "error",
+                "message": f"人体跟随启动失败: {error_msg[:200] if error_msg else '进程异常退出'}"
+            }
+        
+        # 读取部分日志输出用于诊断
+        try:
+            with open(os.path.join(log_dir, "human_follow_stdout.log"), "r") as f:
+                recent_logs = f.read()[-500:]  # 最近500字符
+            if "初始化完成" in recent_logs or "人体跟随已启动" in recent_logs:
+                logger.info("人体跟随服务初始化成功")
+            else:
+                logger.warning(f"人体跟随服务可能未完全就绪，最近日志: {recent_logs[-200:]}")
+        except Exception as e:
+            logger.debug(f"读取日志文件失败: {e}")
+        
+        logger.info(f"人体跟随已启动，PID: {_human_follow_process.pid}")
+        return {
+            "status": "success",
+            "message": "人体跟随已启动，我会自动跟随你"
+        }
+        
+    except Exception as e:
+        logger.error(f"启动人体跟随失败: {e}")
+        _human_follow_process = None
+        return {
+            "status": "error",
+            "message": f"启动人体跟随失败: {e}"
+        }
+
+
+@mcp.tool
+def stop_human_follow() -> dict:
+    """停止人体跟随功能
+    
+    停止正在运行的人体跟随应用。
+    当用户说"停止跟随"、"别跟了"、"取消跟随"等指令时调用此工具。
+    
+    Returns:
+        停止结果
+    """
+    global _human_follow_process
+    
+    try:
+        if _human_follow_process is None:
+            return {
+                "status": "success",
+                "message": "人体跟随未在运行"
+            }
+        
+        # 检查进程是否还在运行
+        if _human_follow_process.poll() is not None:
+            _human_follow_process = None
+            return {
+                "status": "success",
+                "message": "人体跟随已结束"
+            }
+        
+        # 终止进程
+        logger.info(f"停止人体跟随，PID: {_human_follow_process.pid}")
+        
+        # 先尝试优雅终止（发送 Ctrl+C 信号）
+        if sys.platform == "win32":
+            _human_follow_process.send_signal(subprocess.signal.CTRL_BREAK_EVENT)
+        else:
+            _human_follow_process.send_signal(subprocess.signal.SIGINT)
+        
+        # 等待进程结束
+        try:
+            _human_follow_process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            # 超时则强制终止
+            logger.warning("人体跟随进程未响应，强制终止")
+            _human_follow_process.terminate()
+            try:
+                _human_follow_process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                _human_follow_process.kill()
+                _human_follow_process.wait()
+        
+        _human_follow_process = None
+        
+        # 清理日志文件句柄
+        global _human_follow_log_files
+        _human_follow_log_files = []
+        
+        return {
+            "status": "success",
+            "message": "人体跟随已停止"
+        }
+        
+    except Exception as e:
+        logger.error(f"停止人体跟随失败: {e}")
+        # 清理状态
+        _human_follow_process = None
+        _human_follow_log_files = []
+        return {
+            "status": "error",
+            "message": f"停止人体跟随失败: {e}"
+        }
+
+
+@mcp.tool
+def get_human_follow_status() -> dict:
+    """获取人体跟随状态
+    
+    检查人体跟随功能是否正在运行，并返回最近的日志信息用于诊断。
+    
+    Returns:
+        人体跟随状态信息
+    """
+    global _human_follow_process
+    
+    try:
+        # 尝试读取最近日志
+        recent_logs = ""
+        try:
+            current_file = os.path.abspath(__file__)
+            software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+            log_dir = os.path.join(software_dir, "logs")
+            stdout_log = os.path.join(log_dir, "human_follow_stdout.log")
+            if os.path.exists(stdout_log):
+                with open(stdout_log, "r") as f:
+                    recent_logs = f.read()[-1000:]  # 最近1000字符
+        except Exception:
+            pass
+        
+        if _human_follow_process is None:
+            return {
+                "status": "success",
+                "data": {"running": False, "recent_logs": recent_logs[-200:]},
+                "message": "人体跟随未启动"
+            }
+        
+        # 检查进程是否还在运行
+        if _human_follow_process.poll() is None:
+            return {
+                "status": "success",
+                "data": {"running": True, "pid": _human_follow_process.pid, "recent_logs": recent_logs[-200:]},
+                "message": "人体跟随正在运行"
+            }
+        else:
+            exit_code = _human_follow_process.poll()
+            _human_follow_process = None
+            return {
+                "status": "success",
+                "data": {"running": False, "exit_code": exit_code, "recent_logs": recent_logs[-500:]},
+                "message": f"人体跟随已结束（退出码: {exit_code}）"
+            }
+            
+    except Exception as e:
+        logger.error(f"获取人体跟随状态失败: {e}")
+        return {
+            "status": "error",
+            "message": f"获取状态失败: {e}"
+        }
+
+
 # ==================== MCP 客户端集成 ====================
 
 class MCPClientWrapper:
@@ -1634,6 +2074,14 @@ class MCPClientWrapper:
             {
                 "type": "function",
                 "function": {
+                    "name": "hold_object",
+                    "description": "执行'帮我拿着这个'复合动作：机械臂复位→打开夹爪→等待2秒→关闭夹爪。当用户说'帮我拿着这个'、'拿一下'等指令时调用",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "reset_arm",
                     "description": "机械臂复位，恢复到配置文件中定义的初始姿态（休息位置）",
                     "parameters": {"type": "object", "properties": {}}
@@ -1716,6 +2164,30 @@ class MCPClientWrapper:
                         }
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_human_follow",
+                    "description": "启动人体跟随功能。当用户说'跟着我'、'来跟我走'、'启动跟随'等指令时调用此工具",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stop_human_follow",
+                    "description": "停止人体跟随功能。当用户说'停止跟随'、'别跟了'、'取消跟随'等指令时调用此工具",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_human_follow_status",
+                    "description": "获取人体跟随功能当前是否正在运行的状态",
+                    "parameters": {"type": "object", "properties": {}}
+                }
             }
         ]
     
@@ -1734,6 +2206,7 @@ class MCPClientWrapper:
             "get_battery_status": get_battery_status,
             "grab_object": grab_object,
             "release_object": release_object,
+            "hold_object": hold_object,
             "reset_arm": reset_arm,
             "what_does_robot_see": what_does_robot_see,
             "raise_arm": raise_arm,
@@ -1743,6 +2216,9 @@ class MCPClientWrapper:
             "rotate_arm_left": rotate_arm_left,
             "rotate_arm_right": rotate_arm_right,
             "move_arm_to_position": move_arm_to_position,
+            "start_human_follow": start_human_follow,
+            "stop_human_follow": stop_human_follow,
+            "get_human_follow_status": get_human_follow_status,
         }
         
         if tool_name in tool_map:

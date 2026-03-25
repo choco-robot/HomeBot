@@ -34,11 +34,20 @@ class FollowController:
     跟随控制器
     
     使用视觉伺服（Visual Servoing）控制算法
+    所有计算基于320x320的归一化坐标空间，与实际分辨率解耦
+    
     目标：保持目标在画面中央，维持固定距离
     """
     
+    # 参考分辨率（YOLO模型输入尺寸）
+    REFERENCE_WIDTH = 320
+    REFERENCE_HEIGHT = 320
+    REFERENCE_AREA = REFERENCE_WIDTH * REFERENCE_HEIGHT
+    
     def __init__(self,
                  target_distance: float = 1.0,      # 目标距离（米）
+                 target_width_ratio: float = 0.25,  # 1米处人体占画面宽度比例
+                 target_height_ratio: float = 1.0,  # 1米处人体占画面高度比例
                  kp_linear: float = 0.001,          # 线速度P系数
                  ki_linear: float = 0.0,            # 线速度I系数
                  kd_linear: float = 0.0,            # 线速度D系数
@@ -47,15 +56,19 @@ class FollowController:
                  kd_angular: float = 0.0,           # 角速度D系数
                  max_linear_speed: float = 0.3,     # 最大线速度 (m/s)
                  max_angular_speed: float = 0.8,    # 最大角速度 (rad/s)
-                 dead_zone_x: int = 50,             # 水平死区（像素）
+                 dead_zone_x: float = 0.15,         # 水平死区（比例值，0.15=15%画面宽度）
                  dead_zone_area: float = 0.1,       # 面积死区（相对值）
-                 frame_width: int = 640,            # 画面宽度
-                 frame_height: int = 480):          # 画面高度
+                 frame_width: int = 640,            # 画面宽度（仅用于显示和日志）
+                 frame_height: int = 480):          # 画面高度（仅用于显示和日志）
         """
         初始化控制器
         
+        注意：所有控制计算基于320x320参考分辨率，与输入的frame_width/height无关
+        
         Args:
             target_distance: 期望保持的目标距离（通过目标面积估算）
+            target_width_ratio: 1米处人体占画面宽度比例（如0.25=25%）
+            target_height_ratio: 1米处人体占画面高度比例（如1.0=100%）
             kp_linear: 线速度比例系数（误差归一化到-1~1）
             ki_linear: 线速度积分系数
             kd_linear: 线速度微分系数
@@ -64,10 +77,10 @@ class FollowController:
             kd_angular: 角速度微分系数
             max_linear_speed: 最大线速度限制
             max_angular_speed: 最大角速度限制
-            dead_zone_x: 水平方向死区（像素），内部会转换为相对值
+            dead_zone_x: 水平方向死区（比例值，如0.15表示15%画面宽度）
             dead_zone_area: 面积死区（相对比例，如0.1表示10%）
-            frame_width: 画面宽度
-            frame_height: 画面高度
+            frame_width: 画面宽度（仅用于显示）
+            frame_height: 画面高度（仅用于显示）
         """
         # PID参数
         self.kp_linear = kp_linear
@@ -81,11 +94,11 @@ class FollowController:
         self.max_linear_speed = max_linear_speed
         self.max_angular_speed = max_angular_speed
         
-        # 死区参数
-        self.dead_zone_x = dead_zone_x
-        self.dead_zone_area = dead_zone_area
+        # 死区参数（比例值）
+        self.dead_zone_x = dead_zone_x  # 水平死区比例（如0.15=15%画面宽度）
+        self.dead_zone_area = dead_zone_area  # 面积死区比例
         
-        # 画面尺寸
+        # 实际画面尺寸（仅用于显示和日志）
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.frame_center_x = frame_width // 2
@@ -93,14 +106,13 @@ class FollowController:
         
         # 目标距离参数（米）
         self.target_distance = target_distance
-        # 根据目标距离计算期望的目标面积
-        # 假设：在 reference_distance（1米）时，reference_area 是参考面积
-        # 目标面积与距离平方成反比
-        reference_distance = 1.0  # 参考距离 1 米
-        # 在 1 米处，假设人体占画面约 50% 宽 × 80% 高（更合理的比例）
-        reference_area = frame_width * 0.5 * frame_height * 0.8
-        # 根据目标距离反推期望面积
-        self.target_area = reference_area * (reference_distance / target_distance) ** 2
+        # 在 1 米处，人体占画面比例（用于计算目标面积）
+        self.reference_width_ratio = target_width_ratio
+        self.reference_height_ratio = target_height_ratio
+        # 计算320x320参考分辨率下的目标面积
+        self.target_area = (self.REFERENCE_WIDTH * self.reference_width_ratio * 
+                           self.REFERENCE_HEIGHT * self.reference_height_ratio *
+                           (1.0 / target_distance) ** 2)
         
         # PID状态
         self.error_x_integral = 0.0
@@ -117,14 +129,32 @@ class FollowController:
         self.is_initialized = False
         
         logger.info(f"FollowController初始化:")
+        logger.info(f"  参考分辨率: {self.REFERENCE_WIDTH}x{self.REFERENCE_HEIGHT}")
         logger.info(f"  目标距离: {target_distance}m")
-        logger.info(f"  参考面积(1m): {reference_area:.0f}px")
-        logger.info(f"  目标面积({target_distance}m): {self.target_area:.0f}px")
+        logger.info(f"  人体占比(1m): 宽{target_width_ratio*100:.0f}% x 高{target_height_ratio*100:.0f}%")
+        logger.info(f"  显示分辨率: {frame_width}x{frame_height}")
+        logger.info(f"  目标面积({target_distance}m@320x320): {self.target_area:.0f}px")
         logger.info(f"  线速度PID: P={kp_linear}, I={ki_linear}, D={kd_linear}")
         logger.info(f"  角速度PID: P={kp_angular}, I={ki_angular}, D={kd_angular}")
-        logger.info(f"  速度限制: linear={max_linear_speed}, angular={max_angular_speed}")
-        dead_zone_x_rel = dead_zone_x / (frame_width / 2) * 100
-        logger.info(f"  死区: x={dead_zone_x}px ({dead_zone_x_rel:.1f}%), area={dead_zone_area*100:.0f}%")
+        logger.info(f"  速度限制: linear=±{max_linear_speed}, angular=±{max_angular_speed}")
+        logger.info(f"  死区: x={dead_zone_x*100:.0f}%, area={dead_zone_area*100:.0f}%")
+    
+    def update_frame_size(self, width: int, height: int):
+        """
+        更新显示用的帧尺寸（不影响控制计算）
+        
+        注意：控制计算基于固定的320x320参考分辨率，此方法仅用于更新显示参数
+        
+        Args:
+            width: 图像宽度
+            height: 图像高度
+        """
+        if self.frame_width != width or self.frame_height != height:
+            self.frame_width = width
+            self.frame_height = height
+            self.frame_center_x = width // 2
+            self.frame_center_y = height // 2
+            logger.debug(f"显示帧尺寸已更新: {width}x{height}")
     
     def reset(self):
         """重置控制器状态"""
@@ -161,12 +191,16 @@ class FollowController:
         
         return output, new_integral
     
-    def compute_velocity(self, target: Target) -> Optional[VelocityCommand]:
+    def compute_velocity(self, target: Target, frame_width: int = None, frame_height: int = None) -> Optional[VelocityCommand]:
         """
         根据目标位置计算跟随速度
         
+        所有计算基于320x320参考分辨率，输入坐标会通过frame_width/height归一化
+        
         Args:
-            target: 跟踪目标
+            target: 跟踪目标（坐标基于实际图像分辨率）
+            frame_width: 实际图像宽度（用于归一化），默认使用self.frame_width
+            frame_height: 实际图像高度（用于归一化），默认使用self.frame_height
             
         Returns:
             VelocityCommand: 速度指令，如果目标无效返回None
@@ -191,17 +225,30 @@ class FollowController:
         # 限制dt避免异常值
         dt = min(dt, 0.1)  # 最大100ms
         
-        # 获取目标信息
+        # 获取实际图像尺寸（用于归一化）
+        actual_width = frame_width or self.frame_width
+        actual_height = frame_height or self.frame_height
+        
+        # 获取目标信息（基于实际分辨率）
         cx, cy = target.center
         area = target.area
         
-        # ========== 水平控制（角速度 vz）==========
-        # 计算水平误差（归一化到 -1.0 ~ 1.0，避免分辨率影响）
-        error_x = (cx - self.frame_center_x) / self.frame_center_x
+        # 将坐标和面积归一化到320x320参考空间
+        # 归一化中心点位置到 [-1, 1] 范围
+        norm_cx = (cx / actual_width - 0.5) * 2  # -1 (最左) ~ 1 (最右)
+        norm_cy = (cy / actual_height - 0.5) * 2  # -1 (最上) ~ 1 (最下)
         
-        # 应用死区（归一化值）
-        dead_zone_norm = self.dead_zone_x / self.frame_center_x
-        if abs(error_x) < dead_zone_norm:
+        # 归一化面积到320x320参考空间
+        # 实际面积 / 实际总面积 * 参考总面积
+        actual_area = actual_width * actual_height
+        norm_area = area / actual_area * self.REFERENCE_AREA
+        
+        # ========== 水平控制（角速度 vz）==========
+        # 使用归一化坐标计算误差（直接使用norm_cx，范围-1~1）
+        error_x = norm_cx
+        
+        # 应用死区（比例值直接比较）
+        if abs(error_x) < self.dead_zone_x:
             error_x = 0.0
         
         # PID计算
@@ -213,17 +260,13 @@ class FollowController:
         
         # 角速度方向：目标在左(error_x负)→需要右转(vz负)才能对准目标
         # 目标在右(error_x正)→需要左转(vz正)才能对准目标
-        # 所以vz与error_x同号
-        vz = vz  # 直接使用PID输出
+        vz = vz
         
         # ========== 距离控制（线速度 vx）==========
-        # 计算面积误差（归一化到 -1.0 ~ 1.0，目标面积 vs 实际面积）
+        # 使用归一化到320x320参考空间的面积计算误差
         # error > 0: 目标太小（距离太远），需要靠近
         # error < 0: 目标太大（距离太近），需要后退
-        if area > 0:
-            error_area = (self.target_area - area) / self.target_area
-        else:
-            error_area = 0.0
+        error_area = (self.target_area - norm_area) / self.target_area
         
         # 应用死区
         if abs(error_area) < self.dead_zone_area:
@@ -238,10 +281,10 @@ class FollowController:
         
         # 线速度直接使用PID输出（已归一化）
         # error_area > 0（目标小/远）→ vx > 0（前进）
-        # error_area < 0（目标大/近）→ 不后退，保持静止
+        # error_area < 0（目标大/近）→ 目标太近时停止前进（但禁止后退）
         
         # ========== 速度限制 ==========
-        # 只限制前进速度，禁止后退（vx >= 0）
+        # 禁止后退（vx >= 0），目标太近时停止前进
         vx = self._clamp(vx, 0.0, self.max_linear_speed)
         vz = self._clamp(vz, -self.max_angular_speed, self.max_angular_speed)
         
@@ -279,7 +322,9 @@ class FollowController:
             "searching": self.is_searching(),
             "error_x_integral": self.error_x_integral,
             "error_area_integral": self.error_area_integral,
-            "target_area": self.target_area,
+            "target_area_ref": self.target_area,  # 基于320x320参考分辨率
+            "reference_resolution": (self.REFERENCE_WIDTH, self.REFERENCE_HEIGHT),
+            "display_resolution": (self.frame_width, self.frame_height),
             "frame_center": (self.frame_center_x, self.frame_center_y)
         }
     

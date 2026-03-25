@@ -15,6 +15,12 @@ setup(
         "ultralytics>=8.3.0",
         "numpy>=1.24.0",
         "filterpy>=1.4.5",
+        "sherpa-onnx>=1.9.0",
+        "sounddevice>=0.4.6",
+        "openai>=1.0.0",
+        "fastmcp>=2.14.0",
+        "websockets>=12.0",
+        "volcengine-python-sdk",
     ],
     include_package_data=True,
 )

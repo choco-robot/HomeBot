@@ -7,14 +7,18 @@ import os
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 
+import logging
+
 # 导入密钥管理模块
 from configs.secrets import get_secrets, Secrets
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CameraConfig:
     """摄像头配置"""
-    device_id: int = 0
+    device_id: int = 1
     width: int = 1920     # 摄像头原始分辨率
     height: int = 1080
     fps: int = 30
@@ -23,7 +27,7 @@ class CameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM19"  # 与底盘共用串口
+    serial_port: str = "COM23"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -53,7 +57,7 @@ class ArmConfig:
         "shoulder": 0,   # J2: 肩关节（自然下垂）
         "elbow": 150,       # J3: 肘关节
         "wrist_flex": 30,   # J4: 腕关节屈伸
-        "wrist_roll": -90,   # J5: 腕关节旋转
+        "wrist_roll": 0,   # J5: 腕关节旋转
         "gripper": 45,     # J6: 夹爪（半开）
     })
 
@@ -62,13 +66,13 @@ class ArmConfig:
 class ChassisConfig:
     """底盘配置 - 从机器人配置文件读取"""
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM19"
+    serial_port: str = "COM23"
     baudrate: int = 1000000
     
     # 舵机ID映射
-    left_front_id: int = 7
-    right_front_id: int = 9
-    rear_id: int = 8
+    left_front_id: int = 9
+    right_front_id: int = 8
+    rear_id: int = 7
     
     # 物理参数
     wheel_radius: float = 0.08      # 轮子半径 (m)
@@ -293,11 +297,13 @@ class HumanFollowConfig:
     
     # 跟随控制配置
     target_distance: float = 1.0              # 目标距离（米）
+    target_width_ratio: float = 0.4          # 1米处人体占画面宽度比例（0.25=25%）
+    target_height_ratio: float = 1.0          # 1米处人体占画面高度比例（1.0=100%）
     kp_linear: float = 0.8                    # 线速度P系数（归一化误差后）
     kp_angular: float = 1.5                   # 角速度P系数（归一化误差后）
     max_linear_speed: float = 0.5             # 最大线速度 (m/s)
     max_angular_speed: float = 2.0            # 最大角速度 (rad/s)
-    dead_zone_x: int = 150                    # 水平死区（像素），约8%画面宽度
+    dead_zone_x: float = 0.15                 # 水平死区（比例值，0.15=15%画面宽度）
     dead_zone_area: float = 0.1               # 面积死区（相对值）
     
     # 安全配置

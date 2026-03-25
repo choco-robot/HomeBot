@@ -21,14 +21,19 @@ HomeBot 游戏手柄控制应用启动入口
     
     机械臂控制 (右手):
         - 右摇杆 ←→    : 基座左右转
-        - 右摇杆 ↑↓    : 前伸 / 后缩
+        - 右摇杆 ↑     : 后缩 (R+)
+        - 右摇杆 ↓     : 前伸 (R-)
         - 十字键 ↑↓    : 上升 / 下降
         - 十字键 ←→    : 手腕旋转
-        - Y键          : 手腕上翻
-        - A键          : 手腕下翻
-        - B键          : 手腕一键水平 (180°-shoulder-elbow)
+        - Y键          : 手腕下翻 (进入手动模式)
+        - A键          : 手腕上翻 (进入手动模式)
+        - B键          : 手腕一键水平 (恢复自动模式)
         - RB键         : 夹爪打开
         - LB键         : 夹爪关闭
+    
+    手腕控制模式:
+        - 自动模式 (AUTO): 移动时自动保持手腕水平
+        - 手动模式 (MANU): 按Y/A后进入，移动时保持当前角度
     
     系统控制:
         - Back键       : 紧急停止
@@ -57,7 +62,16 @@ def main():
         epilog="""
 控制说明:
   底盘: 左摇杆(移动/旋转) + LT/RT(平移)
-  机械臂: 右摇杆(基座/伸缩) + 十字键(升降/腕转) + Y/A/B(腕翻) + RB/LB(夹爪)
+  机械臂: 
+    - 右摇杆 ←→: 基座旋转
+    - 右摇杆 ↑: 后缩 (R+)
+    - 右摇杆 ↓: 前伸 (R-)
+    - 十字键 ↑↓: 抬高/放低 (Z方向)
+    - 十字键 ←→: 手腕旋转
+    - Y: 手腕下翻(进手动模式), A: 手腕上翻(进手动模式)
+    - B: 手腕水平(回自动模式)
+    - RB/LB: 夹爪打开/关闭
+  手腕模式: 自动水平(AUTO)或手动保持(MANU)
   系统: Back(急停) / Start(复位)
         """
     )
@@ -85,12 +99,9 @@ def main():
     config = get_config()
     app = GamepadControlApp(config=config.gamepad, controller_index=args.controller)
     
-    try:
-        app.run()
-    except KeyboardInterrupt:
-        logger.info("用户中断")
-    finally:
-        app.stop()
+    # run() 方法内部已经处理了 KeyboardInterrupt 和 cleanup
+    # 不需要在外部再捕获，避免重复调用 stop
+    app.run()
 
 
 if __name__ == "__main__":
