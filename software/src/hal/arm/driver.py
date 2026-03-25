@@ -93,15 +93,20 @@ class ArmDriver:
 
         self._initialized = False
 
-    def initialize(self) -> bool:
+    def initialize(self, auto_home: bool = False) -> bool:
         """
         初始化机械臂
         - 连接串口（仅独立模式）
         - 设置位置模式
         - 使能扭矩
-        - 移动到初始位置
+        - 读取当前位置
+        - 可选：移动到初始位置
+        
+        Args:
+            auto_home: 是否自动复位到 home 位置，默认 False
+                      设为 True 时启动后会移动到配置的休息位置
         """
-        print("[Arm] Initializing...")
+        print(f"[Arm] Initializing... (auto_home={auto_home})")
 
         # 如果是共享总线模式，检查总线是否已连接
         if self._shared_bus:
@@ -119,11 +124,15 @@ class ArmDriver:
         self.bus.torque_enable()
         time.sleep(0.1)
 
-        # 读取当前位置
+        # 读取当前位置（从实际舵机读取）
         self._read_current_positions()
 
-        # 移动到初始位置
-        self.move_to_home()
+        # 根据配置决定是否移动到初始位置
+        if auto_home:
+            self.move_to_home()
+        else:
+            print(f"[Arm] 保持当前位置，不自动复位")
+            print(f"[Arm] 当前角度: {self._current_angles}")
 
         self._initialized = True
         print(f"[Arm] Initialized with joints: {list(self.config.joint_ids.keys())}")
@@ -376,6 +385,8 @@ class ArmDriver:
 
     def close(self) -> None:
         """关闭机械臂驱动"""
+        if not self._initialized:
+            return  # 已经关闭，避免重复操作
         print("[Arm] Closing...")
         self.move_to_home()
         time.sleep(0.5)

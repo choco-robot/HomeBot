@@ -109,6 +109,16 @@ class sms_sts(protocol_packet_handler):
         moving, scs_comm_result, scs_error = self.read1ByteTxRx(scs_id, SMS_STS_MOVING)
         return moving, scs_comm_result, scs_error
 
+    def ReadVoltage(self, scs_id):
+        """读取舵机电压值 (原始值，需除以10得到实际电压V)"""
+        voltage, scs_comm_result, scs_error = self.read1ByteTxRx(scs_id, SMS_STS_PRESENT_VOLTAGE)
+        return voltage, scs_comm_result, scs_error
+
+    def ReadTemperature(self, scs_id):
+        """读取舵机温度值 (摄氏度)"""
+        temp, scs_comm_result, scs_error = self.read1ByteTxRx(scs_id, SMS_STS_PRESENT_TEMPERATURE)
+        return temp, scs_comm_result, scs_error
+
     def SyncWritePosEx(self, pos_dict):
         self.groupSyncWrite.clearParam()
         for scs_id, params in pos_dict.items():

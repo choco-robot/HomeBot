@@ -1,8 +1,43 @@
 # HomeBot
 
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS%20-orange)](https://github.com/yourusername/homebot)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 HomeBot 是一个面向家庭场景的轻量级机器人项目，采用 **分层模块化架构** 和 **ZeroMQ** 通信总线，支持手机遥控、语音交互、模仿学习、人体跟随等多种应用。
 
 <img width="400" height="500" alt="效果图" src="docs/images/效果图.png" />
+
+## 更新记录
+
+### 2025-03-24 
+
+**新增功能：**
+- **新增语音交互系统**，基于本地语音识别 + 云端大模型 + 语音合成，实现自然语言控制机器人
+  - **语音唤醒与识别**：本地部署 sherpa-onnx 唤醒词检测 + 流式 ASR，支持自定义唤醒词（如"你好小白"）
+  - **大模型对话**：集成 `Doubao-seed-2.0-mini` API，支持多轮对话和工具调用
+  - **MCP 工具集成**：语音可调用底盘运动、机械臂控制、视觉理解等工具
+
+  - **语音合成**：集成火山引擎 TTS，支持 Seed-TTS 2.0 高质量音色
+  - **一键启动**：`python start_speech_service.py` 自动启动 Wakeup+ASR 服务和语音交互应用
+  - 详见 [语音交互使用指南](docs/语音交互使用指南.md) 和 [自定义唤醒词配置指南](docs/自定义唤醒词配置指南.md)
+
+- **新增视觉理解功能**，机器人可"看到并理解"眼前画面
+  - 订阅 VisionService 获取最新图像帧
+  - 调用`Doubao-seed-2.0-mini`模型分析画面内容
+  - 可被语音应用通过 MCP 调用，回答"你看到了什么"等问题
+  - 独立运行：`python -m applications.vision_understanding`
+
+- **新增安全的 API 密钥管理机制**，支持从环境变量或 `.env.local` 文件加载敏感配置 详见 [API 密钥配置指南](docs/API密钥配置指南.md)
+- **重构运动学模块**，将 `ArmKinematics` 类整合至 `/hal/arm/Kinematics.py`，统一网页遥控端和语音交互端的运动学计算
+- 新增**电池状态监测**功能，通过舵机总线读取电源电压
+  - HAL 层新增 `BatteryDriver`，支持电压/温度读取、电量百分比计算
+  - 底盘服务集成电池状态发布（ZeroMQ PUB）
+  - 新增消息类型 `sensor.battery`，包含电压、电量、状态、温度等字段
+  - 支持低电量警告和电压阈值配置
+
+
+
 
 ## 系统架构
 
@@ -21,6 +56,7 @@ homebot/
 │   │   ├── configs/           # 运行时配置 (config.py)
 │   │   ├── applications/      # 应用层
 │   │   │   ├── remote_control/    # 网页遥控端 (含视频流)
+│   │   │   ├── gamepad_control/   # 游戏手柄控制 (Xbox手柄)
 │   │   │   ├── human_follow/      # 人体跟随 (YOLO + 视觉伺服)
 │   │   │   ├── speech_interaction/# 语音交互
 │   │   │   └── imitation_learning/# 模仿学习
@@ -31,6 +67,7 @@ homebot/
 │   │   ├── hal/               # 硬件抽象层
 │   │   │   ├── camera/        # 摄像头驱动
 │   │   │   ├── chassis/       # 底盘驱动
+│   │   │   ├── gamepad/       # Xbox手柄驱动
 │   │   │   └── ftservo_driver.py  # 飞特舵机底层驱动
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
@@ -50,6 +87,7 @@ homebot/
 - **纯 Python 实现**，轻松跨平台（Windows、Linux、Mac、树莓派）
 - **ZeroMQ 通信总线**，低延迟，低资源消耗
 - **网页遥控端**，支持手机/平板/PC，实时视频流显示
+- **游戏手柄控制**，Xbox 手柄同时控制底盘和机械臂
 - **人体跟随**，基于 YOLO26 的视觉伺服自动跟随
 - **紧急停止锁定**，触发后需手动归位解锁，确保安全
 - **一键启动脚本**，自动检查端口占用，启动所有服务
@@ -143,7 +181,30 @@ http://<robot-ip>:5000
 - **紧急停止按钮**（红色，触发后锁定底盘）
 - **归位按钮**（蓝色，解锁紧急停止）
 
-### 控制方式2：AI 助手控制（Picoclaw）
+### 控制方式2：游戏手柄控制
+
+使用 Xbox 手柄同时控制底盘和机械臂：
+
+```bash
+# 1. 启动底盘服务
+cd software/src
+python -m services.motion_service.chassis_service
+
+# 2. 启动机械臂服务
+python -m services.motion_service.arm_service
+
+# 3. 启动游戏手柄控制
+python -m applications.gamepad_control
+```
+
+**控制映射**：
+- **底盘**：左摇杆（移动/旋转）+ LT/RT（平移）
+- **机械臂**：右摇杆（基座/伸缩）+ 十字键（升降/腕转）+ Y/A/B（腕翻）+ RB/LB（夹爪）
+- **系统**：Back（急停）/ Start（复位）
+
+详细使用说明 👉 [游戏手柄控制使用指南](docs/游戏手柄控制使用指南.md)
+
+### 控制方式3：AI 助手控制（Picoclaw）
 
 通过 [Picoclaw（小龙虾）](docs/用Picoclaw小龙虾控制HomeBot.md) AI 助手实现自然语言控制：
 
@@ -236,6 +297,9 @@ class HumanFollowConfig:
 # 底盘服务
 python -m services.motion_service.chassis_service [--port COM3]
 
+# 机械臂服务
+python -m services.motion_service.arm_service
+
 # 视觉服务  
 python -m services.vision_service [--display]
 
@@ -244,6 +308,9 @@ python -m applications.remote_control [--host 0.0.0.0] [--port 5000]
 
 # 人体跟随
 python -m applications.human_follow [--display]
+
+# 游戏手柄控制
+python -m applications.gamepad_control [--controller 0] [--verbose]
 ```
 
 ### 订阅图像流
@@ -279,6 +346,7 @@ sub.read_loop(callback=process_frame)
 ## 扩展
 
 - **AI 助手控制** - 通过 [Picoclaw](docs/用Picoclaw小龙虾控制HomeBot.md) 用自然语言控制机器人
+- **游戏手柄** - 使用 Xbox 手柄直接控制，详见 [游戏手柄控制使用指南](docs/游戏手柄控制使用指南.md)
 
 可在后续迭代中添加：
 - **MQTT 桥接** - 云端远程控制
@@ -289,4 +357,4 @@ sub.read_loop(callback=process_frame)
 
 ---
 
-*Last updated: 2026-03-10*
+*Last updated: 2026-03-17*

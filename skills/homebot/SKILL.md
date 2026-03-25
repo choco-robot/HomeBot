@@ -1,7 +1,6 @@
 ---
 name: homebot
 description: HomeBot 完整机器人控制器技能，集成了机器人底盘运动控制、机械臂关节控制、摄像头视觉画面捕获三个子功能，全部基于 ZeroMQ 局域网通信协议，完美匹配 HomeBot 项目服务端架构。
-version: 1.0.0
 metadata:
   openclaw:
     requires:
@@ -19,9 +18,11 @@ metadata:
 HomeBot 完整机器人控制器技能，集成三大功能模块：
 - 🚗 **底盘控制**：前进/后退/转向，精确距离角度控制
 - 🦾 **机械臂控制**：6自由度关节控制，夹爪控制，回原点
-- 👁️ **视觉查询**：一键捕获机器人摄像头最新画面，回答"机器人看到了什么"
+- 👁️ **视觉查询**：一键捕获机器人摄像头画面，**自动调用火山引擎 LLM 分析图像内容**
 
 全部基于 ZeroMQ REQ-REP / PUB 局域网通信协议，完美匹配 HomeBot 项目服务端架构。
+
+> **🆕 新增功能**：视觉查询现已集成 [volcengine-vision](../volcengine-vision/) 技能，捕获图像后可自动调用火山引擎视觉大模型进行内容理解和描述。
 
 ## 模块说明
 
@@ -196,17 +197,48 @@ arm.close()
 
 ## 3. 视觉查询 (Vision)
 
-一键捕获机器人摄像头最新画面，工作流：获取最新帧 → 保存图片 → 返回文件路径。当用户问"机器人看到了什么"自动触发。
+一键捕获机器人摄像头最新画面，**集成火山引擎 LLM 自动分析图像内容**。工作流：获取最新帧 → 保存图片 → **调用火山引擎视觉模型分析** → 返回图片路径和分析结果。
 
-### 一键完整工作流
+### 一键完整工作流（捕获 + 分析）
 
 ```bash
+# 捕获图像并自动分析
 python skills/homebot/scripts/what_does_robot_see_workflow.py
+
+# 仅捕获图像，不进行分析
+python skills/homebot/scripts/what_does_robot_see_workflow.py --no-analysis
+
+# 使用自定义提示词分析
+python skills/homebot/scripts/what_does_robot_see_workflow.py --prompt "图中有几个人？他们在做什么？"
+
+# 指定不同模型
+python skills/homebot/scripts/what_does_robot_see_workflow.py --model doubao-vision-pro-250226
 ```
 
-输出：保存的JPEG图像文件路径（带时间戳命名）
+**输出示例：**
+```
+[INFO] 正在连接机器人 192.168.0.12:5560...
+[OK] 图像捕获成功
+[INFO] 保存位置: C:\...\homebot_capture_20260319_154530.jpg
+[INFO] 文件大小: 45231 字节
+[INFO] 正在使用火山引擎分析图片...
+[INFO] 模型: doubao-vision-lite-250225
 
-### 视频订阅工具
+==================================================
+图像路径: C:\...\homebot_capture_20260319_154530.jpg
+
+==================================================
+视觉分析结果:
+==================================================
+这张图片展示了一个室内场景，主要物体包括...
+
+==================================================
+
+--- RESULT ---
+C:\...\homebot_capture_20260319_154530.jpg
+```
+
+### 视频订阅工具（仅捕获）
 
 ```bash
 # 获取单张图像
@@ -216,23 +248,29 @@ python skills/homebot/scripts/video_subscriber.py --ip 192.168.0.12 --port 5560
 python skills/homebot/scripts/video_subscriber.py --ip 192.168.0.12 --port 5560 --keep-receiving --output-dir ./frames
 ```
 
-### 工作流集成
-
-Picoclaw 自动触发：
-- 用户提问："机器人看到了什么" / "what does the robot see"
-- 自动执行捕获工作流
-- 直接发送图片给用户
-
 ### Python API
 
 ```python
 from what_does_robot_see_workflow import WhatDoesRobotSeeWorkflow
 
-workflow = WhatDoesRobotSeeWorkflow()
+# 完整工作流：捕获 + 分析
+workflow = WhatDoesRobotSeeWorkflow(
+    enable_analysis=True,
+    prompt="描述图片中的主要物体",
+    model="doubao-vision-lite-250225"
+)
+
+result = workflow.capture_and_analyze()
+if result["success"]:
+    print(f"图像路径: {result['image_path']}")
+    print(f"分析结果: {result['analysis']}")
+
+# 仅捕获图像
+workflow = WhatDoesRobotSeeWorkflow(enable_analysis=False)
 image_path = workflow.capture()
 
-if image_path:
-    print(f"Image saved to: {image_path}")
+# 单独分析已有图片
+analysis = workflow.analyze("path/to/image.jpg")
 ```
 
 ---
@@ -261,7 +299,56 @@ class ZMQConfig:
 - Python 3.x
 - pyzmq >= 25.0.0
 - Pillow >= 9.0.0
+- volcenginesdkarkruntime >= 1.0.0（视觉分析功能需要）
 
 ## 示例
 
 - `scripts/dance.py` - 机械臂舞蹈动作示例
+
+
+## MCP 服务器支持 🚀
+
+本技能现已内置 **Model Context Protocol (MCP)** 服务器，可直接配置给 Picoclaw/LLM 调用，让 AI 自动操控机器人！
+
+### 功能封装
+
+MCP 服务器封装了以下 9 个工具：
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `chassis_forward` | 机器人前进指定距离（厘米） |
+| `chassis_backward` | 机器人后退指定距离（厘米） |
+| `chassis_left` | 机器人左转指定角度（度数） |
+| `chassis_right` | 机器人右转指定角度（度数） |
+| `chassis_stop` | 紧急停止机器人底盘 |
+| `arm_move_joint` | 移动机械臂指定关节到目标角度 |
+| `arm_get_positions` | 获取机械臂所有关节当前位置 |
+| `arm_stop` | 停止机械臂所有运动 |
+| `robot_what_does_robot_see` | 捕获机器人画面并 AI 分析场景 |
+
+### MCP 配置方法
+
+在 Picoclaw 主配置文件 `config.yaml` 中添加：
+
+```yaml
+mcp:
+  servers:
+    homebot:
+      command: "python"
+      args: ["C:/Users/Administrator/.picoclaw/workspace/skills/homebot/mcp_homebot_server.py"]
+```
+
+### 依赖安装
+
+安装 MCP 依赖：
+```bash
+pip install mcp
+```
+
+### 使用效果
+
+配置完成后，LLM 即可**直接调用所有机器人控制工具**，自动完成：
+- 根据自然语言指令控制机器人移动
+- 调整机械臂位置
+- 让机器人自动观察环境并报告场景
+

@@ -235,6 +235,8 @@ class ChassisDriver:
 
     def close(self) -> None:
         """关闭底盘驱动"""
+        if not self._initialized:
+            return  # 已经关闭，避免重复操作
         self.stop()
         time.sleep(0.1)
         self.bus.torque_disable()

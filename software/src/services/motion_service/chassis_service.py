@@ -13,7 +13,9 @@ import zmq
 from .chassis_arbiter import ControlCommand, ArbiterResponse, PRIORITIES
 from .servo_bus_manager import ServoBusManager, get_servo_bus
 from hal.chassis.driver import ChassisDriver
-from configs import get_config, ChassisConfig
+from hal.battery.driver import BatteryDriver
+from common.messages import MessageType, serialize
+from configs import get_config, ChassisConfig, BatteryConfig
 
 
 @dataclass
@@ -77,30 +79,53 @@ class ChassisService:
     """
     底盘服务 - 合并仲裁器和执行端
     从 configs/config.py 读取硬件配置
+    集成电池状态监测和发布
     """
     
     TIMEOUT_MS = 1000
     
-    def __init__(self, rep_addr: Optional[str] = None, use_shared_bus: bool = False):
+    def __init__(self, 
+                 rep_addr: Optional[str] = None, 
+                 pub_addr: Optional[str] = None,
+                 use_shared_bus: bool = False):
         """
         初始化底盘服务
         
         Args:
             rep_addr: ZeroMQ REP地址，默认从配置文件读取
+            pub_addr: 电池状态PUB地址，默认从配置文件读取
             use_shared_bus: 是否使用共享串口总线（与机械臂共用）
         """
         # 从配置文件读取地址
         config = get_config().chassis
+        battery_config = get_config().battery
         self.rep_addr = rep_addr or config.service_addr
+        self.pub_addr = pub_addr or battery_config.pub_addr
+        
+        # 电池配置
+        self._battery_config = battery_config
+        self._battery_publish_interval = battery_config.publish_interval
         
         # 创建真实底盘控制器
+        self._servo_bus = None
         if use_shared_bus:
             # 使用共享总线
-            bus = get_servo_bus()
-            self.chassis = RealChassisController(config, bus=bus)
+            self._servo_bus = get_servo_bus()
+            self.chassis = RealChassisController(config, bus=self._servo_bus)
         else:
-            # 独立模式
+            # 独立模式 - 暂时不创建，初始化时获取bus
             self.chassis = RealChassisController(config)
+            self._servo_bus = self.chassis.driver.bus  # 获取底盘的舵机总线用于电池读取
+        
+        # 创建电池驱动
+        self.battery = BatteryDriver(
+            servo_bus=self._servo_bus,
+            servo_ids=battery_config.servo_ids,
+            full_voltage=battery_config.full_voltage,
+            low_voltage=battery_config.low_voltage,
+            critical_voltage=battery_config.critical_voltage,
+            min_voltage=battery_config.min_voltage
+        )
         
         # 控制权状态
         self._current_owner: Optional[str] = None
@@ -113,9 +138,14 @@ class ChassisService:
         # 紧急停止锁定状态 - 一旦触发，必须通过归位解除
         self._emergency_locked: bool = False
         
+        # 电池状态发布
+        self._last_battery_publish_time: float = 0.0
+        self._last_battery_state = None
+        
         self._lock = Lock()
         self._context: Optional[zmq.Context] = None
         self._rep_socket: Optional[zmq.Socket] = None
+        self._pub_socket: Optional[zmq.Socket] = None
         self._running = False
         
     def _check_timeout(self) -> None:
@@ -130,6 +160,59 @@ class ChassisService:
             self._current_priority = 0
             self._last_vx = self._last_vy = self._last_vz = 0.0
             self.chassis.stop()
+    
+    def _publish_battery_state(self, force: bool = False) -> None:
+        """
+        发布电池状态
+        
+        Args:
+            force: 是否强制发布（忽略时间间隔）
+        """
+        current_time = time.time()
+        
+        # 检查是否需要发布（根据时间间隔）
+        if not force:
+            elapsed = current_time - self._last_battery_publish_time
+            if elapsed < self._battery_publish_interval:
+                return
+        
+        # 读取电池状态
+        battery_state = self.battery.read_state()
+        self._last_battery_state = battery_state
+        
+        if battery_state.is_valid and self._pub_socket:
+            # 构建消息
+            msg_data = {
+                "voltage": round(battery_state.voltage, 2),
+                "percentage": round(battery_state.percentage, 1),
+                "status": battery_state.status.value,
+                "temperature": battery_state.temperature,
+                "servo_id": battery_state.servo_id
+            }
+            
+            message = serialize(
+                msg_type=MessageType.BATTERY_STATE,
+                data=msg_data,
+                timestamp=current_time
+            )
+            
+            try:
+                self._pub_socket.send_json(message, flags=zmq.NOBLOCK)
+                self._last_battery_publish_time = current_time
+                
+                # 只在状态变化或低电量时打印日志
+                if (battery_state.status.value in ["low", "critical"] or force):
+                    print(f"[CHASSIS_SVC] [BATTERY] {battery_state.voltage:.1f}V "
+                          f"({battery_state.percentage:.0f}%) - {battery_state.status.value}")
+            except zmq.Again:
+                # 发送缓冲区满，忽略
+                pass
+            except Exception as e:
+                print(f"[CHASSIS_SVC] 电池状态发布失败: {e}")
+        
+        # 低电量警告
+        if battery_state.is_valid and self.battery.is_critical_battery():
+            print(f"[CHASSIS_SVC] [WARNING] 电池电量严重不足！请立即充电！")
     
     def _arbitrate(self, cmd: ControlCommand) -> ArbiterResponse:
         """仲裁核心逻辑"""
@@ -251,25 +334,43 @@ class ChassisService:
         
         # 从配置读取的信息
         config = get_config().chassis
+        battery_config = get_config().battery
         print(f"[配置] 串口: {config.serial_port}")
         print(f"[配置] 波特率: {config.baudrate}")
         print(f"[配置] 最大线速度: {config.max_linear_speed} m/s")
         print(f"[配置] 服务地址: {self.rep_addr}")
+        print(f"[配置] 电池发布地址: {self.pub_addr}")
+        print(f"[配置] 电池发布间隔: {self._battery_publish_interval}s")
         
         # 初始化底盘硬件
         if not self.chassis.initialize():
             print("[CHASSIS_SVC] 底盘硬件初始化失败，退出")
             return
         
+        # 更新电池驱动的舵机总线引用（如果之前是独立模式，现在才获得bus）
+        if self._servo_bus is None:
+            self._servo_bus = self.chassis.driver.bus
+            self.battery.set_servo_bus(self._servo_bus)
+        
         # 启动ZeroMQ
         self._context = zmq.Context()
+        
+        # REP socket用于接收控制命令
         self._rep_socket = self._context.socket(zmq.REP)
         self._rep_socket.setsockopt(zmq.LINGER, 0)
         self._rep_socket.bind(self.rep_addr)
         
+        # PUB socket用于发布电池状态
+        self._pub_socket = self._context.socket(zmq.PUB)
+        self._pub_socket.setsockopt(zmq.LINGER, 0)
+        self._pub_socket.bind(self.pub_addr)
+        
         self._running = True
         print("[CHASSIS_SVC] 底盘服务已启动，等待控制源连接...")
         print("=" * 60)
+        
+        # 发布一次初始电池状态
+        self._publish_battery_state(force=True)
         
         try:
             while self._running:
@@ -291,6 +392,7 @@ class ChassisService:
                 except zmq.Again:
                     with self._lock:
                         self._check_timeout()
+                        self._publish_battery_state()
                     time.sleep(0.001)
                     continue
                     
@@ -301,14 +403,21 @@ class ChassisService:
     
     def stop(self) -> None:
         """停止底盘服务"""
-        self._running = False
-        self.chassis.stop()
-        self.chassis.close()
-        if self._rep_socket:
-            self._rep_socket.close()
-        if self._context:
-            self._context.term()
-        print("[CHASSIS_SVC] 已关闭")
+        if not getattr(self, '_stopped', False):
+            self._stopped = True
+            self._running = False
+            self.chassis.stop()
+            self.chassis.close()
+            if self._rep_socket:
+                self._rep_socket.close()
+                self._rep_socket = None
+            if self._pub_socket:
+                self._pub_socket.close()
+                self._pub_socket = None
+            if self._context:
+                self._context.term()
+                self._context = None
+            print("[CHASSIS_SVC] 已关闭")
 
 
 def main():
@@ -317,7 +426,8 @@ def main():
     
     parser = argparse.ArgumentParser(description='HomeBot 底盘服务')
     parser.add_argument('--port', default=None, help='覆盖配置文件的串口')
-    parser.add_argument('--addr', default=None, help='覆盖配置文件的ZeroMQ地址')
+    parser.add_argument('--addr', default=None, help='覆盖配置文件的ZeroMQ REP地址')
+    parser.add_argument('--battery-addr', default=None, help='覆盖配置文件的电池状态PUB地址')
     parser.add_argument('--shared-bus', action='store_true', help='使用共享串口总线（与机械臂共用）')
     
     args = parser.parse_args()
@@ -328,8 +438,13 @@ def main():
         print(f"[命令行] 覆盖串口为: {args.port}")
     
     rep_addr = args.addr or get_config().chassis.service_addr
+    battery_addr = args.battery_addr or get_config().battery.pub_addr
     
-    service = ChassisService(rep_addr=rep_addr, use_shared_bus=args.shared_bus)
+    service = ChassisService(
+        rep_addr=rep_addr, 
+        pub_addr=battery_addr,
+        use_shared_bus=args.shared_bus
+    )
     service.start()
 
 

@@ -20,22 +20,32 @@ DEFAULT_SPEED = 0.3       # m/s
 DEFAULT_ANGULAR_SPEED = 0.5  # rad/s
 
 
-class HomeBotController:
+class HomeBotChassisController:
     """HomeBot机器人控制器"""
     
-    def __init__(self, ip: str = ROBOT_IP, port: int = ROBOT_PORT):
-        self.ip = ip
-        self.port = port
+    def __init__(self, service_addr: str = None, ip: str = ROBOT_IP, port: int = ROBOT_PORT):
+        """
+        初始化底盘控制器
+        
+        Args:
+            service_addr: ZeroMQ地址 (例如 tcp://192.168.1.13:5556)
+            ip: 机器人IP (当service_addr为None时使用)
+            port: 机器人端口 (当service_addr为None时使用)
+        """
+        if service_addr is None:
+            service_addr = f"tcp://{ip}:{port}"
+        self.service_addr = service_addr
         self.context: Optional[zmq.Context] = None
         self.socket: Optional[zmq.Socket] = None
         self.connected = False
+        self.connect()
     
     def connect(self) -> bool:
         """连接到机器人"""
         try:
             self.context = zmq.Context()
             self.socket = self.context.socket(zmq.REQ)
-            self.socket.connect(f"tcp://{self.ip}:{self.port}")
+            self.socket.connect(self.service_addr)
             self.connected = True
             return True
         except Exception as e:
@@ -237,7 +247,7 @@ def main():
         sys.exit(1)
     
     command = sys.argv[1]
-    bot = HomeBotController()
+    bot = HomeBotChassisController()
     
     if not bot.connect():
         print("Failed to connect to robot")

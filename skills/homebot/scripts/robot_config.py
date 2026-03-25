@@ -7,6 +7,8 @@
 ROBOT_IP = "192.168.1.13"
 
 # 视频流ZeroMQ PUB端口 - 默认5560
+CHASSIS_PORT = 5556
+ARM_PORT = 5557
 VIDEO_PORT = 5560
 
 # 捕获超时时间（秒）

@@ -70,6 +70,7 @@ class ArmCommand:
     source: str                     # 控制源
     priority: int                   # 优先级
     timestamp: float                # 时间戳
+    query: bool = False             # True 表示仅查询状态，不执行运动
 
 
 @dataclass
@@ -145,8 +146,41 @@ class ArmService:
             self._current_owner = None
             self._current_priority = 0
     
+    def _get_current_joint_states(self) -> Dict[str, float]:
+        """获取当前关节状态"""
+        if not self.arm or not self.arm._initialized:
+            return {}
+        
+        joint_states = {}
+        for joint_name, servo_id in self.arm.config.joint_ids.items():
+            try:
+                # 读取当前位置
+                pos = self.arm.bus.read_position(servo_id)
+                if pos is not None:
+                    angle = self.arm._pos_to_angle(pos)
+                    joint_states[joint_name] = angle
+                else:
+                    # 读取失败，使用缓存值
+                    joint_states[joint_name] = self.arm._current_angles.get(joint_name, 0)
+            except Exception as e:
+                # 读取失败，使用缓存值
+                joint_states[joint_name] = self.arm._current_angles.get(joint_name, 0)
+        
+        return joint_states
+    
     def _arbitrate(self, cmd: ArmCommand) -> ArmResponse:
         """仲裁核心逻辑 - 优化版本，不读取关节状态以减少延迟"""
+        # 处理查询请求（只读关节状态，不执行运动）
+        if cmd.query:
+            joint_states = self._get_current_joint_states()
+            return ArmResponse(
+                success=True,
+                message="查询成功",
+                current_owner=self._current_owner or "none",
+                current_priority=self._current_priority,
+                joint_states=joint_states
+            )
+        
         with self._lock:
             self._check_timeout()
             
@@ -252,6 +286,8 @@ class ArmService:
             joint_angles = {}
             joints_data = data.get("joints", None)
             
+            query = data.get("query", False)
+            
             if joints_data is not None:
                 if isinstance(joints_data, list):
                     # 数组格式，按索引映射到关节名
@@ -259,8 +295,12 @@ class ArmService:
                         if i in self.JOINT_NAMES:
                             joint_angles[self.JOINT_NAMES[i]] = float(angle)
                 elif isinstance(joints_data, dict):
-                    if joints_data == {}:
+                    if joints_data == {} and not query:
+                        # 空字典且非查询模式 = 移动到 home 位置
                         joint_angles = self._arm_config.home_position
+                    elif joints_data == {} and query:
+                        # 空字典且查询模式 = 只查询状态
+                        joint_angles = {}
                     else:
                         # 字典格式，直接使用
                         joint_angles = {k: float(v) for k, v in joints_data.items()}
@@ -283,7 +323,8 @@ class ArmService:
                 speed=speed,
                 source=source,
                 priority=priority,
-                timestamp=time.time()
+                timestamp=time.time(),
+                query=query
             )
         except (KeyError, ValueError, TypeError) as e:
             print(f"[ARM_SVC] 解析请求失败: {e}, data={data}")
@@ -300,8 +341,8 @@ class ArmService:
             self._bus = get_servo_bus()
             self.arm = ArmDriver(self._arm_config, bus=self._bus)
         
-        # 初始化机械臂硬件（使用已连接的共享总线）
-        if not self.arm.initialize():
+        # 初始化机械臂硬件（使用已连接的共享总线，默认不复位）
+        if not self.arm.initialize(auto_home=False):
             print("[ARM_SVC] 机械臂硬件初始化失败，退出")
             return
         
@@ -346,13 +387,17 @@ class ArmService:
     
     def stop(self) -> None:
         """停止机械臂服务"""
-        self._running = False
-        # 注意：不关闭共享总线，由底盘服务或主程序管理
-        if self._rep_socket:
-            self._rep_socket.close()
-        if self._context:
-            self._context.term()
-        print("[ARM_SVC] 已关闭")
+        if not getattr(self, '_stopped', False):
+            self._stopped = True
+            self._running = False
+            # 注意：不关闭共享总线，由底盘服务或主程序管理
+            if self._rep_socket:
+                self._rep_socket.close()
+                self._rep_socket = None
+            if self._context:
+                self._context.term()
+                self._context = None
+            print("[ARM_SVC] 已关闭")
 
 
 def main():

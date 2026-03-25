@@ -55,6 +55,14 @@ Thumbs.db
 # config files
 configs/*.json
 
+# API密钥和敏感配置（永远不要提交！）
+.env.local
+.env.production
+.env.development
+secrets.json
+*.key
+*.pem
+
 # logs
 *.log
 
@@ -76,5 +84,6 @@ configs/*.json
 *.onnx
 *.pt
 *.pth
+*.phone
 
 *.stp

@@ -1,2 +1,4 @@
 pyzmq>=25.0.0
 Pillow>=9.0.0
+volcengine-python-sdk>=1.0.0
+mcp>=1.0.0
