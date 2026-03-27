@@ -1,2 +1,15 @@
+# 核心依赖
 pyzmq>=25.0.0
 Pillow>=9.0.0
+<<<<<<< HEAD
+=======
+
+# 视觉分析功能（可选）
+volcenginesdkarkruntime>=1.0.0
+
+# MCP 服务器支持（可选）
+mcp>=1.0.0
+
+# 环境变量管理（可选，用于从 .env 文件加载配置）
+python-dotenv>=1.0.0
+>>>>>>> f737069 (homebot-skill更新)
