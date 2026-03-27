@@ -138,6 +138,11 @@ class ZMQClient:
         print("[Arm] 已断开连接")
 
 
+# 导入运动学模块
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from hal.arm.Kinematics import ArmKinematics
+
+
 class ArmClient:
     """
     机械臂ZeroMQ客户端 - 连接ArmService
@@ -157,9 +162,13 @@ class ArmClient:
         config = get_config()
         self._arm_config = config.arm
         
-        # 机械臂连杆长度（mm）
-        self.L1 = self._arm_config.upper_arm_length  # 大臂
-        self.L2 = self._arm_config.forearm_length    # 小臂
+        # 初始化运动学计算器（从配置读取连杆长度）
+        self._kinematics = ArmKinematics(
+            L1=self._arm_config.upper_arm_length,
+            L2=self._arm_config.forearm_length
+        )
+        self.L1 = self._kinematics.L1
+        self.L2 = self._kinematics.L2
         
         # 当前关节角度状态 - 与复位位置(rest_position)保持一致
         rest_pos = self._arm_config.rest_position
@@ -172,13 +181,10 @@ class ArmClient:
             "gripper": rest_pos["gripper"]
         }
         # 当前末端位置 (r, z) - 通过正运动学计算得出
-        # r = L1*cos(shoulder) + L2*cos(elbow)
-        # z = L1*sin(shoulder) + L2*sin(elbow)
-        import math
-        shoulder_rad = math.radians(self._current_angles["shoulder"])
-        elbow_rad = math.radians(self._current_angles["elbow"])
-        r = self.L1 * math.cos(shoulder_rad) + self.L2 * math.cos(elbow_rad)
-        z = self.L1 * math.sin(shoulder_rad) + self.L2 * math.sin(elbow_rad)
+        r, z = self._kinematics.forward_kinematics(
+            self._current_angles["shoulder"],
+            self._current_angles["elbow"]
+        )
         self._current_position = {"r": round(r, 1), "z": round(z, 1)}
         # 关节限制（度）
         self._joint_limits = self._arm_config.joint_limits
@@ -330,14 +336,10 @@ class ArmClient:
     
     def _update_forward_kinematics(self):
         """根据当前关节角度计算正运动学，更新末端位置"""
-        import math
-        shoulder_rad = math.radians(self._current_angles["shoulder"])
-        elbow_abs_rad = math.radians(self._current_angles["shoulder"] + self._current_angles["elbow"])
-        
-        # 计算末端位置
-        r = self.L1 * math.cos(shoulder_rad) + self.L2 * math.cos(elbow_abs_rad)
-        z = self.L1 * math.sin(shoulder_rad) + self.L2 * math.sin(elbow_abs_rad)
-        
+        r, z = self._kinematics.forward_kinematics(
+            self._current_angles["shoulder"],
+            self._current_angles["elbow"]
+        )
         self._current_position["r"] = r
         self._current_position["z"] = z
         return r, z
@@ -348,36 +350,7 @@ class ArmClient:
         输入: r(水平距离), z(高度)
         返回: (shoulder角度, elbow角度) 或 None（无解）
         """
-        import math
-        
-        dist_sq = r**2 + z**2
-        dist = math.sqrt(dist_sq)
-        
-        # 工作空间检查
-        if dist > self.L1 + self.L2:
-            return None
-        if dist < abs(self.L1 - self.L2):
-            return None
-        
-        # 计算角度
-        phi = math.atan2(z, r)
-        cos_beta = (dist_sq - self.L1**2 - self.L2**2) / (2 * self.L1 * self.L2)
-        cos_beta = max(-1.0, min(1.0, cos_beta))
-        
-        # elbow_up 构型
-        beta_rad = math.acos(cos_beta)
-        k1 = self.L1 + self.L2 * math.cos(beta_rad)
-        k2 = self.L2 * math.sin(beta_rad)
-        alpha_rad = phi - math.atan2(k2, k1)
-        
-        shoulder_deg = math.degrees(alpha_rad)
-        elbow_deg = math.degrees(beta_rad)
-        
-        # 规范化
-        shoulder_deg = (shoulder_deg + 180) % 360 - 180
-        elbow_deg = (elbow_deg + 180) % 360 - 180
-        
-        return shoulder_deg, elbow_deg
+        return self._kinematics.inverse_kinematics(r, z, elbow_up=True)
     
     def process_joystick(self, x: float, y: float, axis: str = 'base') -> Dict[str, Any]:
         """
@@ -478,8 +451,10 @@ class ArmClient:
                         self._joint_limits["elbow"][0] <= elbow_deg <= self._joint_limits["elbow"][1]):
                         new_angles["shoulder"] = shoulder_deg
                         new_angles["elbow"] = elbow_deg
-                        # 手腕保持水平：wrist_flex = 180 - shoulder - elbow
-                        wrist_flex = 180 - shoulder_deg - elbow_deg
+                        # 手腕保持水平
+                        wrist_flex = self._kinematics.compute_wrist_flex(
+                            shoulder_deg, elbow_deg, target_orientation=0.0
+                        )
                         # 限制手腕角度范围
                         wrist_flex = max(-90, min(90, wrist_flex))
                         new_angles["wrist_flex"] = wrist_flex
@@ -492,7 +467,9 @@ class ArmClient:
                     message_parts.append("达到极限")
         
         # 确保手腕始终保持水平（无论是base旋转还是高度调整）
-        new_angles["wrist_flex"] = 180 - new_angles["shoulder"] - new_angles["elbow"]
+        new_angles["wrist_flex"] = self._kinematics.compute_wrist_flex(
+            new_angles["shoulder"], new_angles["elbow"], target_orientation=0.0
+        )
         # 限制在合理范围内
         new_angles["wrist_flex"] = max(-90, min(90, new_angles["wrist_flex"]))
         

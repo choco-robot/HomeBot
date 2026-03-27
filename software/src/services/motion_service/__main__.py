@@ -60,7 +60,8 @@ def main():
         chassis_service = ChassisService(rep_addr=chassis_addr, use_shared_bus=True)
         services['chassis'] = chassis_service
         
-        chassis_thread = threading.Thread(target=chassis_service.start, daemon=True)
+        # 使用非守护线程，避免解释器关闭时的问题
+        chassis_thread = threading.Thread(target=chassis_service.start, daemon=False)
         threads.append(('chassis', chassis_thread))
         chassis_thread.start()
         
@@ -74,7 +75,8 @@ def main():
         arm_service = ArmService(rep_addr=arm_addr)
         services['arm'] = arm_service
         
-        arm_thread = threading.Thread(target=arm_service.start, daemon=True)
+        # 使用非守护线程，避免解释器关闭时的问题
+        arm_thread = threading.Thread(target=arm_service.start, daemon=False)
         threads.append(('arm', arm_thread))
         arm_thread.start()
         
@@ -107,10 +109,20 @@ def main():
             except Exception as e:
                 print(f"[警告] 停止 {name} 时出错: {e}")
         
+        # 等待所有线程结束（给线程一些时间来清理）
+        print("[系统] 等待服务线程结束...")
+        for name, thread in threads:
+            if thread.is_alive():
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    print(f"[警告] {name} 线程未能在 2 秒内结束")
+        
         # 关闭共享总线
         print("[系统] 正在关闭串口总线...")
         bus_manager.close()
         
+        # 短暂延迟确保所有输出完成
+        time.sleep(0.1)
         print("[系统] 所有服务已停止")
 
 

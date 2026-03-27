@@ -8,6 +8,7 @@ class MessageType(str, Enum):
     CMD_VELOCITY = "cmd.velocity"
     CMD_ARM_JOINT = "cmd.arm.joint"
     DETECTION_HUMAN = "detection.human"
+    BATTERY_STATE = "sensor.battery"  # 电池状态消息
     # TODO: add more types
 
 

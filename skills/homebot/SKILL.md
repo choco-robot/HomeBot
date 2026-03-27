@@ -23,7 +23,7 @@ metadata:
 HomeBot 完整机器人控制器技能，集成三大功能模块：
 - 🚗 **底盘控制**：前进/后退/转向，精确距离角度控制
 - 🦾 **机械臂控制**：6自由度关节控制，夹爪控制，回原点
-- 👁️ **视觉查询**：一键捕获机器人摄像头最新画面，回答"机器人看到了什么"
+- 👁️ **视觉查询**：一键捕获机器人摄像头画面，**自动调用火山引擎 LLM 分析图像内容**
 
 全部基于 ZeroMQ REQ-REP / PUB 局域网通信协议，完美匹配 HomeBot 项目服务端架构。
 
@@ -276,7 +276,7 @@ export ARK_MODEL_ID="doubao-seed-2-0-lite-260215"  # 可选
 ```
 >>>>>>> f737069 (homebot-skill更新)
 
-### 一键完整工作流
+### 一键完整工作流（捕获 + 分析）
 
 ```bash
 <<<<<<< HEAD
@@ -318,23 +318,29 @@ python scripts/video_subscriber.py --ip 192.168.1.13 --port 5560
 python scripts/video_subscriber.py --ip 192.168.1.13 --port 5560 --keep-receiving --output-dir ./frames
 ```
 
-### 工作流集成
-
-Picoclaw 自动触发：
-- 用户提问："机器人看到了什么" / "what does the robot see"
-- 自动执行捕获工作流
-- 直接发送图片给用户
-
 ### Python API
 
 ```python
 from scripts.what_does_robot_see_workflow import WhatDoesRobotSeeWorkflow
 
-workflow = WhatDoesRobotSeeWorkflow()
+# 完整工作流：捕获 + 分析
+workflow = WhatDoesRobotSeeWorkflow(
+    enable_analysis=True,
+    prompt="描述图片中的主要物体",
+    model="doubao-vision-lite-250225"
+)
+
+result = workflow.capture_and_analyze()
+if result["success"]:
+    print(f"图像路径: {result['image_path']}")
+    print(f"分析结果: {result['analysis']}")
+
+# 仅捕获图像
+workflow = WhatDoesRobotSeeWorkflow(enable_analysis=False)
 image_path = workflow.capture()
 
-if image_path:
-    print(f"Image saved to: {image_path}")
+# 单独分析已有图片
+analysis = workflow.analyze("path/to/image.jpg")
 ```
 
 ---
@@ -424,6 +430,7 @@ class ZMQConfig:
 - Python 3.x
 - pyzmq >= 25.0.0
 - Pillow >= 9.0.0
+- volcenginesdkarkruntime >= 1.0.0（视觉分析功能需要）
 
 ## 示例
 

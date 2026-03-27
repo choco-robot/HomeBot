@@ -89,6 +89,12 @@ class HumanFollowApp:
         logger.info("初始化人体跟随应用")
         logger.info("=" * 60)
         
+        # 记录关键配置信息
+        logger.info(f"配置信息:")
+        logger.info(f"  视觉服务地址: {self.config.vision_sub_addr}")
+        logger.info(f"  底盘服务地址: {self.config.chassis_service_addr}")
+        logger.info(f"  模型路径: {self.config.model_path}")
+        
         try:
             # 1. 初始化视觉订阅
             logger.info("连接视觉服务...")
@@ -135,6 +141,8 @@ class HumanFollowApp:
             cam_config = get_config().camera
             self.controller = FollowController(
                 target_distance=self.config.target_distance,
+                target_width_ratio=self.config.target_width_ratio,
+                target_height_ratio=self.config.target_height_ratio,
                 kp_linear=self.config.kp_linear,
                 kp_angular=self.config.kp_angular,
                 max_linear_speed=self.config.max_linear_speed,
@@ -218,29 +226,37 @@ class HumanFollowApp:
         # 2. 更新跟踪
         target = self.tracker.update(detections)
         
+        # 获取实际帧尺寸（用于归一化计算）
+        h, w = frame.shape[:2]
+        
         # 3. 状态机处理
         if target:
             # 目标存在
-            if self.mode in (FollowMode.FOLLOWING, FollowMode.SEARCHING):
-                # 从搜索恢复或继续跟随
-                if self.mode == FollowMode.SEARCHING:
-                    logger.info("目标重新出现，恢复跟随")
+            if self.mode in (FollowMode.FOLLOWING, FollowMode.SEARCHING, FollowMode.IDLE):
+                # 从 IDLE 或 SEARCHING 恢复，或继续跟随
+                if self.mode in (FollowMode.SEARCHING, FollowMode.IDLE):
+                    if self.mode == FollowMode.IDLE:
+                        logger.info("目标出现，开始跟随")
+                    else:
+                        logger.info("目标重新出现，恢复跟随")
                     self.mode = FollowMode.FOLLOWING
                     # 重置 controller 的丢失计数
-                    self.controller.target_lost_count = 0
+                    if self.controller:
+                        self.controller.target_lost_count = 0
                 
-                # 计算跟随速度
-                cmd = self.controller.compute_velocity(target)
-                if cmd:
-                    self.current_velocity = self.controller.smooth_velocity(
-                        self.current_velocity, cmd, alpha=0.3
-                    )
-                    self._send_velocity(self.current_velocity)
+                # 计算跟随速度（传递实际帧尺寸用于归一化）
+                if self.controller:
+                    cmd = self.controller.compute_velocity(target, frame_width=w, frame_height=h)
+                    if cmd:
+                        self.current_velocity = self.controller.smooth_velocity(
+                            self.current_velocity, cmd, alpha=0.3
+                        )
+                        self._send_velocity(self.current_velocity)
                     
             elif self.mode == FollowMode.PAUSED:
                 # 暂停模式，保持停止
                 self._send_velocity(VelocityCommand(0.0, 0.0, 0.0))
-            # IDLE 模式下不发送指令
+            # ERROR 等其他模式下不发送指令
             
         else:
             # 目标丢失
@@ -291,6 +307,8 @@ class HumanFollowApp:
         """
         绘制可视化信息
         
+        注意：可视化基于实际图像尺寸，与控制计算的320x320参考分辨率解耦
+        
         Args:
             frame: 原始图像
             target: 当前跟踪目标
@@ -303,6 +321,10 @@ class HumanFollowApp:
         
         output = frame.copy()
         h, w = output.shape[:2]
+        
+        # 使用实际图像中心（可视化必须与显示图像尺寸一致）
+        center_x = w // 2
+        center_y = h // 2
         
         # 绘制所有检测框（半透明）
         for det in detections:
@@ -322,9 +344,7 @@ class HumanFollowApp:
             # 中心点
             cv2.circle(output, (cx, cy), 5, (0, 255, 255), -1)
             
-            # 到画面中心的连线
-            center_x = self.controller.frame_center_x if self.controller else w // 2
-            center_y = self.controller.frame_center_y if self.controller else h // 2
+            # 到画面中心的连线（使用实际图像中心）
             cv2.line(output, (cx, cy), (center_x, cy), (255, 0, 0), 2)
             cv2.line(output, (cx, cy), (cx, center_y), (255, 0, 0), 2)
             
@@ -333,9 +353,7 @@ class HumanFollowApp:
             cv2.putText(output, label, (x1, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
-        # 绘制画面中心
-        center_x = self.controller.frame_center_x if self.controller else w // 2
-        center_y = self.controller.frame_center_y if self.controller else h // 2
+        # 绘制画面中心（使用实际图像中心）
         cv2.drawMarker(output, (center_x, center_y), (0, 255, 0), 
                       cv2.MARKER_CROSS, 20, 2)
         

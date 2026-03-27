@@ -49,6 +49,12 @@ except ImportError:
         def ReadSpeed(self, scs_id):
             return 0, COMM_SUCCESS, 0
 
+        def ReadVoltage(self, scs_id):
+            return 120, COMM_SUCCESS, 0  # 模拟12.0V
+
+        def ReadTemperature(self, scs_id):
+            return 25, COMM_SUCCESS, 0  # 模拟25°C
+
         def WheelMode(self, scs_id):
             return COMM_SUCCESS, 0
 
@@ -171,13 +177,17 @@ class FTServoBus:
 
         except Exception as e:
             print(f"[FTServo] Connection error: {e}")
-            self._simulation = True
-            self._connected = True
-            print("[FTServo] Running in simulation mode")
-            return True
+            print(f"[FTServo] 硬件连接失败，请检查：")
+            print(f"  1. 串口 {self.port_name} 是否正确")
+            print(f"  2. 舵机电源是否开启")
+            print(f"  3. 数据线是否连接正常")
+            self._connected = False
+            return False
 
     def disconnect(self) -> None:
         """断开连接"""
+        if not self._connected:
+            return  # 已经断开，避免重复操作
         if self.packet_handler and hasattr(self.packet_handler, 'disconnect'):
             self.packet_handler.disconnect()
         if self.port_handler:
@@ -356,6 +366,53 @@ class FTServoBus:
             position=position,
             speed=speed
         )
+
+    def read_voltage(self, servo_id: int) -> Optional[float]:
+        """
+        读取舵机当前电压
+        
+        Args:
+            servo_id: 舵机ID
+            
+        Returns:
+            电压值(伏特)，读取失败返回None
+        """
+        if not self._connected:
+            return None
+        
+        if self._simulation:
+            return 12.0  # 模拟模式返回默认电压
+        
+        voltage, comm_result, error = self.packet_handler.ReadVoltage(servo_id)
+        
+        if comm_result != COMM_SUCCESS:
+            return None
+        
+        # 电压值是原始值，需要除以10得到实际电压(伏特)
+        return voltage / 10.0 if voltage is not None else None
+
+    def read_temperature(self, servo_id: int) -> Optional[int]:
+        """
+        读取舵机当前温度
+        
+        Args:
+            servo_id: 舵机ID
+            
+        Returns:
+            温度值(摄氏度)，读取失败返回None
+        """
+        if not self._connected:
+            return None
+        
+        if self._simulation:
+            return 25  # 模拟模式返回默认温度
+        
+        temp, comm_result, error = self.packet_handler.ReadTemperature(servo_id)
+        
+        if comm_result != COMM_SUCCESS:
+            return None
+        
+        return temp
 
 
 # 兼容旧接口的别名
