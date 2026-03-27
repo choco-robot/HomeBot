@@ -33,6 +33,9 @@ class RobotController {
         };
         this.gripperClosed = false;  // false=半开(45度), true=闭合(0度)
         
+        // 升降平台状态
+        this.liftHeight = 0;  // 当前高度 (mm)，0=最高点
+        
         // 控制使能标志
         this.isControlEnabled = true;
         
@@ -300,6 +303,17 @@ class RobotController {
                 if (data.closed !== undefined) {
                     this.updateGripperStatus(data.closed);
                 }
+            } else if (data.status === 'lift') {
+                // 升降平台状态反馈
+                if (data.success) {
+                    if (data.height !== undefined) {
+                        this.liftHeight = data.height;
+                        this.updateLiftDisplay();
+                    }
+                    this.showToast(data.message || '升降控制成功', 'success');
+                } else {
+                    this.showToast(data.message || '升降控制失败', 'error');
+                }
             }
         });
         
@@ -441,6 +455,28 @@ class RobotController {
             btnArmBackward.addEventListener('touchstart', (e) => { e.preventDefault(); this.startArmReach(-1); });
             btnArmBackward.addEventListener('touchend', (e) => { e.preventDefault(); this.stopArmReach(); });
         }
+        
+        // 升降平台按钮
+        const btnLiftUp = document.getElementById('btnLiftUp');
+        const btnLiftDown = document.getElementById('btnLiftDown');
+        
+        if (btnLiftUp) {
+            btnLiftUp.addEventListener('click', () => this.controlLift('up'));
+            // 移动端触摸支持
+            btnLiftUp.addEventListener('touchstart', (e) => { 
+                e.preventDefault(); 
+                this.controlLift('up'); 
+            });
+        }
+        
+        if (btnLiftDown) {
+            btnLiftDown.addEventListener('click', () => this.controlLift('down'));
+            // 移动端触摸支持
+            btnLiftDown.addEventListener('touchstart', (e) => { 
+                e.preventDefault(); 
+                this.controlLift('down'); 
+            });
+        }
     }
     
     // ========== 机械臂前后移动控制 ==========
@@ -456,6 +492,37 @@ class RobotController {
             this.armReachActive = false;
             this.armReachDirection = 0;
             console.log('[Arm] 停止前后移动');
+        }
+    }
+    
+    // ========== 升降平台控制 ==========
+    controlLift(direction) {
+        // direction: 'up' 或 'down'
+        console.log(`[Lift] 发送${direction === 'up' ? '上升' : '下降'}命令`);
+        
+        if (!this.isConnected) {
+            this.showToast('未连接，无法控制升降平台', 'error');
+            return;
+        }
+        
+        this.socket.emit('lift_control', { direction: direction });
+        
+        // 本地预估更新（实际高度等服务器确认）
+        const step = 20;  // 每次移动20mm
+        if (direction === 'up') {
+            this.liftHeight = Math.min(0, this.liftHeight + step);
+        } else {
+            this.liftHeight = Math.max(-200, this.liftHeight - step);
+        }
+        this.updateLiftDisplay();
+    }
+    
+    updateLiftDisplay() {
+        const liftStatus = document.getElementById('liftStatus');
+        if (liftStatus) {
+            // 显示绝对值，0=最高，200=最低
+            const displayHeight = Math.abs(this.liftHeight);
+            liftStatus.textContent = `${displayHeight}mm`;
         }
     }
     

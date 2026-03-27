@@ -525,6 +525,81 @@ class ArmClient:
                 "closed": self._gripper_closed,
                 "message": response.get("message", "夹爪控制失败")
             }
+    
+    def move_lift_platform(self, direction: int, step: float = 20.0) -> Dict[str, Any]:
+        """
+        控制升降平台移动
+        
+        Args:
+            direction: 1=上升(向0靠近), -1=下降(向负值移动)
+            step: 移动步长 (mm)，默认20mm
+            
+        Returns:
+            控制结果
+        """
+        # 从配置读取升降平台参数
+        from configs import get_config
+        config = get_config()
+        lift_cfg = config.lift_platform
+        
+        # 计算目标高度
+        # 当前高度（如果没有则假设在中间位置）
+        current_height = getattr(self, '_lift_height', -lift_cfg.stroke_length / 2)
+        
+        # 根据方向计算新高度
+        # direction=1: 上升（高度增加，向0靠近）
+        # direction=-1: 下降（高度减少，向负值移动）
+        target_height = current_height + direction * step
+        
+        # 限制在有效范围内
+        target_height = max(lift_cfg.min_height, min(lift_cfg.max_height, target_height))
+        
+        # 发送升降命令
+        response = self.send_command(
+            {},  # 不控制关节
+            speed=lift_cfg.default_speed,
+            priority=1
+        )
+        
+        # 通过特殊字段发送升降指令
+        # 需要修改send_command支持lift_height参数，这里直接构造请求
+        request = {
+            "source": self.SOURCE_NAME,
+            "joints": {},
+            "speed": lift_cfg.default_speed,
+            "priority": self.PRIORITY,
+            "lift_height": target_height
+        }
+        
+        try:
+            if self._socket.poll(50, zmq.POLLOUT):
+                self._socket.send_json(request)
+                self._last_sent_time = time.time()
+                
+                if self._socket.poll(50, zmq.POLLIN):
+                    resp = self._socket.recv_json()
+                    if resp.get("success"):
+                        self._lift_height = target_height
+                        return {
+                            "success": True,
+                            "height": target_height,
+                            "message": f"升降平台移动到 {target_height:.1f}mm"
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": resp.get("message", "升降控制失败")
+                        }
+                else:
+                    return {"success": False, "message": "接收超时"}
+            else:
+                return {"success": False, "message": "socket不可写"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    
+    def get_lift_height(self) -> float:
+        """获取当前升降平台高度"""
+        return getattr(self, '_lift_height', 0.0)
 
 
 class VideoStreamClient:
@@ -909,6 +984,25 @@ class ZMQBridge:
             return {"success": False, "message": "机械臂未连接"}
         
         return self.arm_client.set_gripper(closed)
+    
+    def move_lift_platform(self, direction: int, step: float = 20.0) -> Dict[str, Any]:
+        """
+        控制升降平台移动
+        
+        Args:
+            direction: 1=上升, -1=下降
+            step: 移动步长 (mm)
+        """
+        if not self.arm_client or not self.arm_client._connected:
+            return {"success": False, "message": "机械臂未连接"}
+        
+        return self.arm_client.move_lift_platform(direction, step)
+    
+    def get_lift_height(self) -> float:
+        """获取当前升降平台高度"""
+        if not self.arm_client:
+            return 0.0
+        return self.arm_client.get_lift_height()
 
 
 # 创建Flask应用
@@ -1146,6 +1240,65 @@ def handle_gripper_toggle(data):
     except Exception as e:
         print(f"[Socket] 夹爪控制异常: {e}")
         emit('server_response', {'status': 'gripper', 'error': str(e)})
+
+
+# 升降平台控制限流
+_lift_last_time = 0
+_lift_min_interval = 0.3  # 300ms 最小间隔
+
+@socketio.on('lift_control')
+def handle_lift_control(data):
+    """
+    处理升降平台控制
+    
+    Args:
+        data: { direction: 'up' | 'down' }
+    """
+    global _lift_last_time
+    
+    if not zmq_bridge:
+        emit('server_response', {'status': 'lift', 'error': '未连接'})
+        return
+    
+    # 服务器端限流
+    now = time.time()
+    if now - _lift_last_time < _lift_min_interval:
+        emit('server_response', {
+            'status': 'lift',
+            'success': False,
+            'message': '操作过于频繁，请稍后再试'
+        })
+        return
+    _lift_last_time = now
+    
+    try:
+        direction_str = data.get('direction', '')
+        if direction_str not in ('up', 'down'):
+            emit('server_response', {
+                'status': 'lift',
+                'success': False,
+                'message': '无效的方向参数'
+            })
+            return
+        
+        # up: direction=1 (向0靠近，高度增加)
+        # down: direction=-1 (向负值移动，高度减少)
+        direction = 1 if direction_str == 'up' else -1
+        
+        response = zmq_bridge.move_lift_platform(direction)
+        
+        emit('server_response', {
+            'status': 'lift',
+            'success': response.get('success', False),
+            'height': response.get('height'),
+            'message': response.get('message', '')
+        })
+        
+        print(f"[Socket] 升降平台控制: {direction_str} -> {response}")
+        
+    except Exception as e:
+        print(f"[Socket] 升降平台控制异常: {e}")
+        emit('server_response', {'status': 'lift', 'error': str(e)})
 
 
 @socketio.on('toggle_human_follow')

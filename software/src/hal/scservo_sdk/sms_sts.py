@@ -119,6 +119,17 @@ class sms_sts(protocol_packet_handler):
         temp, scs_comm_result, scs_error = self.read1ByteTxRx(scs_id, SMS_STS_PRESENT_TEMPERATURE)
         return temp, scs_comm_result, scs_error
 
+    def ReadLoad(self, scs_id):
+        """读取舵机负载值"""
+        load, scs_comm_result, scs_error = self.read2ByteTxRx(scs_id, SMS_STS_PRESENT_LOAD_L)
+        return self.scs_tohost(load, 15), scs_comm_result, scs_error
+
+    def ReadCurrent(self, scs_id):
+        """读取舵机电流值 (单位: mA)"""
+        current, scs_comm_result, scs_error = self.read2ByteTxRx(scs_id, SMS_STS_PRESENT_CURRENT_L)
+        # 根据 ST3215 手册，电流值需要转换
+        return current, scs_comm_result, scs_error
+
     def SyncWritePosEx(self, pos_dict):
         self.groupSyncWrite.clearParam()
         for scs_id, params in pos_dict.items():

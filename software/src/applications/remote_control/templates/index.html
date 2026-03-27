@@ -326,6 +326,66 @@
             margin-left: 10px;
         }
         
+        /* 升降平台按钮区域 */
+        .lift-buttons-zone {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin-left: 15px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .btn-lift {
+            width: 60px;
+            height: 50px;
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #00aa88, #008866);
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0, 170, 136, 0.4);
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        .btn-lift:active {
+            transform: scale(0.92);
+            box-shadow: 0 2px 8px rgba(0, 170, 136, 0.5);
+        }
+        
+        .btn-lift .btn-icon {
+            font-size: 16px;
+            line-height: 1;
+            margin-bottom: 2px;
+        }
+        
+        .btn-lift .btn-text {
+            font-size: 10px;
+            font-weight: 600;
+        }
+        
+        .lift-status {
+            font-size: 11px;
+            color: #00ff88;
+            font-weight: bold;
+            min-width: 50px;
+            text-align: center;
+            padding: 4px 0;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
+        }
+        
         .btn-arm-move {
             width: 60px;
             height: 55px;
@@ -379,6 +439,30 @@
             
             .btn-arm-move .btn-text {
                 font-size: 10px;
+            }
+            
+            .lift-buttons-zone {
+                margin-left: 8px;
+                gap: 6px;
+                padding: 8px;
+            }
+            
+            .btn-lift {
+                width: 50px;
+                height: 42px;
+            }
+            
+            .btn-lift .btn-icon {
+                font-size: 14px;
+            }
+            
+            .btn-lift .btn-text {
+                font-size: 9px;
+            }
+            
+            .lift-status {
+                font-size: 9px;
+                min-width: 40px;
             }
             
             /* 手机竖屏模式下，数据展示放在视频和摇杆之间 */
@@ -439,6 +523,30 @@
             
             .btn-arm-move .btn-text {
                 font-size: 12px;
+            }
+            
+            .lift-buttons-zone {
+                margin-left: 20px;
+                gap: 12px;
+                padding: 15px;
+            }
+            
+            .btn-lift {
+                width: 70px;
+                height: 60px;
+            }
+            
+            .btn-lift .btn-icon {
+                font-size: 20px;
+            }
+            
+            .btn-lift .btn-text {
+                font-size: 11px;
+            }
+            
+            .lift-status {
+                font-size: 12px;
+                min-width: 60px;
             }
         }
         
@@ -526,18 +634,39 @@
             }
             
             .control-area {
-                flex-direction: column;
+                flex-direction: row;
                 padding: 20px;
-                gap: 30px;
+                gap: 20px;
+                flex-wrap: wrap;
+                justify-content: center;
+                align-items: center;
+            }
+            
+            .data-display {
+                position: static;
+                order: -1;
+                flex-basis: 100%;
+                width: 100%;
+                transform: none;
+                left: auto;
+                margin-bottom: 10px;
             }
             
             .joystick-zone {
                 min-height: 180px;
+                flex: 1;
             }
             
             .joystick-container {
                 width: 150px;
                 height: 150px;
+            }
+            
+            /* 按钮区域容器 - PC端水平并排 */
+            .arm-buttons-zone,
+            .lift-buttons-zone {
+                flex-direction: column;
+                margin-left: 10px;
             }
         }
     </style>
@@ -629,11 +758,24 @@
                         <span class="btn-text">后缩</span>
                     </button>
                 </div>
+                
+                <!-- 升降平台控制按钮 -->
+                <div class="lift-buttons-zone">
+                    <button class="btn-lift" id="btnLiftUp" title="上升">
+                        <span class="btn-icon">▲</span>
+                        <span class="btn-text">上升</span>
+                    </button>
+                    <div class="lift-status" id="liftStatus">--</div>
+                    <button class="btn-lift" id="btnLiftDown" title="下降">
+                        <span class="btn-icon">▼</span>
+                        <span class="btn-text">下降</span>
+                    </button>
+                </div>
             </div>
             
             <!-- 使用说明 -->
             <div class="instructions">
-                左手控制机器人移动 · 右手控制机械臂
+                左手控制机器人移动 · 右手控制机械臂 · 右侧按钮控制升降
             </div>
             
             <!-- 底部按钮 -->

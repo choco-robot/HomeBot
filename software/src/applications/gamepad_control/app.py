@@ -93,6 +93,10 @@ class GamepadControlApp:
             "gripper": 45.0,
         }
         
+        # 升降平台状态 (Plus版本)
+        self.lift_height: float = 0.0  # 当前高度 (mm)
+        self.lift_step: float = 10.0   # 每次调整的步进 (mm)
+        
         # 运行状态
         self.running = False
         self.emergency_stopped = False
@@ -111,6 +115,9 @@ class GamepadControlApp:
         # 统计信息
         self.loop_count = 0
         self.last_print_time = time.time()
+        
+        # 按键状态缓存（用于检测边沿）
+        self._prev_button_states: Dict[str, bool] = {}
         
         logger.info("GamepadControlApp 初始化完成")
     
@@ -189,6 +196,9 @@ class GamepadControlApp:
         # 5. 获取机械臂初始状态
         self._init_kinematics()
         self._sync_arm_state()
+        
+        # 6. 同步升降平台状态
+        self._sync_lift_state()
         
         logger.info("=" * 60)
         logger.info("初始化完成，等待启动...")
@@ -287,6 +297,53 @@ class GamepadControlApp:
                 self._arm_pos["r"] = r
                 self._arm_pos["z"] = z
                 logger.info(f"机械臂初始位置(默认): r={r:.1f}mm, z={z:.1f}mm")
+    
+    def _sync_lift_state(self):
+        """从硬件同步升降平台状态"""
+        try:
+            if self.arm_client:
+                response = self.arm_client.send_joint_dict(
+                    joints_dict={"query": True},
+                    source="gamepad",
+                    priority=PRIORITIES.get("gamepad", 3),
+                    speed=0
+                )
+                if response and response.success:
+                    lift_height = getattr(response, 'lift_height', None)
+                    if lift_height is not None:
+                        self.lift_height = lift_height
+                        logger.info(f"升降平台初始高度(从硬件): {self.lift_height:.1f}mm")
+                        return
+        except Exception as e:
+            logger.debug(f"获取升降平台初始状态失败: {e}")
+        
+        logger.info(f"升降平台初始高度(默认): {self.lift_height:.1f}mm")
+    
+    def _send_lift_command(self, target_height: float):
+        """
+        发送升降平台控制指令
+        
+        Args:
+            target_height: 目标高度 (mm)
+        """
+        if self.arm_client is None or self.emergency_stopped:
+            return
+        
+        try:
+            response = self.arm_client.send_lift_command(
+                height=target_height,
+                source="gamepad",
+                priority=PRIORITIES.get("gamepad", 3)
+            )
+            
+            if response and response.success:
+                self.lift_height = target_height
+                logger.debug(f"升降平台: {target_height:.1f}mm")
+            elif response:
+                logger.debug(f"升降平台指令被拒绝: {response.message}")
+                
+        except Exception as e:
+            logger.warning(f"升降平台通信失败: {e}")
     
     def _handle_chassis_input(self, state) -> ChassisVelocity:
         """
@@ -567,7 +624,42 @@ class GamepadControlApp:
             self._reset()
             return True
         
+        # L3 (左摇杆按下) -> 升降平台下降 (向负方向移动)
+        if self._is_button_just_pressed(state, Button.LEFT_THUMB):
+            from configs import get_config
+            min_height = get_config().lift_platform.min_height  # 通常为 -200
+            new_height = max(min_height, self.lift_height - self.lift_step)
+            logger.info(f"升降平台下降: {self.lift_height:.1f}mm -> {new_height:.1f}mm")
+            self._send_lift_command(new_height)
+            return True
+        
+        # R3 (右摇杆按下) -> 升降平台上升 (向0移动)
+        if self._is_button_just_pressed(state, Button.RIGHT_THUMB):
+            from configs import get_config
+            max_height = get_config().lift_platform.max_height  # 通常为 0
+            new_height = min(max_height, self.lift_height + self.lift_step)
+            logger.info(f"升降平台上升: {self.lift_height:.1f}mm -> {new_height:.1f}mm")
+            self._send_lift_command(new_height)
+            return True
+        
         return False
+    
+    def _is_button_just_pressed(self, state, button) -> bool:
+        """
+        检测按钮是否刚刚被按下（边沿检测）
+        
+        Args:
+            state: 当前手柄状态
+            button: 按钮枚举值
+            
+        Returns:
+            是否刚按下（之前未按下，现在按下）
+        """
+        button_name = button.name if hasattr(button, 'name') else str(button)
+        is_pressed = state.is_pressed(button)
+        was_pressed = self._prev_button_states.get(button_name, False)
+        self._prev_button_states[button_name] = is_pressed
+        return is_pressed and not was_pressed
     
     def _emergency_stop(self):
         """紧急停止"""
@@ -598,7 +690,7 @@ class GamepadControlApp:
                 pass
     
     def _reset(self):
-        """复位系统 - 所有关节归位，然后从硬件同步实际状态"""
+        """复位系统 - 所有关节归位，升降平台归零，然后从硬件同步实际状态"""
         logger.info("系统复位...")
         self.emergency_stopped = False
         
@@ -626,12 +718,27 @@ class GamepadControlApp:
                     logger.info("机械臂归位指令已发送")
             except Exception as e:
                 logger.error(f"复位机械臂失败: {e}")
+            
+            # 升降平台归零
+            try:
+                logger.info("升降平台归位...")
+                response = self.arm_client.send_lift_command(
+                    height=0.0,
+                    source="gamepad",
+                    priority=PRIORITIES.get("gamepad", 3)
+                )
+                if response and response.success:
+                    self.lift_height = 0.0
+                    logger.info("升降平台归位指令已发送")
+            except Exception as e:
+                logger.error(f"复位升降平台失败: {e}")
         
         # 等待机械臂完成归位（给舵机一些时间运动）
         time.sleep(0.5)
         
         # 从硬件同步实际关节状态
         self._sync_arm_state()
+        self._sync_lift_state()
         
         # 重置手腕控制模式为自动水平
         self._wrist_auto_level = True
@@ -649,7 +756,8 @@ class GamepadControlApp:
                 f"[底盘] vx={chassis_vel.vx:+.2f} vy={chassis_vel.vy:+.2f} vz={chassis_vel.vz:+.2f} | "
                 f"[机械臂] base={self.arm_state['base']:+.0f}° shoulder={self.arm_state['shoulder']:+.0f}° "
                 f"elbow={self.arm_state['elbow']:+.0f}° wrist_flex={self.arm_state['wrist_flex']:+.0f}°({wrist_mode}) "
-                f"gripper={self.arm_state['gripper']:.0f}°"
+                f"gripper={self.arm_state['gripper']:.0f}° | "
+                f"[升降] {self.lift_height:.0f}mm"
             )
             print(status, end="", flush=True)
             self.last_print_time = current_time
@@ -681,6 +789,9 @@ class GamepadControlApp:
         logger.info("    十字键 ↑↓: 抬高/放低 (Z方向)")
         logger.info("    Y: 手腕下翻(MANU), A: 手腕上翻(MANU), B: 手腕水平(AUTO)")
         logger.info("    RB/LB: 夹爪打开/关闭")
+        logger.info("  升降平台 (Plus):")
+        logger.info("    L3(左摇杆按下): 下降(向负方向), R3(右摇杆按下): 上升(向0)")
+        logger.info("    坐标系: 最高点=0mm, 向下为负, 最低点=-200mm")
         logger.info("  系统: Back(急停) / Start(复位)")
         logger.info("=" * 60)
         logger.info("按 Ctrl+C 停止")

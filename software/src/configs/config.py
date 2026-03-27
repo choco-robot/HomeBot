@@ -25,6 +25,49 @@ class CameraConfig:
 
 
 @dataclass
+class LiftPlatformConfig:
+    """升降平台配置 (Plus版本)
+    
+    坐标系定义:
+    - 最高点设为 0 mm
+    - 向下为负方向
+    - 最低点为 -stroke_length mm (如 -200mm)
+    """
+    # 舵机ID
+    servo_id_1: int = 10       # 升降舵机1
+    servo_id_2: int = 11       # 升降舵机2
+    
+    # 机械参数
+    lead: float = 20.0         # 丝杆导程 (mm/转)
+    gear_ratio: float = 1.0    # 传动比 (电机转数:丝杆转数)
+    angle_resolution: float = 4.0  # 角度分辨率
+    
+    # 行程长度 (mm)，用于坐标转换
+    stroke_length: float = 200.0  # 总行程 (最高点 to 最低点)
+    
+    # 坐标系定义 (新坐标系: 最高点为0，向下为负)
+    # height = 0 表示最高点
+    # height = -stroke_length 表示最低点
+    min_height: float = -200.0   # 最低位置坐标 (通常为 -stroke_length)
+    max_height: float = 0.0      # 最高位置坐标 (通常为 0)
+    
+    # 运动参数
+    default_speed: int = 0     # 0=最大速度
+    default_acc: int = 0       # 0=默认加速度
+    
+    # 零位偏移 (步数)，用于校准两个舵机的同步
+    servo_offset: int = 0      # 舵机2相对于舵机1的偏移
+    
+    # ========== 零点初始化参数 ==========
+    auto_homing_on_startup: bool = True   # 启动时自动找零
+    homing_direction: str = "up"          # 找零方向: "up"(向上找最高点) 或 "down"(向下找最低点)
+    homing_speed: int = 300               # 找零速度 (不宜过快)
+    homing_current_threshold: int = 300   # 电流阈值，超过此值判定为碰到限位 (需根据实际校准)
+    homing_timeout: float = 15.0          # 找零超时时间(秒)
+    homing_backoff_steps: int = 100       # 找到限位后回退步数 (释放压力)
+
+
+@dataclass
 class ArmConfig:
     """机械臂配置"""
     serial_port: str = "COM23"  # 与底盘共用串口
@@ -60,6 +103,8 @@ class ArmConfig:
         "wrist_roll": 0,   # J5: 腕关节旋转
         "gripper": 45,     # J6: 夹爪（半开）
     })
+    # 升降平台配置 (Plus版本)
+    lift_platform: LiftPlatformConfig = field(default_factory=LiftPlatformConfig)
 
 
 @dataclass
@@ -339,6 +384,7 @@ class Config:
     """全局配置"""
     camera: CameraConfig = field(default_factory=CameraConfig)
     arm: ArmConfig = field(default_factory=ArmConfig)
+    lift_platform: LiftPlatformConfig = field(default_factory=LiftPlatformConfig)
     chassis: ChassisConfig = field(default_factory=ChassisConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
     zmq: ZMQConfig = field(default_factory=ZMQConfig)

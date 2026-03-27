@@ -34,6 +34,7 @@ class ArmResponse:
     current_owner: str
     current_priority: int
     joint_states: Optional[Dict[str, float]] = None
+    lift_height: Optional[float] = None  # 升降平台当前高度 (mm)
 
 
 # 控制源优先级定义
@@ -255,6 +256,55 @@ class ArmArbiterClient:
                 current_owner=response_data.get("current_owner", ""),
                 current_priority=response_data.get("current_priority", 0),
                 joint_states=response_data.get("joint_states")
+            )
+            
+        except Exception as e:
+            import zmq
+            self._socket.close()
+            self._socket = self._context.socket(zmq.REQ)
+            self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+            self._socket.setsockopt(zmq.LINGER, 0)
+            self._socket.connect(self.service_addr)
+            return None
+    
+    def send_lift_command(self, height: float, source: str = "web",
+                         priority: int = 0, speed: int = 0) -> Optional[ArmResponse]:
+        """
+        发送升降平台控制指令 (Plus版本)
+        
+        Args:
+            height: 目标高度 (mm)
+            source: 控制源
+            priority: 优先级
+            speed: 运动速度 (0=默认速度)
+            
+        Returns:
+            ArmResponse: 响应，失败返回None
+        """
+        import time
+        
+        if priority == 0 and source in PRIORITIES:
+            priority = PRIORITIES[source]
+        
+        command = {
+            "source": source,
+            "lift": height,  # 升降平台高度
+            "speed": speed,
+            "priority": priority,
+            "timestamp": time.time()
+        }
+        
+        try:
+            self._socket.send_json(command)
+            response_data = self._socket.recv_json()
+            
+            return ArmResponse(
+                success=response_data.get("success", False),
+                message=response_data.get("message", ""),
+                current_owner=response_data.get("current_owner", ""),
+                current_priority=response_data.get("current_priority", 0),
+                joint_states=response_data.get("joint_states"),
+                lift_height=response_data.get("lift_height")
             )
             
         except Exception as e:

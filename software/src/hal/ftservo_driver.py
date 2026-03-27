@@ -107,6 +107,7 @@ class ServoMode(IntEnum):
     SPEED = 1     # 速度模式（轮式）
     TORQUE = 2    # 力矩模式（HLS系列支持）
     PWM = 3       # PWM模式
+    STEP = 3      # 步进模式（STS系列）
 
 
 @dataclass
@@ -128,9 +129,15 @@ class ServoState:
     position: int = 2048      # 当前位置 (0-4095)
     speed: int = 0            # 当前速度
     load: int = 0             # 当前负载
-    voltage: float = 0.0      # 当前电压
-    temperature: int = 0      # 当前温度
+    current: int = 0          # 当前电流 (mA)
+    voltage: float = 0.0      # 当前电压 (V)
+    temperature: int = 0      # 当前温度 (°C)
     moving: bool = False      # 是否正在运动
+    
+    def __post_init__(self):
+        # 如果速度不为0，也认为是运动中
+        if self.speed != 0:
+            self.moving = True
 
 
 class FTServoBus:
@@ -350,6 +357,75 @@ class FTServoBus:
 
         return True
 
+    def read_moving(self, servo_id: int) -> Optional[bool]:
+        """
+        读取舵机是否正在运动
+        
+        Args:
+            servo_id: 舵机ID
+            
+        Returns:
+            是否正在运动，读取失败返回None
+        """
+        if not self._connected:
+            return None
+        
+        if self._simulation:
+            return False
+        
+        moving, comm_result, error = self.packet_handler.ReadMoving(servo_id)
+        
+        if comm_result != COMM_SUCCESS:
+            return None
+        
+        return bool(moving)
+    
+    def read_load(self, servo_id: int) -> Optional[int]:
+        """
+        读取舵机负载值
+        
+        Args:
+            servo_id: 舵机ID
+            
+        Returns:
+            负载值，读取失败返回None
+        """
+        if not self._connected:
+            return None
+        
+        if self._simulation:
+            return 0
+        
+        load, comm_result, error = self.packet_handler.ReadLoad(servo_id)
+        
+        if comm_result != COMM_SUCCESS:
+            return None
+        
+        return load
+    
+    def read_current(self, servo_id: int) -> Optional[int]:
+        """
+        读取舵机电流值
+        
+        Args:
+            servo_id: 舵机ID
+            
+        Returns:
+            电流值(mA)，读取失败返回None
+        """
+        if not self._connected:
+            return None
+        
+        if self._simulation:
+            return 0
+        
+        current, comm_result, error = self.packet_handler.ReadCurrent(servo_id)
+        
+        if comm_result != COMM_SUCCESS:
+            return None
+        
+        return current
+    
     def get_state(self, servo_id: int) -> Optional[ServoState]:
         """获取舵机状态"""
         if not self._connected or self._simulation:
@@ -357,6 +433,9 @@ class FTServoBus:
 
         position, comm_result1, error1 = self.packet_handler.ReadPos(servo_id)
         speed, comm_result2, error2 = self.packet_handler.ReadSpeed(servo_id)
+        moving = self.read_moving(servo_id)
+        load = self.read_load(servo_id)
+        current = self.read_current(servo_id)
 
         if comm_result1 != COMM_SUCCESS:
             return None
@@ -364,7 +443,10 @@ class FTServoBus:
         return ServoState(
             id=servo_id,
             position=position,
-            speed=speed
+            speed=speed,
+            load=load if load is not None else 0,
+            current=current if current is not None else 0,
+            moving=moving if moving is not None else False
         )
 
     def read_voltage(self, servo_id: int) -> Optional[float]:
