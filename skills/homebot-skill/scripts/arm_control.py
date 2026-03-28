@@ -206,6 +206,68 @@ class HomeBotArmController:
         # 获取状态使用system高优先级，不会抢占控制除非空闲
         return self.send_command({}, speed=DEFAULT_SPEED, source="system", priority=4)
     
+    def move_lift(self, direction: int, step: float = 20.0,
+                  source: str = DEFAULT_SOURCE,
+                  priority: int = 0,
+                  speed: int = DEFAULT_SPEED) -> Optional[ArbiterResponse]:
+        """
+        控制升降平台移动
+        
+        Args:
+            direction: 1=上升(向0靠近，高度增加), -1=下降(向负值移动，高度减少)
+            step: 移动步长 (mm)，默认20mm
+            source: 控制源
+            priority: 优先级
+            speed: 运动速度
+            
+        Returns:
+            ArbiterResponse: 服务端响应
+        """
+        # 自动获取优先级
+        if priority == 0 and source in PRIORITIES:
+            priority = PRIORITIES[source]
+        
+        # 构建命令，包含 lift_height 字段
+        command = {
+            "source": source,
+            "priority": priority,
+            "speed": speed,
+            "joints": {},
+            "lift_direction": direction,
+            "lift_step": step,
+            "timestamp": time.time()
+        }
+        
+        try:
+            self._socket.send_json(command)
+            response_data = self._socket.recv_json()
+            
+            return ArbiterResponse(
+                success=response_data.get("success", False),
+                message=response_data.get("message", ""),
+                current_owner=response_data.get("current_owner", ""),
+                current_priority=response_data.get("current_priority", 0),
+                joint_states=response_data.get("joint_states", None)
+            )
+        except zmq.ZMQError as e:
+            self._socket.close()
+            self._socket = self._create_socket()
+            return None
+    
+    def lift_up(self, step: float = 20.0,
+                source: str = DEFAULT_SOURCE,
+                priority: int = 0,
+                speed: int = DEFAULT_SPEED) -> Optional[ArbiterResponse]:
+        """升降平台上升"""
+        return self.move_lift(1, step, source, priority, speed)
+    
+    def lift_down(self, step: float = 20.0,
+                  source: str = DEFAULT_SOURCE,
+                  priority: int = 0,
+                  speed: int = DEFAULT_SPEED) -> Optional[ArbiterResponse]:
+        """升降平台下降"""
+        return self.move_lift(-1, step, source, priority, speed)
+    
     def close(self):
         """关闭客户端"""
         if self._socket:
@@ -270,6 +332,14 @@ def main():
 
     # stop 命令
     subparsers.add_parser("stop", help="紧急停止（清空指令，超时释放控制权）")
+    
+    # lift 命令 - 升降平台控制
+    p_lift = subparsers.add_parser("lift", help="控制升降平台")
+    p_lift.add_argument("direction", choices=["up", "down"], help="方向 (up=上升, down=下降)")
+    p_lift.add_argument("--step", type=float, default=20.0, help="移动步长 (mm)，默认20mm")
+    p_lift.add_argument("--source", default=DEFAULT_SOURCE, help="控制源")
+    p_lift.add_argument("--priority", type=int, default=0, help="优先级 (0=自动)")
+    p_lift.add_argument("--speed", type=int, default=DEFAULT_SPEED, help="运动速度")
 
     args = parser.parse_args()
 
@@ -317,6 +387,14 @@ def main():
             # 实际上只需要清空当前命令并设置超时，这里发送空指令
             resp = arm.send_command({}, source="emergency", priority=4)
             print_response(resp)
+        elif args.command == "lift":
+            # 升降平台控制
+            if args.direction == "up":
+                resp = arm.lift_up(step=args.step, source=args.source, priority=args.priority, speed=args.speed)
+                print_response(resp)
+            elif args.direction == "down":
+                resp = arm.lift_down(step=args.step, source=args.source, priority=args.priority, speed=args.speed)
+                print_response(resp)
         else:
             print(f"未知命令: {args.command}")
 
