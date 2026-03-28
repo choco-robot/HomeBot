@@ -59,7 +59,7 @@ class LiftPlatformConfig:
     servo_offset: int = 0      # 舵机2相对于舵机1的偏移
     
     # ========== 零点初始化参数 ==========
-    auto_homing_on_startup: bool = True   # 启动时自动找零
+    auto_homing_on_startup: bool = False   # 启动时自动找零
     homing_direction: str = "up"          # 找零方向: "up"(向上找最高点) 或 "down"(向下找最低点)
     homing_speed: int = 300               # 找零速度 (不宜过快)
     homing_current_threshold: int = 300   # 电流阈值，超过此值判定为碰到限位 (需根据实际校准)

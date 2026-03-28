@@ -401,6 +401,106 @@ class RobotControllerClient:
             logger.error(f"获取机械臂关节状态失败: {e}")
             return {}
     
+    def set_lift_height(self, height: float, speed: int = 800) -> dict:
+        """设置升降平台高度
+        
+        Args:
+            height: 目标高度（mm），新坐标系：0=最高点，负数=向下
+            speed: 运动速度，默认800
+            
+        Returns:
+            dict: 命令执行结果
+        """
+        try:
+            socket = self._get_arm_socket()
+            command = {
+                "source": "voice",
+                "priority": 2,
+                "speed": speed,
+                "lift": height  # 升降平台高度
+            }
+            
+            logger.info(f"设置升降平台高度: {height}mm, 地址: {self.arm_addr}")
+            
+            # 发送命令（带超时）
+            try:
+                socket.send_json(command, flags=zmq.NOBLOCK)
+            except zmq.Again:
+                self._reset_arm_socket()
+                return {
+                    "status": "error",
+                    "message": f"发送命令超时，机械臂服务未响应"
+                }
+            
+            # 接收响应（带超时）
+            try:
+                response = socket.recv_json()
+                logger.info(f"升降平台响应: {response}")
+            except zmq.Again:
+                self._reset_arm_socket()
+                return {
+                    "status": "error",
+                    "message": f"接收响应超时，机械臂服务未响应"
+                }
+            
+            self._arm_available = True
+            success = response.get("success", False)
+            return {
+                "status": "success" if success else "failed",
+                "data": response,
+                "message": response.get("message", "执行完成")
+            }
+            
+        except Exception as e:
+            logger.error(f"设置升降平台高度失败: {e}")
+            return {"status": "error", "message": f"设置高度失败: {e}"}
+    
+    def get_lift_status(self) -> dict:
+        """获取升降平台当前状态
+        
+        Returns:
+            dict: 包含当前高度等信息
+        """
+        try:
+            socket = self._get_arm_socket()
+            command = {
+                "source": "voice",
+                "priority": 2,
+                "speed": 0,
+                "joints": {},
+                "query": True  # 查询模式
+            }
+            
+            logger.info(f"查询升降平台状态, 地址: {self.arm_addr}")
+            
+            # 发送命令（带超时）
+            try:
+                socket.send_json(command, flags=zmq.NOBLOCK)
+            except zmq.Again:
+                self._reset_arm_socket()
+                return {"status": "error", "height": None}
+            
+            # 接收响应（带超时）
+            try:
+                response = socket.recv_json()
+                logger.info(f"升降平台状态响应: {response}")
+            except zmq.Again:
+                self._reset_arm_socket()
+                return {"status": "error", "height": None}
+            
+            # 从响应中提取升降高度
+            lift_height = response.get("lift_height")
+            return {
+                "status": "success",
+                "height": lift_height,
+                "current_owner": response.get("current_owner", "unknown"),
+                "current_priority": response.get("current_priority", 0)
+            }
+            
+        except Exception as e:
+            logger.error(f"获取升降平台状态失败: {e}")
+            return {"status": "error", "height": None, "message": str(e)}
+    
     def close(self):
         """关闭连接"""
         if self.chassis_socket:
@@ -1927,6 +2027,266 @@ def get_human_follow_status() -> dict:
         }
 
 
+# ==================== 升降平台控制工具 ====================
+
+# 升降平台当前高度缓存（用于相对移动计算）
+_current_lift_height: float = 0.0
+
+
+def _refresh_lift_status() -> bool:
+    """刷新升降平台状态
+    
+    Returns:
+        bool: 是否成功刷新
+    """
+    global _current_lift_height
+    try:
+        controller = get_controller()
+        status = controller.get_lift_status()
+        if status.get("status") == "success" and status.get("height") is not None:
+            _current_lift_height = status["height"]
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"刷新升降平台状态失败: {e}")
+        return False
+
+
+@mcp.tool
+def set_lift_height(height: float) -> dict:
+    """设置升降平台到指定高度
+    
+    控制升降平台移动到指定高度位置。新坐标系定义：
+    - 0 = 最高点（零点）
+    - -50 = 向下50mm
+    - -200 = 最低点（假设行程200mm）
+    
+    当用户说"升高到最高点"、"降到最低"、"设置高度为-100mm"等指令时调用此工具。
+    
+    Args:
+        height: 目标高度（mm），范围：0（最高点）到 -stroke_length（最低点）
+        
+    Returns:
+        动作执行结果
+    """
+    try:
+        controller = get_controller()
+        config = get_config()
+        lift_cfg = config.lift_platform
+        
+        # 限制高度范围
+        height = max(lift_cfg.min_height, min(lift_cfg.max_height, height))
+        
+        logger.info(f"设置升降平台高度: {height}mm")
+        
+        # 发送命令
+        result = controller.set_lift_height(height)
+        
+        if result.get("status") == "success":
+            global _current_lift_height
+            _current_lift_height = height
+            return {
+                "status": "success",
+                "message": f"升降平台已设置到 {height:.0f}mm"
+            }
+        else:
+            return result
+            
+    except Exception as e:
+        logger.error(f"设置升降平台高度失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool
+def move_lift_up(distance: float = 0.05) -> dict:
+    """控制升降平台上升指定距离
+    
+    从当前位置向上移动指定距离。注意：新坐标系中向上移动是朝0靠近（数值增大）。
+    
+    当用户说"上升一点"、"升高5厘米"、"往上移"等指令时调用此工具。
+    
+    Args:
+        distance: 上升距离（米），范围 0.01-0.2，默认 0.05（5厘米）
+        
+    Returns:
+        动作执行结果
+    """
+    try:
+        controller = get_controller()
+        config = get_config()
+        lift_cfg = config.lift_platform
+        
+        # 刷新当前高度
+        _refresh_lift_status()
+        
+        # 限制范围并转换为毫米
+        distance_mm = max(0.01, min(0.2, distance)) * 1000
+        
+        global _current_lift_height
+        # 向上移动：高度值增加（朝0靠近）
+        target_height = _current_lift_height + distance_mm
+        
+        # 限制范围（不能超过最高点0）
+        target_height = min(0, target_height)
+        
+        logger.info(f"升降平台上升 {distance_mm}mm，从 {_current_lift_height}mm 到 {target_height}mm")
+        
+        # 发送命令
+        result = controller.set_lift_height(target_height)
+        
+        if result.get("status") == "success":
+            _current_lift_height = target_height
+            return {
+                "status": "success",
+                "message": f"升降平台已上升 {distance*100:.0f} 厘米"
+            }
+        else:
+            return result
+            
+    except Exception as e:
+        logger.error(f"升降平台上升失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool
+def move_lift_down(distance: float = 0.05) -> dict:
+    """控制升降平台下降指定距离
+    
+    从当前位置向下移动指定距离。注意：新坐标系中向下移动是远离0（数值减小，变得更负）。
+    
+    当用户说"下降一点"、"降低5厘米"、"往下移"、"向下移动"等指令时调用此工具。
+    
+    Args:
+        distance: 下降距离（米），范围 0.01-0.2，默认 0.05（5厘米）
+        
+    Returns:
+        动作执行结果
+    """
+    try:
+        controller = get_controller()
+        config = get_config()
+        lift_cfg = config.lift_platform
+        
+        # 刷新当前高度
+        _refresh_lift_status()
+        
+        # 限制范围并转换为毫米
+        distance_mm = max(0.01, min(0.2, distance)) * 1000
+        
+        global _current_lift_height
+        # 向下移动：高度值减小（变得更负）
+        target_height = _current_lift_height - distance_mm
+        
+        # 限制范围（不能超过最低点）
+        target_height = max(lift_cfg.min_height, target_height)
+        
+        logger.info(f"升降平台下降 {distance_mm}mm，从 {_current_lift_height}mm 到 {target_height}mm")
+        
+        # 发送命令
+        result = controller.set_lift_height(target_height)
+        
+        if result.get("status") == "success":
+            _current_lift_height = target_height
+            return {
+                "status": "success",
+                "message": f"升降平台已下降 {distance*100:.0f} 厘米"
+            }
+        else:
+            return result
+            
+    except Exception as e:
+        logger.error(f"升降平台下降失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool
+def get_lift_status() -> dict:
+    """获取升降平台当前状态
+    
+    查询升降平台的当前高度、行程范围等信息。
+    当用户问"升降平台在哪"、"现在多高"、"升降状态"等时调用此工具。
+    
+    Returns:
+        升降平台状态信息
+    """
+    try:
+        controller = get_controller()
+        config = get_config()
+        lift_cfg = config.lift_platform
+        
+        # 获取当前状态
+        status = controller.get_lift_status()
+        
+        if status.get("status") == "success":
+            height = status.get("height")
+            global _current_lift_height
+            if height is not None:
+                _current_lift_height = height
+            
+            # 计算相对位置（百分比）
+            stroke = lift_cfg.stroke_length
+            if height is not None and stroke > 0:
+                # 高度范围：0（最高）到 -stroke（最低）
+                percent = abs(height) / stroke * 100
+                position_desc = f"当前高度 {height:.0f}mm（约{percent:.0f}%下降）"
+            else:
+                position_desc = "无法获取当前高度"
+            
+            return {
+                "status": "success",
+                "message": position_desc,
+                "data": {
+                    "current_height": height,
+                    "stroke_length": stroke,
+                    "min_height": lift_cfg.min_height,
+                    "max_height": lift_cfg.max_height,
+                    "servo_ids": [lift_cfg.servo_id_1, lift_cfg.servo_id_2]
+                }
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "无法获取升降平台状态"
+            }
+            
+    except Exception as e:
+        logger.error(f"获取升降平台状态失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool
+def home_lift() -> dict:
+    """升降平台归零（回到最高点）
+    
+    将升降平台移动到最高点（零点位置）。
+    当用户说"升降归零"、"回到最高点"、"升降复位"等指令时调用此工具。
+    
+    Returns:
+        动作执行结果
+    """
+    try:
+        controller = get_controller()
+        
+        logger.info("升降平台归零")
+        
+        # 发送归零命令（高度设为0）
+        result = controller.set_lift_height(0)
+        
+        if result.get("status") == "success":
+            global _current_lift_height
+            _current_lift_height = 0.0
+            return {
+                "status": "success",
+                "message": "升降平台已回到最高点"
+            }
+        else:
+            return result
+            
+    except Exception as e:
+        logger.error(f"升降平台归零失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # ==================== MCP 客户端集成 ====================
 
 class MCPClientWrapper:
@@ -2188,6 +2548,62 @@ class MCPClientWrapper:
                     "description": "获取人体跟随功能当前是否正在运行的状态",
                     "parameters": {"type": "object", "properties": {}}
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_lift_height",
+                    "description": "设置升降平台到指定高度。新坐标系：0=最高点，负数=向下。如'设置高度为-100mm'、'降到最低'等",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "height": {"type": "number", "description": "目标高度（mm），范围：0（最高点）到 -stroke_length（最低点）"}
+                        },
+                        "required": ["height"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "move_lift_up",
+                    "description": "控制升降平台上升指定距离。如'上升一点'、'升高5厘米'、'往上移'等",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "distance": {"type": "number", "description": "上升距离（米），范围 0.01-0.2，默认 0.05（5厘米）"}
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "move_lift_down",
+                    "description": "控制升降平台下降指定距离。如'下降一点'、'降低5厘米'、'往下移'、'向下移动'等",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "distance": {"type": "number", "description": "下降距离（米），范围 0.01-0.2，默认 0.05（5厘米）"}
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_lift_status",
+                    "description": "获取升降平台当前状态。当用户问'升降平台在哪'、'现在多高'、'升降状态'等时调用",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "home_lift",
+                    "description": "升降平台归零，回到最高点。如'升降归零'、'回到最高点'、'升降复位'等",
+                    "parameters": {"type": "object", "properties": {}}
+                }
             }
         ]
     
@@ -2219,6 +2635,11 @@ class MCPClientWrapper:
             "start_human_follow": start_human_follow,
             "stop_human_follow": stop_human_follow,
             "get_human_follow_status": get_human_follow_status,
+            "set_lift_height": set_lift_height,
+            "move_lift_up": move_lift_up,
+            "move_lift_down": move_lift_down,
+            "get_lift_status": get_lift_status,
+            "home_lift": home_lift,
         }
         
         if tool_name in tool_map:
