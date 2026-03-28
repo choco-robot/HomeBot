@@ -16,7 +16,7 @@ import zmq
 
 from hal.arm.driver import ArmDriver, ArmConfig as HalArmConfig
 from configs import get_config
-from .servo_bus_manager import get_servo_bus
+from .servo_bus_manager import ServoBusManager, get_servo_bus
 
 
 def create_arm_config_from_global() -> HalArmConfig:
@@ -232,6 +232,10 @@ class ArmService:
         Returns:
             是否执行成功
         """
+        if self._bus is None:
+            print("[ARM_SVC] 升降平台控制失败: 舵机总线未初始化")
+            return False
+        
         cfg = self._lift_config
         
         # 限制高度范围 (新坐标系: max_height=0, min_height=-stroke_length)
@@ -300,6 +304,10 @@ class ArmService:
         Returns:
             当前高度 (mm)，读取失败返回 None
         """
+        if self._bus is None:
+            print("[ARM_SVC] 读取升降高度失败: 舵机总线未初始化")
+            return None
+        
         try:
             servo_id = self._lift_config.servo_id_1
             pos = self._bus.read_position(servo_id)
@@ -328,6 +336,10 @@ class ArmService:
         Returns:
             bool: 找零是否成功
         """
+        if self._bus is None:
+            print("[ARM_SVC] 找零失败: 舵机总线未初始化")
+            return False
+        
         cfg = self._lift_config
         servo_id = cfg.servo_id_1
         
@@ -624,7 +636,17 @@ class ArmService:
         
         # 延迟初始化 ArmDriver（确保共享总线已准备好）
         if self.arm is None:
-            self._bus = get_servo_bus()
+            bus_manager = ServoBusManager()
+            if not bus_manager.is_initialized():
+                # 单例未初始化，自行初始化（独立运行模式）
+                print("[ARM_SVC] 舵机总线单例未初始化，正在初始化...")
+                port = self._arm_config.port
+                baudrate = self._arm_config.baudrate
+                if not bus_manager.initialize(port, baudrate):
+                    print(f"[ARM_SVC] 串口初始化失败: {port} @ {baudrate}bps")
+                    print("[ARM_SVC] 请检查串口连接和权限")
+                    return
+            self._bus = bus_manager.get_bus()
             self.arm = ArmDriver(self._arm_config, bus=self._bus)
         
         # 初始化机械臂硬件（使用已连接的共享总线，默认不复位）

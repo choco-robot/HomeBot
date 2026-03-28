@@ -70,7 +70,7 @@ class LiftPlatformConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM23"  # 与底盘共用串口
+    serial_port: str = "COM25"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1

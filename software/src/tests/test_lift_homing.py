@@ -30,7 +30,7 @@ def calibrate_current_threshold():
     
     通过监测正常运行和堵转时的电流差异，确定合适的阈值。
     """
-    from services.motion_service.servo_bus_manager import get_servo_bus
+    from services.motion_service.servo_bus_manager import ServoBusManager
     
     config = get_config()
     lift_cfg = config.lift_platform
@@ -49,7 +49,17 @@ def calibrate_current_threshold():
     print("5. 计算合适的阈值")
     print()
     
-    bus = get_servo_bus()
+    # 获取或初始化总线
+    bus_manager = ServoBusManager()
+    if not bus_manager.is_initialized():
+        port = config.arm.serial_port
+        baudrate = config.arm.baudrate
+        print(f"[INFO] 初始化舵机总线: {port} @ {baudrate}bps")
+        if not bus_manager.initialize(port, baudrate):
+            print("[ERROR] 舵机总线初始化失败")
+            return
+    
+    bus = bus_manager.get_bus()
     if bus is None or not bus.is_connected():
         print("[ERROR] 舵机总线未连接")
         return
@@ -123,16 +133,27 @@ def test_homing():
     print("=" * 60)
     
     from services.motion_service.arm_service import ArmService
+    from services.motion_service.servo_bus_manager import ServoBusManager
     
     # 创建临时服务实例
     service = ArmService()
     
-    # 获取总线
-    from services.motion_service.servo_bus_manager import get_servo_bus
-    service._bus = get_servo_bus()
+    # 获取或初始化总线
+    bus_manager = ServoBusManager()
+    if not bus_manager.is_initialized():
+        # 从配置获取串口参数并初始化
+        config = get_config()
+        port = config.arm.serial_port
+        baudrate = config.arm.baudrate
+        print(f"[INFO] 初始化舵机总线: {port} @ {baudrate}bps")
+        if not bus_manager.initialize(port, baudrate):
+            print("[ERROR] 舵机总线初始化失败，请检查串口连接")
+            return
+    
+    service._bus = bus_manager.get_bus()
     
     if service._bus is None or not service._bus.is_connected():
-        print("[ERROR] 舵机总线未连接，请确保底盘或机械臂服务已启动")
+        print("[ERROR] 舵机总线未连接")
         return
     
     # 执行找零
@@ -148,7 +169,7 @@ def test_homing():
 
 def read_current():
     """持续读取电流值"""
-    from services.motion_service.servo_bus_manager import get_servo_bus
+    from services.motion_service.servo_bus_manager import ServoBusManager
     
     config = get_config()
     lift_cfg = config.lift_platform
@@ -161,7 +182,17 @@ def read_current():
     print("按 Ctrl+C 停止")
     print()
     
-    bus = get_servo_bus()
+    # 获取或初始化总线
+    bus_manager = ServoBusManager()
+    if not bus_manager.is_initialized():
+        port = config.arm.serial_port
+        baudrate = config.arm.baudrate
+        print(f"[INFO] 初始化舵机总线: {port} @ {baudrate}bps")
+        if not bus_manager.initialize(port, baudrate):
+            print("[ERROR] 舵机总线初始化失败")
+            return
+    
+    bus = bus_manager.get_bus()
     if bus is None or not bus.is_connected():
         print("[ERROR] 舵机总线未连接")
         return

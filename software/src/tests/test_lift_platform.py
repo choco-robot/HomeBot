@@ -41,30 +41,30 @@ def test_lift_platform():
         response = socket.recv_json()
         print(f"响应: {response}")
         
-        # 2. 测试升降到50mm
-        print("\n[2] 升降平台移动到 50mm...")
+        # 2. 测试下降到低位置（新坐标系：负数表示向下）
+        print("\n[2] 升降平台下降到 -100mm...")
         socket.send_json({
             "source": "test",
             "priority": 2,
-            "lift": 50  # 单位: mm
+            "lift": -100  # 单位: mm，新坐标系：0=最高点，负数=向下
         })
         response = socket.recv_json()
         print(f"响应: {response}")
-        time.sleep(2)
+        time.sleep(3)
         
-        # 3. 测试升降到100mm
-        print("\n[3] 升降平台移动到 100mm...")
+        # 3. 测试下降到更低位置
+        print("\n[3] 升降平台下降到 -180mm...")
         socket.send_json({
             "source": "test",
             "priority": 2,
-            "lift_height": 100  # 也可以用 lift_height
+            "lift_height": -180  # 也可以用 lift_height
         })
         response = socket.recv_json()
         print(f"响应: {response}")
-        time.sleep(2)
+        time.sleep(3)
         
-        # 4. 测试升降到0mm（归位）
-        print("\n[4] 升降平台归位到 0mm...")
+        # 4. 测试升降到0mm（最高点）
+        print("\n[4] 升降平台回到最高点 0mm...")
         socket.send_json({
             "source": "test",
             "priority": 2,
@@ -72,7 +72,7 @@ def test_lift_platform():
         })
         response = socket.recv_json()
         print(f"响应: {response}")
-        time.sleep(2)
+        time.sleep(3)
         
         # 5. 再次查询状态
         print("\n[5] 再次查询状态...")
@@ -119,12 +119,14 @@ def test_config():
     
     # 验证参数计算
     print("\n参数验证:")
-    test_height = 100.0  # mm
+    print("  新坐标系: 0=最高点, -stroke=最低点")
+    test_heights = [0, -50, -100, -150, -200]  # mm
     lead = lift_cfg.lead
     ratio = lift_cfg.gear_ratio
     a_res = lift_cfg.angle_resolution
-    steps = int(-test_height * 4096 / lead / ratio / a_res)
-    print(f"  高度 {test_height}mm = {steps} 步")
+    for h in test_heights:
+        steps = int(-h * 4096 / lead / ratio / a_res)
+        print(f"  高度 {h:6.1f}mm = {steps:8d} 步")
     
     return True
 
