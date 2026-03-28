@@ -85,10 +85,10 @@ def calibrate_current_threshold():
     print("    (按 Ctrl+C 停止)")
     
     # 发送向下运动指令
-    test_steps = -1000  # 向下运动
+    test_steps = 1000  # 向下运动
     positions = {
-        servo_id: (test_steps, 300, 0),
-        lift_cfg.servo_id_2: (test_steps + lift_cfg.servo_offset, 300, 0)
+        servo_id: (test_steps, 3000, 0),
+        lift_cfg.servo_id_2: (test_steps + lift_cfg.servo_offset, 3000, 0)
     }
     bus.sync_write_positions(positions)
     

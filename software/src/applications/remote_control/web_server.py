@@ -598,8 +598,58 @@ class ArmClient:
             return {"success": False, "message": str(e)}
     
     def get_lift_height(self) -> float:
-        """获取当前升降平台高度"""
+        """获取当前升降平台高度（本地缓存值）"""
         return getattr(self, '_lift_height', 0.0)
+    
+    def query_lift_height(self) -> Dict[str, Any]:
+        """
+        查询升降平台当前高度
+        通过发送查询命令获取实际高度
+        """
+        if not self._connected:
+            return {"success": False, "message": "未连接"}
+        
+        # 构造查询请求
+        request = {
+            "source": self.SOURCE_NAME,
+            "joints": {"query": True},  # 查询标记
+            "speed": 0,
+            "priority": self.PRIORITY
+        }
+        
+        try:
+            if self._socket.poll(100, zmq.POLLOUT):
+                self._socket.send_json(request)
+                
+                if self._socket.poll(100, zmq.POLLIN):
+                    response = self._socket.recv_json()
+                    if response.get("success"):
+                        # 获取升降高度
+                        lift_height = response.get("lift_height")
+                        if lift_height is not None:
+                            self._lift_height = lift_height
+                            return {
+                                "success": True,
+                                "height": lift_height,
+                                "message": f"当前高度: {lift_height:.1f}mm"
+                            }
+                        else:
+                            return {
+                                "success": True,
+                                "height": self._lift_height,
+                                "message": "服务器未返回高度信息"
+                            }
+                    else:
+                        return {
+                            "success": False,
+                            "message": response.get("message", "查询失败")
+                        }
+                else:
+                    return {"success": False, "message": "接收超时"}
+            else:
+                return {"success": False, "message": "socket不可写"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
 
 class VideoStreamClient:
@@ -1003,6 +1053,13 @@ class ZMQBridge:
         if not self.arm_client:
             return 0.0
         return self.arm_client.get_lift_height()
+    
+    def query_lift_height(self) -> Dict[str, Any]:
+        """查询升降平台当前实际高度"""
+        if not self.arm_client or not self.arm_client._connected:
+            return {"success": False, "message": "机械臂未连接"}
+        
+        return self.arm_client.query_lift_height()
 
 
 # 创建Flask应用
@@ -1281,6 +1338,12 @@ def handle_lift_control(data):
             })
             return
         
+        # 首先查询当前实际高度，确保同步
+        query_result = zmq_bridge.query_lift_height()
+        if query_result.get('success'):
+            current_height = query_result.get('height', 0)
+            print(f"[Socket] 升降平台当前高度: {current_height:.1f}mm")
+        
         # up: direction=1 (向0靠近，高度增加)
         # down: direction=-1 (向负值移动，高度减少)
         direction = 1 if direction_str == 'up' else -1
@@ -1299,6 +1362,35 @@ def handle_lift_control(data):
     except Exception as e:
         print(f"[Socket] 升降平台控制异常: {e}")
         emit('server_response', {'status': 'lift', 'error': str(e)})
+
+
+@socketio.on('get_lift_height')
+def handle_get_lift_height():
+    """处理升降平台高度查询请求"""
+    if not zmq_bridge:
+        emit('server_response', {
+            'status': 'lift_height',
+            'success': False,
+            'message': '未连接'
+        })
+        return
+    
+    try:
+        response = zmq_bridge.query_lift_height()
+        emit('server_response', {
+            'status': 'lift_height',
+            'success': response.get('success', False),
+            'height': response.get('height'),
+            'message': response.get('message', '')
+        })
+        print(f"[Socket] 升降平台高度查询: {response}")
+    except Exception as e:
+        print(f"[Socket] 升降平台高度查询异常: {e}")
+        emit('server_response', {
+            'status': 'lift_height',
+            'success': False,
+            'message': str(e)
+        })
 
 
 @socketio.on('toggle_human_follow')

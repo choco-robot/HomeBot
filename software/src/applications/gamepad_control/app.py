@@ -624,21 +624,21 @@ class GamepadControlApp:
             self._reset()
             return True
         
-        # L3 (左摇杆按下) -> 升降平台下降 (向负方向移动)
+        # L3 (左摇杆按下) -> 升降平台上升 (向0移动)
         if self._is_button_just_pressed(state, Button.LEFT_THUMB):
-            from configs import get_config
-            min_height = get_config().lift_platform.min_height  # 通常为 -200
-            new_height = max(min_height, self.lift_height - self.lift_step)
-            logger.info(f"升降平台下降: {self.lift_height:.1f}mm -> {new_height:.1f}mm")
-            self._send_lift_command(new_height)
-            return True
-        
-        # R3 (右摇杆按下) -> 升降平台上升 (向0移动)
-        if self._is_button_just_pressed(state, Button.RIGHT_THUMB):
             from configs import get_config
             max_height = get_config().lift_platform.max_height  # 通常为 0
             new_height = min(max_height, self.lift_height + self.lift_step)
             logger.info(f"升降平台上升: {self.lift_height:.1f}mm -> {new_height:.1f}mm")
+            self._send_lift_command(new_height)
+            return True
+        
+        # R3 (右摇杆按下) -> 升降平台下降 (向负方向移动)
+        if self._is_button_just_pressed(state, Button.RIGHT_THUMB):
+            from configs import get_config
+            min_height = get_config().lift_platform.min_height  # 通常为 -200
+            new_height = max(min_height, self.lift_height - self.lift_step)
+            logger.info(f"升降平台下降: {self.lift_height:.1f}mm -> {new_height:.1f}mm")
             self._send_lift_command(new_height)
             return True
         

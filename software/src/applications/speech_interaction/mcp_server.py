@@ -401,7 +401,7 @@ class RobotControllerClient:
             logger.error(f"获取机械臂关节状态失败: {e}")
             return {}
     
-    def set_lift_height(self, height: float, speed: int = 800) -> dict:
+    def set_lift_height(self, height: float, speed: int = 0) -> dict:
         """设置升降平台高度
         
         Args:

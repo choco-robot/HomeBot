@@ -58,13 +58,16 @@ class LiftPlatformConfig:
     # 零位偏移 (步数)，用于校准两个舵机的同步
     servo_offset: int = 0      # 舵机2相对于舵机1的偏移
     
+    # 步进模式方向控制: 1 或 -1
+    step_direction: int = 1   # 正步数对应的运动方向 (1=向下, -1=向上)
+    
     # ========== 零点初始化参数 ==========
-    auto_homing_on_startup: bool = False   # 启动时自动找零
+    auto_homing_on_startup: bool = True   # 启动时自动找零
     homing_direction: str = "up"          # 找零方向: "up"(向上找最高点) 或 "down"(向下找最低点)
-    homing_speed: int = 300               # 找零速度 (不宜过快)
-    homing_current_threshold: int = 300   # 电流阈值，超过此值判定为碰到限位 (需根据实际校准)
-    homing_timeout: float = 15.0          # 找零超时时间(秒)
-    homing_backoff_steps: int = 100       # 找到限位后回退步数 (释放压力)
+    homing_speed: int = 1500               # 找零速度 (不宜过快)
+    homing_current_threshold: int = 80   # 电流阈值，超过此值判定为碰到限位 (需根据实际校准)
+    homing_timeout: float = 25.0          # 找零超时时间(秒)
+    homing_backoff_steps: int = 200       # 找到限位后回退步数 (释放压力)
 
 
 @dataclass

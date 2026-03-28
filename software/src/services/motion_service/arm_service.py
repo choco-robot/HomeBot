@@ -174,56 +174,76 @@ class ArmService:
         
         return joint_states
     
-    def _height_to_steps(self, height_mm: float) -> int:
+    def _height_to_steps(self, height_mm: float, current_height_mm: float = 0.0) -> int:
         """
-        将升降高度 (mm) 转换为舵机步数
+        将升降高度差值 (mm) 转换为舵机相对步数
         
         新坐标系定义:
         - height = 0: 最高点
         - height = -stroke_length: 最低点
         
+        注意: 升降舵机工作在步进模式(Mode=3)，需要发送相对步数，
+        即相对于当前位置的偏移量，而非绝对位置。
+        
         Args:
             height_mm: 目标高度 (mm)，新坐标系下为负值或零
+            current_height_mm: 当前高度 (mm)，用于计算相对步数
             
         Returns:
-            舵机步数 (相对于最高点零位)
+            舵机相对步数 (相对于当前位置的偏移量)
         """
         cfg = self._lift_config
-        # 从新坐标系转换为相对于最高点的偏移量 (0 ~ stroke_length)
-        # height = 0 -> offset = 0 (最高点)
-        # height = -200 -> offset = 200 (最低点)
-        offset_from_top = -height_mm
+        # 计算高度差值 (目标 - 当前)
+        # 例如: 从 -50mm 到 -100mm，delta = -50mm (向下运动)
+        delta_height = height_mm - current_height_mm
         
-        # 步数计算: 向下运动需要负的步数
-        # 注意: 根据用户测试代码，向下为负步数
-        steps = int(-offset_from_top * 4096 / cfg.lead / cfg.gear_ratio / cfg.angle_resolution)
+        # 步数计算
+        # 丝杆导程 lead (mm/转)，每转 4096 步
+        steps_per_mm = 4096 / cfg.lead / cfg.gear_ratio / cfg.angle_resolution
+        
+        # 应用方向控制: step_direction=1 时，正步数向下运动
+        # step_direction=-1 时，正步数向上运动
+        steps = int(- delta_height * steps_per_mm * cfg.step_direction)
+        
         return steps
     
-    def _steps_to_height(self, steps: int) -> float:
+    def _steps_to_height(self, relative_steps: int, current_height_mm: float = 0.0) -> float:
         """
-        将舵机步数转换为升降高度 (mm)
+        将舵机相对步数转换为新的升降高度 (mm)
         
         新坐标系定义:
-        - steps = 0: 最高点 (height = 0)
-        - steps = -N: 向下移动 N 步对应的高度
+        - height = 0: 最高点
+        - height = -stroke_length: 最低点
+        
+        注意: 步进模式下读取的位置是相对于上电位置的累计步数，
+        需要根据机械安装方向正确解释。
         
         Args:
-            steps: 舵机步数 (相对于最高点零位)
+            relative_steps: 舵机相对步数（从读取的位置值）
+            current_height_mm: 当前高度参考值
             
         Returns:
             高度 (mm)，新坐标系下为负值或零
         """
         cfg = self._lift_config
-        # 从步数计算相对于最高点的偏移量
-        offset_from_top = -steps * cfg.lead * cfg.gear_ratio * cfg.angle_resolution / 4096
+        # 步进模式下，位置值是相对于上电位置的累计值
+        # 需要根据运动方向计算实际高度变化
+        steps_per_mm = 4096 / cfg.lead / cfg.gear_ratio / cfg.angle_resolution
         
-        # 转换为新坐标系: 最高点为0，向下为负
-        height = -offset_from_top
-        return height
+        # 使用方向控制参数反向计算
+        delta_height = -relative_steps / steps_per_mm * cfg.step_direction
+        
+        # 累加到当前高度
+        height = current_height_mm + delta_height
+        
+        # 限制在有效范围内
+        return max(cfg.min_height, min(cfg.max_height, height))
     
     def _move_lift_platform(self, target_height: float, speed: Optional[int] = None) -> bool:
         """
         控制升降平台移动到指定高度
+        
+        注意: 升降舵机工作在步进模式(Mode=3)，需要发送相对步数
         
         Args:
             target_height: 目标高度 (mm)，新坐标系下为负值或零
@@ -241,8 +261,13 @@ class ArmService:
         # 限制高度范围 (新坐标系: max_height=0, min_height=-stroke_length)
         target_height = max(cfg.min_height, min(cfg.max_height, target_height))
         
-        # 计算目标步数
-        steps = self._height_to_steps(target_height)
+        # 计算相对步数 (相对于当前位置)
+        relative_steps = self._height_to_steps(target_height, self._current_lift_height)
+        
+        # 如果步数为0，不需要移动
+        if relative_steps == 0:
+            print(f"[ARM_SVC] 升降平台已在目标位置: {target_height:.1f}mm")
+            return True
         
         # 使用配置的速度
         if speed is None:
@@ -253,16 +278,17 @@ class ArmService:
         servo_id_2 = cfg.servo_id_2
         
         try:
-            # 发送位置指令到两个舵机（同步写入）
+            # 发送相对步数到两个舵机（同步写入）
+            # 步进模式下，写入的是相对于当前位置的步数
             positions = {
-                servo_id_1: (steps, speed, acc),
-                servo_id_2: (steps + cfg.servo_offset, speed, acc)
+                servo_id_1: (relative_steps, speed, acc),
+                servo_id_2: (relative_steps, speed, acc)  # 两个舵机使用相同的相对步数
             }
             success = self._bus.sync_write_positions(positions)
             
             if success:
                 self._current_lift_height = target_height
-                print(f"[ARM_SVC] 升降平台移动到 {target_height:.1f}mm (steps={steps})")
+                print(f"[ARM_SVC] 升降平台移动到 {target_height:.1f}mm (相对步数={relative_steps})")
             else:
                 print(f"[ARM_SVC] 升降平台移动失败")
             
@@ -301,6 +327,9 @@ class ArmService:
         """
         获取当前升降平台高度
         
+        注意: 步进模式下读取的位置是相对于上电位置的累计步数，
+        需要结合当前高度估计值进行校准。
+        
         Returns:
             当前高度 (mm)，读取失败返回 None
         """
@@ -312,9 +341,12 @@ class ArmService:
             servo_id = self._lift_config.servo_id_1
             pos = self._bus.read_position(servo_id)
             if pos is not None:
-                height = self._steps_to_height(pos)
-                self._current_lift_height = height
-                return height
+                # 步进模式下，位置值是相对于上电位置的累计步数
+                # 这里我们使用软件记录的当前高度，因为步进模式没有绝对位置
+                # 可选：使用读取的位置值进行校准（如果需要）
+                # height = self._steps_to_height(pos, self._current_lift_height)
+                # self._current_lift_height = height
+                return self._current_lift_height
         except Exception as e:
             print(f"[ARM_SVC] 读取升降高度失败: {e}")
         
@@ -324,10 +356,8 @@ class ArmService:
         """
         执行升降平台零点初始化（找零）
         
-        通过检测电流/负载判断机械限位，将最高点设为坐标零点。
-        
-        流程:
-        1. 向配置方向(up/down)缓慢运动
+        步进模式下的找零流程:
+        1. 向配置方向(up/down)缓慢运动（使用相对步数）
         2. 实时监测舵机电流/负载
         3. 电流超过阈值时停止，判定为碰到限位
         4. 稍微回退释放压力
@@ -349,23 +379,23 @@ class ArmService:
         print(f"[ARM_SVC] 电流阈值: {cfg.homing_current_threshold}")
         
         # 找零方向: up=向最高点(坐标0)，down=向最低点(坐标-stroke_length)
+        # 步进模式下，正步数和负步数控制不同方向，根据 step_direction 配置调整
+        # step_direction=1: 正步数向下，负步数向上
+        # step_direction=-1: 正步数向上，负步数向下
         if cfg.homing_direction == "up":
-            # 向上运动，步数为正（向0步靠近）
-            # 先发送一个大的正向位置指令，让舵机持续向上运动
-            target_steps = 10000  # 一个足够大的正值，让舵机向上运动
+            # 向上运动: 如果 step_direction=1，需要负步数；如果 step_direction=-1，需要正步数
+            homing_steps = -10000* cfg.step_direction
         else:
-            # 向下运动，步数为负
-            target_steps = -10000  # 一个足够大的负值，让舵机向下运动
+            # 向下运动: 如果 step_direction=1，需要正步数；如果 step_direction=-1，需要负步数
+            homing_steps = 10000 * cfg.step_direction
         
         try:
-            # 发送持续运动指令（使用轮式模式或持续位置模式）
-            # 这里使用位置模式，设置一个足够远的目标点
             print("[ARM_SVC] 开始找零运动...")
             
-            # 发送运动指令
+            # 发送运动指令（相对步数）
             positions = {
-                servo_id: (target_steps, cfg.homing_speed, 0),
-                cfg.servo_id_2: (target_steps + cfg.servo_offset, cfg.homing_speed, 0)
+                servo_id: (homing_steps, cfg.homing_speed, 0),
+                cfg.servo_id_2: (homing_steps, cfg.homing_speed, 0)
             }
             if not self._bus.sync_write_positions(positions):
                 print("[ARM_SVC] 找零运动指令发送失败")
@@ -378,7 +408,7 @@ class ArmService:
             
             while time.time() - start_time < cfg.homing_timeout:
                 # 读取电流
-                current = self._bus.read_current(servo_id)
+                current = max(self._bus.read_current(servo_id),self._bus.read_current(cfg.servo_id_2))
                 if current is not None:
                     current_values.append(current)
                     # 保持最近10个值的滑动窗口
@@ -396,37 +426,78 @@ class ArmService:
                 
                 time.sleep(0.05)  # 20Hz 检测频率
             
-            # 停止运动
+            # 停止运动 - 步进模式下使用torque_disable停止
             print("[ARM_SVC] 停止运动...")
-            stop_positions = {
-                servo_id: (0, 0, 0),  # 当前位置停止
-                cfg.servo_id_2: (0, 0, 0)
-            }
-            self._bus.sync_write_positions(stop_positions)
+            try:
+                # 步进模式下必须使用torque_disable才能真正停止
+                self._bus.torque_disable(servo_id)
+                self._bus.torque_disable(cfg.servo_id_2)
+                time.sleep(0.1)
+                print("[ARM_SVC] 舵机已停止（扭矩失能）")
+            except Exception as e:
+                print(f"[ARM_SVC] 警告: 停止舵机失败: {e}")
             
             if not limit_detected:
                 print(f"[ARM_SVC] 找零超时 ({cfg.homing_timeout}s)，未检测到限位")
                 return False
             
+            # 解锁并重新使能舵机 - 步进模式下必须先失能才能退出保护状态
+            print("[ARM_SVC] 解锁舵机...")
+            try:
+                # 重新使能扭矩（必须先失能再使能才能退出保护状态）
+                self._bus.torque_enable(servo_id)
+                self._bus.torque_enable(cfg.servo_id_2)
+                time.sleep(0.1)  # 等待使能生效
+                print("[ARM_SVC] 舵机已解锁并重新使能")
+            except Exception as e:
+                print(f"[ARM_SVC] 警告: 解锁舵机失败: {e}")
+            
             # 稍微回退，释放机械压力
             print(f"[ARM_SVC] 回退 {cfg.homing_backoff_steps} 步释放压力...")
             if cfg.homing_direction == "up":
-                # 向上找到限位，向下回退
-                backoff_steps = -cfg.homing_backoff_steps
+                # 向上找到限位，需要向下回退
+                # step_direction=1: 向下需要正步数，但这里要回退（向反方向），所以用负
+                # step_direction=-1: 向下需要负步数
+                backoff_steps = cfg.homing_backoff_steps * cfg.step_direction
             else:
-                # 向下找到限位，向上回退
-                backoff_steps = cfg.homing_backoff_steps
+                # 向下找到限位，需要向上回退
+                # step_direction=1: 向上需要负步数
+                # step_direction=-1: 向上需要正步数
+                backoff_steps = -cfg.homing_backoff_steps * cfg.step_direction
             
             backoff_positions = {
                 servo_id: (backoff_steps, cfg.homing_speed, 0),
-                cfg.servo_id_2: (backoff_steps + cfg.servo_offset, cfg.homing_speed, 0)
+                cfg.servo_id_2: (backoff_steps, cfg.homing_speed, 0)
             }
-            self._bus.sync_write_positions(backoff_positions)
-            time.sleep(0.5)  # 等待回退完成
+            
+            # 发送回退命令并确认
+            if not self._bus.sync_write_positions(backoff_positions):
+                print("[ARM_SVC] 警告: 回退命令发送失败")
+            else:
+                print(f"[ARM_SVC] 回退命令已发送: {backoff_steps} 步")
+                # 等待回退完成 - 使用运动检测而非固定延迟
+                backoff_start = time.time()
+                backoff_timeout = 3.0  # 3秒超时
+                backoff_completed = False
+                
+                while time.time() - backoff_start < backoff_timeout:
+                    try:
+                        state = self._bus.get_state(servo_id)
+                        if state and not state.moving:
+                            backoff_completed = True
+                            print(f"[ARM_SVC] 回退完成")
+                            break
+                    except:
+                        pass
+                    time.sleep(0.1)
+                
+                if not backoff_completed:
+                    print(f"[ARM_SVC] 警告: 回退超时，可能未完成")
+                
+                # 额外等待一小段时间确保稳定
+                time.sleep(0.2)
             
             # 设置当前位置为零点
-            # 使用舵机的 set_midpoint 或重新标定功能
-            # 这里通过记录偏移量来实现
             print("[ARM_SVC] 设置零点...")
             
             # 设置该位置为最高点（坐标0）

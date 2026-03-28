@@ -76,6 +76,20 @@ class RobotController {
         this.startStatusPolling();
         this.updateFps();
         this.updateFollowStatus(false);
+        
+        // 页面初始化完成后查询当前升降高度
+        this.queryLiftHeight();
+    }
+    
+    // ========== 查询升降平台当前高度 ==========
+    queryLiftHeight() {
+        // 等待连接建立后再查询
+        setTimeout(() => {
+            if (this.isConnected) {
+                console.log('[Lift] 查询当前高度...');
+                this.socket.emit('get_lift_height');
+            }
+        }, 500);  // 延迟500ms等待连接建立
     }
     
     // ========== 视频流初始化 ==========
@@ -313,6 +327,15 @@ class RobotController {
                     this.showToast(data.message || '升降控制成功', 'success');
                 } else {
                     this.showToast(data.message || '升降控制失败', 'error');
+                }
+            } else if (data.status === 'lift_height') {
+                // 升降平台高度查询响应
+                if (data.success && data.height !== undefined) {
+                    this.liftHeight = data.height;
+                    this.updateLiftDisplay();
+                    console.log(`[Lift] 当前高度已同步: ${data.height}mm`);
+                } else {
+                    console.warn('[Lift] 高度查询失败:', data.message);
                 }
             }
         });
