@@ -331,6 +331,11 @@ def main():
     
     print("[OK] 串口连接成功")
     
+    # 关闭所有关节扭矩，方便手动调整位置
+    print("\n关闭所有关节扭矩...")
+    bus.torque_disable()
+    print("[OK] 所有关节扭矩已关闭，可以手动调整机械臂位置")
+    
     if bus._simulation:
         print("\n[注意] 运行中模拟模式，不会实际控制舵机")
     

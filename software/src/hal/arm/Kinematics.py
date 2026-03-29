@@ -242,8 +242,9 @@ class ArmKinematics:
         Returns:
             wrist_flex 角度，度
         """
-        # 手腕保持水平：wrist_flex = target_orientation - shoulder - elbow
-        wrist_flex = target_orientation - shoulder_angle - elbow_angle
+        # 手腕保持水平：wrist_flex = 180 - shoulder - elbow
+        # 注意：这是基于当前机械臂构型的几何关系
+        wrist_flex = target_orientation + 180.0 - shoulder_angle - elbow_angle
         return wrist_flex
     
     def is_reachable(self, r: float, z: float) -> bool:
