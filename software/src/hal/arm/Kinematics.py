@@ -100,6 +100,179 @@ def inverse_kinematics_all(L1, L2, target):
     
     return solutions
 
+
+class ArmKinematics:
+    """
+    机械臂运动学类 - 面向对象的2DOF平面机械臂运动学
+    
+    适用于 shoulder + elbow 两个关节控制的平面机械臂
+    坐标系：r 为水平距离（前伸方向为正），z 为垂直高度（向上为正）
+    """
+    
+    def __init__(self, L1: float = 120.0, L2: float = 100.0):
+        """
+        初始化运动学
+        
+        Args:
+            L1: 大臂长度（上臂），单位 mm
+            L2: 小臂长度（前臂），单位 mm
+        """
+        self.L1 = L1
+        self.L2 = L2
+    
+    def forward_kinematics(self, shoulder_angle: float, elbow_angle: float) -> Tuple[float, float]:
+        """
+        正运动学：关节角度 -> 末端位置
+        
+        Args:
+            shoulder_angle: 肩关节角度，相对水平线，度
+            elbow_angle: 肘关节角度，相对大臂，度
+        
+        Returns:
+            (r, z) 末端位置，单位 mm
+            r: 水平距离（前伸方向为正）
+            z: 垂直高度（向上为正）
+        """
+        shoulder_rad = math.radians(shoulder_angle)
+        elbow_abs_rad = math.radians(shoulder_angle + elbow_angle)
+        
+        # 计算末端位置
+        r = self.L1 * math.cos(shoulder_rad) + self.L2 * math.cos(elbow_abs_rad)
+        z = self.L1 * math.sin(shoulder_rad) + self.L2 * math.sin(elbow_abs_rad)
+        
+        return r, z
+    
+    def inverse_kinematics(self, r: float, z: float, elbow_up: bool = True) -> Optional[Tuple[float, float]]:
+        """
+        逆运动学：末端位置 -> 关节角度
+        
+        Args:
+            r: 目标水平距离，单位 mm
+            z: 目标垂直高度，单位 mm
+            elbow_up: True 为肘部向上构型，False 为肘部向下构型
+        
+        Returns:
+            (shoulder角度, elbow角度) 单位度，无解时返回 None
+        """
+        dist_sq = r**2 + z**2
+        dist = math.sqrt(dist_sq)
+        
+        # 工作空间检查
+        if dist > self.L1 + self.L2:
+            return None
+        if dist < abs(self.L1 - self.L2):
+            return None
+        
+        # 计算角度
+        phi = math.atan2(z, r)
+        cos_beta = (dist_sq - self.L1**2 - self.L2**2) / (2 * self.L1 * self.L2)
+        cos_beta = max(-1.0, min(1.0, cos_beta))
+        
+        # 选择构型
+        if elbow_up:
+            beta_rad = math.acos(cos_beta)
+        else:
+            beta_rad = -math.acos(cos_beta)
+        
+        k1 = self.L1 + self.L2 * math.cos(beta_rad)
+        k2 = self.L2 * math.sin(beta_rad)
+        alpha_rad = phi - math.atan2(k2, k1)
+        
+        shoulder_deg = math.degrees(alpha_rad)
+        elbow_deg = math.degrees(beta_rad)
+        
+        # 规范化到 [-180, 180]
+        shoulder_deg = (shoulder_deg + 180) % 360 - 180
+        elbow_deg = (elbow_deg + 180) % 360 - 180
+        
+        return shoulder_deg, elbow_deg
+    
+    def inverse_kinematics_all(self, r: float, z: float) -> List[Tuple[float, float]]:
+        """
+        返回所有可行解（最多2组）
+        
+        Args:
+            r: 目标水平距离，单位 mm
+            z: 目标垂直高度，单位 mm
+        
+        Returns:
+            [(shoulder1, elbow1), (shoulder2, elbow2)] 或空列表
+        """
+        dist_sq = r**2 + z**2
+        dist = math.sqrt(dist_sq)
+        solutions = []
+        
+        if dist > self.L1 + self.L2 or dist < abs(self.L1 - self.L2):
+            return solutions
+        
+        cos_beta = (dist_sq - self.L1**2 - self.L2**2) / (2 * self.L1 * self.L2)
+        cos_beta = max(-1.0, min(1.0, cos_beta))
+        
+        # 两种构型：肘部向上(beta>0)和肘部向下(beta<0)
+        for beta_rad in [math.acos(cos_beta), -math.acos(cos_beta)]:
+            k1 = self.L1 + self.L2 * math.cos(beta_rad)
+            k2 = self.L2 * math.sin(beta_rad)
+            alpha_rad = math.atan2(z, r) - math.atan2(k2, k1)
+            
+            shoulder_deg = math.degrees(alpha_rad)
+            elbow_deg = math.degrees(beta_rad)
+            
+            # 规范化
+            shoulder_deg = (shoulder_deg + 180) % 360 - 180
+            elbow_deg = (elbow_deg + 180) % 360 - 180
+            
+            solutions.append((shoulder_deg, elbow_deg))
+        
+        return solutions
+    
+    def compute_wrist_flex(self, shoulder_angle: float, elbow_angle: float, 
+                          target_orientation: float = 0.0) -> float:
+        """
+        计算腕关节角度，使末端保持水平
+        
+        Args:
+            shoulder_angle: 肩关节角度，度
+            elbow_angle: 肘关节角度，度
+            target_orientation: 目标末端方向，0表示水平（默认）
+        
+        Returns:
+            wrist_flex 角度，度
+        """
+        # 手腕保持水平：wrist_flex = 180 - shoulder - elbow
+        # 注意：这是基于当前机械臂构型的几何关系
+        wrist_flex = target_orientation + 180.0 - shoulder_angle - elbow_angle
+        return wrist_flex
+    
+    def is_reachable(self, r: float, z: float) -> bool:
+        """
+        检查目标位置是否可达
+        
+        Args:
+            r: 目标水平距离，单位 mm
+            z: 目标垂直高度，单位 mm
+        
+        Returns:
+            True 如果位置可达，否则 False
+        """
+        dist_sq = r**2 + z**2
+        dist = math.sqrt(dist_sq)
+        
+        if dist > self.L1 + self.L2:
+            return False
+        if dist < abs(self.L1 - self.L2):
+            return False
+        return True
+    
+    def get_workspace_radius(self) -> Tuple[float, float]:
+        """
+        获取工作空间半径范围
+        
+        Returns:
+            (min_radius, max_radius) 单位 mm
+        """
+        return abs(self.L1 - self.L2), self.L1 + self.L2
+
+
 # ========== 验证测试 ==========
 if __name__ == "__main__":
     L1, L2 = 100.0, 80.0
