@@ -13,12 +13,13 @@ logger = get_logger(__name__)
 class VisionService:
     """视觉服务: 直接采集图像,处理后发布给其他应用订阅."""
     
-    def __init__(self, pub_addr: str = "tcp://*:5560", config=None):
+    def __init__(self, pub_addr: str = "tcp://*:5560", device_id: int = None, config=None):
         """
         初始化视觉服务.
         
         Args:
             pub_addr: ZMQ PUB socket 绑定地址
+            device_id: 摄像头设备ID (默认从配置读取)
             config: 配置对象,包含 camera 和 zmq 配置
         """
         from common.zmq_helper import create_socket
@@ -29,17 +30,23 @@ class VisionService:
             config = get_config()
         self._config = config
         
-        # 从配置获取地址
-        pub_addr = getattr(config, 'zmq', config).vision_pub_addr if hasattr(config, 'zmq') else pub_addr
-        if hasattr(config, 'network') and hasattr(config.network, 'zmq'):
-            pub_addr = config.network.zmq.vision_pub_addr
+        # 从配置获取地址（仅当未显式传入时）
+        # 优先级：传入参数 > 配置文件 > 默认值
+        if pub_addr == "tcp://*:5560":  # 只有使用默认值时才从配置读取
+            if hasattr(config, 'zmq'):
+                pub_addr = config.zmq.vision_pub_addr
+            elif hasattr(config, 'network') and hasattr(config.network, 'zmq'):
+                pub_addr = config.network.zmq.vision_pub_addr
             
         # 创建 PUB socket 用于发布图像帧
         self._pub_socket = create_socket(zmq.PUB, bind=True, address=pub_addr)
         logger.info(f"VisionService PUB socket bound to {pub_addr}")
         
-        # 相机配置
-        self._cam_device = getattr(config.camera, 'device_id', 0) if hasattr(config, 'camera') else 0
+        # 相机配置（优先级：传入参数 > 配置文件 > 默认值）
+        if device_id is not None:
+            self._cam_device = device_id
+        else:
+            self._cam_device = getattr(config.camera, 'device_id', 0) if hasattr(config, 'camera') else 0
         self._fps = getattr(config.camera, 'fps', 30) if hasattr(config, 'camera') else 30
         self._width = getattr(config.camera, 'width', 640) if hasattr(config, 'camera') else 640
         self._height = getattr(config.camera, 'height', 480) if hasattr(config, 'camera') else 480

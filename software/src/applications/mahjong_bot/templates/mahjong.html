@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>HomeBot 麻将机器人</title>
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <!-- 腾讯云 TRTC Web SDK -->
+    <script src="https://web.sdk.qcloud.com/trtc/webrtc/v5/dist/trtc.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* 顶部状态栏 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(10px);
+            flex-shrink: 0;
+        }
+        .title { font-size: 20px; font-weight: 600; letter-spacing: 1px; }
+        .status-group { display: flex; gap: 15px; align-items: center; }
+        .status {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 12px; color: #aaa;
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #ff4444; transition: all 0.3s;
+        }
+        .status-dot.connected { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .status-dot.warning { background: #ffaa00; box-shadow: 0 0 8px #ffaa00; }
+        
+        /* 主内容区 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        
+        /* 左侧：视频和牌桌 */
+        .left-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            gap: 10px;
+            min-width: 0;
+        }
+        
+        .video-row {
+            display: flex;
+            gap: 10px;
+            height: 55%;
+            min-height: 0;
+        }
+        
+        .video-box {
+            flex: 1;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .video-label {
+            position: absolute;
+            top: 8px; left: 10px;
+            background: rgba(0,0,0,0.6);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 10;
+        }
+        
+        .video-feed {
+            width: 100%; height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+        
+        .video-placeholder {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            color: #666; font-size: 14px;
+        }
+        
+        /* 手牌区域 */
+        .tiles-panel {
+            flex: 1;
+            background: rgba(0,0,0,0.25);
+            border-radius: 12px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+        }
+        
+        .tiles-title {
+            font-size: 14px; color: #aaa;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        
+        .tiles-container {
+            flex: 1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-content: flex-start;
+            overflow-y: auto;
+        }
+        
+        .tile-card {
+            width: 60px; height: 80px;
+            background: linear-gradient(145deg, #f8f0e0, #e8dcc8);
+            border-radius: 6px;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            user-select: none;
+        }
+        
+        .tile-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+        }
+        
+        .tile-card.selected {
+            border-color: #00ff88;
+            box-shadow: 0 0 0 3px rgba(0,255,136,0.3), 0 6px 16px rgba(0,0,0,0.4);
+            transform: translateY(-6px);
+        }
+        
+        .tile-icon {
+            font-size: 26px; color: #333;
+            font-weight: bold;
+        }
+        
+        .tile-name {
+            font-size: 11px; color: #666;
+            margin-top: 4px;
+        }
+        
+        .tile-actions {
+            display: flex; gap: 10px; justify-content: center;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .btn {
+            padding: 10px 28px;
+            border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #00aa88, #008866);
+            color: white;
+            box-shadow: 0 4px 12px rgba(0,170,136,0.4);
+        }
+        .btn-primary:hover { background: linear-gradient(135deg, #00ccaa, #00aa88); }
+        .btn-primary:disabled { background: #444; cursor: not-allowed; box-shadow: none; }
+        
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+        .btn-secondary:hover { background: rgba(255,255,255,0.2); }
+        
+        /* 右侧：TRTC 通话面板 */
+        .right-panel {
+            width: 320px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 10px 10px 10px 0;
+            border-left: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .rtc-panel {
+            flex: 1;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .rtc-header {
+            padding: 10px 15px;
+            background: rgba(0,0,0,0.3);
+            font-size: 13px; color: #aaa;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        
+        .rtc-videos {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 8px;
+            overflow-y: auto;
+        }
+        
+        .rtc-video-box {
+            flex: 1;
+            min-height: 160px;
+            background: rgba(0,0,0,0.4);
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .rtc-video-label {
+            position: absolute;
+            bottom: 8px; left: 8px;
+            background: rgba(0,0,0,0.6);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            z-index: 10;
+        }
+        
+        .rtc-video-el {
+            width: 100%; height: 100%;
+            object-fit: cover;
+        }
+        
+        .rtc-controls {
+            padding: 10px;
+            display: flex; gap: 8px;
+            justify-content: center;
+        }
+        
+        .rtc-btn {
+            padding: 8px 16px;
+            border: none; border-radius: 6px;
+            font-size: 12px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s;
+        }
+        
+        .rtc-btn-join {
+            background: linear-gradient(135deg, #4488ff, #2255cc);
+            color: white;
+        }
+        
+        .rtc-btn-leave {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            color: white;
+        }
+        
+        /* 调试控制区 */
+        .debug-panel {
+            background: rgba(0,0,0,0.25);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        
+        .debug-title {
+            font-size: 12px; color: #888;
+            margin-bottom: 8px;
+        }
+        
+        .debug-btns {
+            display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        
+        .debug-btn {
+            padding: 6px 12px;
+            border: none; border-radius: 4px;
+            font-size: 11px;
+            background: rgba(255,255,255,0.1);
+            color: #ccc; cursor: pointer;
+        }
+        .debug-btn:hover { background: rgba(255,255,255,0.2); }
+        
+        /* 消息提示 */
+        .toast {
+            position: fixed;
+            top: 60px; left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: rgba(0,0,0,0.85);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 14px;
+            opacity: 0;
+            transition: all 0.3s;
+            z-index: 1000;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast.error { background: rgba(255,68,68,0.9); }
+        .toast.success { background: rgba(0,255,136,0.9); color: #000; }
+        
+        /* 响应式 */
+        @media (max-width: 900px) {
+            .main-content { flex-direction: column; }
+            .right-panel {
+                width: 100%; height: 280px; flex-direction: row;
+                border-left: none; border-top: 1px solid rgba(255,255,255,0.1);
+                padding: 10px;
+            }
+            .rtc-panel { flex: 2; }
+            .debug-panel { flex: 1; min-width: 140px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- 顶部状态栏 -->
+    <div class="header">
+        <div class="status-group">
+            <div class="status">
+                <div class="status-dot" id="wsStatusDot"></div>
+                <span>WebSocket</span>
+            </div>
+            <div class="status">
+                <div class="status-dot" id="armStatusDot"></div>
+                <span>机械臂</span>
+            </div>
+        </div>
+        <div class="title">🀄 HomeBot 麻将</div>
+        <div class="status-group">
+            <div class="status">
+                <div class="status-dot" id="rtcStatusDot"></div>
+                <span>音视频</span>
+            </div>
+            <div class="status" style="font-size: 12px; color: #888;">
+                <span id="systemStatus">待机中</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 主内容 -->
+    <div class="main-content">
+        <!-- 左侧：视频 + 手牌 -->
+        <div class="left-panel">
+            <div class="video-row">
+                <div class="video-box">
+                    <div class="video-label">📷 牌桌视角 (顶置摄像头)</div>
+                    <img class="video-feed" id="videoTop" src="/video_feed_top" alt="牌桌">
+                </div>
+                <div class="video-box">
+                    <div class="video-label">📷 现场视角 (前置摄像头)</div>
+                    <img class="video-feed" id="videoFront" src="/video_feed_front" alt="现场">
+                </div>
+            </div>
+            
+            <div class="tiles-panel">
+                <div class="tiles-title">
+                    <span>我的手牌</span>
+                    <span id="tilesCount" style="color: #666; font-size: 12px;">检测中...</span>
+                </div>
+                <div class="tiles-container" id="tilesContainer">
+                    <!-- 动态生成牌 -->
+                </div>
+                <div class="tile-actions">
+                    <button class="btn btn-secondary" id="btnDetect" onclick="app.refreshDetection()">
+                        🔄 刷新检测
+                    </button>
+                    <button class="btn btn-primary" id="btnPlay" onclick="app.confirmPlay()" disabled>
+                        确认出牌
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧：TRTC 通话 + 调试 -->
+        <div class="right-panel">
+            <div class="rtc-panel">
+                <div class="rtc-header">
+                    <span>🎙️ 语音视频通话</span>
+                    <span id="rtcRoomId" style="font-size: 11px; color: #666;">{{ trtc_room_id }}</span>
+                </div>
+                <div class="rtc-videos" id="rtcVideos">
+                    <!-- 本地预览 -->
+                    <div class="rtc-video-box">
+                        <div class="rtc-video-label">我</div>
+                        <video class="rtc-video-el" id="localVideo" autoplay muted playsinline></video>
+                    </div>
+                    <!-- 远端视频容器 -->
+                    <div class="rtc-video-box" id="remoteVideoBox" style="display: none;">
+                        <div class="rtc-video-label" id="remoteLabel">机器人/现场</div>
+                        <div class="rtc-video-el" id="remoteVideo"></div>
+                    </div>
+                </div>
+                <div class="rtc-controls">
+                    <button class="rtc-btn rtc-btn-join" id="btnRtcJoin" onclick="app.joinRTC()">
+                        加入通话
+                    </button>
+                    <button class="rtc-btn rtc-btn-leave" id="btnRtcLeave" onclick="app.leaveRTC()" style="display: none;">
+                        离开
+                    </button>
+                </div>
+            </div>
+            
+            <div class="debug-panel">
+                <div class="debug-title">🔧 机械臂调试</div>
+                <div class="debug-btns">
+                    <button class="debug-btn" onclick="app.sendArmHome()">归位</button>
+                    <button class="debug-btn" onclick="app.toggleGripper()">夹爪</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+    
+    <script>
+        // 从模板注入的配置
+        const TRTC_SDKAPPID = {{ trtc_sdkappid }};
+        const TRTC_ROOM_ID = "{{ trtc_room_id }}";
+        
+        class MahjongApp {
+            constructor() {
+                this.socket = null;
+                this.isConnected = false;
+                this.selectedIndex = -1;
+                this.tiles = [];
+                this.trtcClient = null;
+                this.localStream = null;
+                this.isInRTC = false;
+                this.userId = 'player_' + Date.now().toString().slice(-6);
+                
+                this.initSocket();
+                this.initVideoStatusCheck();
+            }
+            
+            // ========== SocketIO ==========
+            initSocket() {
+                this.socket = io();
+                
+                this.socket.on('connect', () => {
+                    this.isConnected = true;
+                    this.updateStatusDot('ws', true);
+                    this.showToast('已连接到麻将机器人', 'success');
+                });
+                
+                this.socket.on('disconnect', () => {
+                    this.isConnected = false;
+                    this.updateStatusDot('ws', false);
+                    this.updateStatusDot('arm', false);
+                    this.showToast('连接已断开', 'error');
+                });
+                
+                this.socket.on('server_hello', (data) => {
+                    console.log('[Server]', data.message);
+                    document.getElementById('systemStatus').innerText = this.getStatusText(data.status);
+                });
+                
+                this.socket.on('tiles_update', (data) => {
+                    this.tiles = data.tiles || [];
+                    this.renderTiles();
+                });
+                
+                this.socket.on('tile_selected', (data) => {
+                    if (data.success) {
+                        this.selectedIndex = data.index;
+                        this.renderTiles();
+                        document.getElementById('btnPlay').disabled = false;
+                        this.showToast(`已选中: ${data.tile.name}`, 'success');
+                    } else {
+                        this.showToast(data.error, 'error');
+                    }
+                });
+                
+                this.socket.on('play_result', (data) => {
+                    if (data.success) {
+                        this.showToast(data.message, 'success');
+                        document.getElementById('systemStatus').innerText = '执行中';
+                        document.getElementById('btnPlay').disabled = true;
+                    } else {
+                        this.showToast(data.error, 'error');
+                    }
+                });
+                
+                this.socket.on('system_status', (data) => {
+                    document.getElementById('systemStatus').innerText = this.getStatusText(data.status);
+                });
+                
+                this.socket.on('arm_update', (data) => {
+                    this.updateStatusDot('arm', data.success);
+                    if (!data.success) {
+                        this.showToast(data.message || '机械臂操作失败', 'error');
+                    }
+                });
+            }
+            
+            // ========== 手牌渲染 ==========
+            renderTiles() {
+                const container = document.getElementById('tilesContainer');
+                const countEl = document.getElementById('tilesCount');
+                
+                if (this.tiles.length === 0) {
+                    container.innerHTML = '<div style="color:#666; font-size:13px; padding:20px;">暂无检测到手牌，请确保牌桌视角正常后点击刷新检测</div>';
+                    countEl.innerText = '0 张';
+                    return;
+                }
+                
+                countEl.innerText = `${this.tiles.length} 张`;
+                
+                container.innerHTML = this.tiles.map((tile, idx) => {
+                    const selected = idx === this.selectedIndex ? 'selected' : '';
+                    const displayName = this.formatTileName(tile.name);
+                    return `
+                        <div class="tile-card ${selected}" onclick="app.selectTile(${idx})">
+                            <div class="tile-icon">${displayName.icon}</div>
+                            <div class="tile-name">${displayName.text}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            formatTileName(name) {
+                const map = {
+                    '1-wan': {icon: '一万', text: '1万'}, '2-wan': {icon: '二万', text: '2万'},
+                    '3-wan': {icon: '三万', text: '3万'}, '4-wan': {icon: '四万', text: '4万'},
+                    '5-wan': {icon: '五万', text: '5万'}, '6-wan': {icon: '六万', text: '6万'},
+                    '7-wan': {icon: '七万', text: '7万'}, '8-wan': {icon: '八万', text: '8万'},
+                    '9-wan': {icon: '九万', text: '9万'},
+                    '1-tiao': {icon: '一条', text: '1条'}, '2-tiao': {icon: '二条', text: '2条'},
+                    '3-tiao': {icon: '三条', text: '3条'}, '4-tiao': {icon: '四条', text: '4条'},
+                    '5-tiao': {icon: '五条', text: '5条'}, '6-tiao': {icon: '六条', text: '6条'},
+                    '7-tiao': {icon: '七条', text: '7条'}, '8-tiao': {icon: '八条', text: '8条'},
+                    '9-tiao': {icon: '九条', text: '9条'},
+                    '1-tong': {icon: '一筒', text: '1筒'}, '2-tong': {icon: '二筒', text: '2筒'},
+                    '3-tong': {icon: '三筒', text: '3筒'}, '4-tong': {icon: '四筒', text: '4筒'},
+                    '5-tong': {icon: '五筒', text: '5筒'}, '6-tong': {icon: '六筒', text: '6筒'},
+                    '7-tong': {icon: '七筒', text: '7筒'}, '8-tong': {icon: '八筒', text: '8筒'},
+                    '9-tong': {icon: '九筒', text: '9筒'},
+                    'dong': {icon: '🀀', text: '东'}, 'nan': {icon: '🀁', text: '南'},
+                    'xi': {icon: '🀂', text: '西'}, 'bei': {icon: '🀃', text: '北'},
+                    'zhong': {icon: '🀄', text: '中'}, 'fa': {icon: '🀅', text: '发'},
+                    'bai': {icon: '🀆', text: '白'},
+                };
+                return map[name] || {icon: name, text: name};
+            }
+            
+            selectTile(index) {
+                if (!this.isConnected) {
+                    this.showToast('未连接，无法选牌', 'error');
+                    return;
+                }
+                this.socket.emit('select_tile', { index });
+            }
+            
+            confirmPlay() {
+                if (!this.isConnected) {
+                    this.showToast('未连接', 'error');
+                    return;
+                }
+                if (this.selectedIndex < 0) {
+                    this.showToast('请先选择一张牌', 'error');
+                    return;
+                }
+                this.socket.emit('play_tile', {});
+            }
+            
+            refreshDetection() {
+                this.showToast('正在刷新检测...', 'info');
+                // 后端 broadcast_detection_loop 会自动推送，这里可以额外触发一次
+            }
+            
+            // ========== TRTC 音视频 ==========
+            async joinRTC() {
+                if (this.isInRTC) return;
+                
+                try {
+                    // 1. 获取 UserSig
+                    const resp = await fetch(`/api/trtc/usersig?userid=${this.userId}`);
+                    const data = await resp.json();
+                    
+                    if (!data.success) {
+                        this.showToast('加入通话失败: ' + data.error, 'error');
+                        return;
+                    }
+                    
+                    // 2. 创建 TRTC Client
+                    this.trtcClient = TRTC.createClient({
+                        mode: 'rtc',
+                        sdkAppId: data.sdkAppId,
+                        userId: data.userId,
+                        userSig: data.userSig
+                    });
+                    
+                    // 3. 创建并发布本地音视频
+                    this.localStream = TRTC.createStream({
+                        userId: data.userId,
+                        audio: true,
+                        video: true
+                    });
+                    await this.localStream.initialize();
+                    await this.localStream.play('localVideo');
+                    
+                    await this.trtcClient.join({ roomId: data.roomId });
+                    await this.trtcClient.publish(this.localStream);
+                    
+                    // 4. 订阅远端流
+                    this.trtcClient.on('stream-added', async (event) => {
+                        const remoteStream = event.stream;
+                        await this.trtcClient.subscribe(remoteStream);
+                        
+                        const streamId = remoteStream.getId();
+                        const userId = remoteStream.getUserId();
+                        console.log('[TRTC] 订阅远端流:', userId, streamId);
+                        
+                        // 显示远端视频
+                        const remoteBox = document.getElementById('remoteVideoBox');
+                        remoteBox.style.display = 'block';
+                        document.getElementById('remoteLabel').innerText = userId === 'robot' ? '机器人现场' : userId;
+                        remoteStream.play('remoteVideo');
+                    });
+                    
+                    this.trtcClient.on('stream-removed', (event) => {
+                        const remoteStream = event.stream;
+                        remoteStream.stop();
+                        document.getElementById('remoteVideoBox').style.display = 'none';
+                    });
+                    
+                    this.isInRTC = true;
+                    this.updateStatusDot('rtc', true);
+                    document.getElementById('btnRtcJoin').style.display = 'none';
+                    document.getElementById('btnRtcLeave').style.display = 'inline-block';
+                    this.showToast('已加入音视频房间', 'success');
+                    
+                } catch (err) {
+                    console.error(err);
+                    this.showToast('加入通话失败: ' + err.message, 'error');
+                }
+            }
+            
+            async leaveRTC() {
+                if (!this.isInRTC) return;
+                
+                try {
+                    if (this.localStream) {
+                        this.localStream.stop();
+                        this.localStream.close();
+                        this.localStream = null;
+                    }
+                    if (this.trtcClient) {
+                        await this.trtcClient.leave();
+                        this.trtcClient = null;
+                    }
+                    
+                    this.isInRTC = false;
+                    this.updateStatusDot('rtc', false);
+                    document.getElementById('btnRtcJoin').style.display = 'inline-block';
+                    document.getElementById('btnRtcLeave').style.display = 'none';
+                    document.getElementById('remoteVideoBox').style.display = 'none';
+                    this.showToast('已离开通话', 'info');
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+            
+            // ========== 机械臂调试 ==========
+            sendArmHome() {
+                if (!this.isConnected) return;
+                this.socket.emit('arm_home');
+            }
+            
+            toggleGripper() {
+                if (!this.isConnected) return;
+                this.socket.emit('gripper_toggle', { closed: true }); // 简化：直接闭合
+            }
+            
+            // ========== 工具方法 ==========
+            updateStatusDot(type, connected) {
+                const ids = { ws: 'wsStatusDot', arm: 'armStatusDot', rtc: 'rtcStatusDot' };
+                const dot = document.getElementById(ids[type]);
+                if (!dot) return;
+                if (connected) {
+                    dot.classList.add('connected');
+                    dot.classList.remove('warning');
+                } else {
+                    dot.classList.remove('connected');
+                    if (type !== 'ws') dot.classList.add('warning');
+                }
+            }
+            
+            getStatusText(status) {
+                const map = { idle: '待机中', detecting: '检测中', executing: '执行中' };
+                return map[status] || status;
+            }
+            
+            initVideoStatusCheck() {
+                // 简单的视频流状态检查
+                const checkImg = (id, name) => {
+                    const img = document.getElementById(id);
+                    if (!img) return;
+                    img.onerror = () => {
+                        console.warn(`[Video] ${name} 加载失败`);
+                    };
+                };
+                checkImg('videoTop', '顶置视频');
+                checkImg('videoFront', '前置视频');
+            }
+            
+            showToast(message, type = 'info') {
+                const toast = document.getElementById('toast');
+                toast.textContent = message;
+                toast.className = 'toast show';
+                if (type === 'error') toast.classList.add('error');
+                else if (type === 'success') toast.classList.add('success');
+                
+                setTimeout(() => toast.classList.remove('show'), 3000);
+            }
+        }
+        
+        const app = new MahjongApp();
+        
+        // 页面关闭时清理
+        window.addEventListener('beforeunload', () => {
+            app.leaveRTC();
+        });
+    </script>
+</body>
+</html>

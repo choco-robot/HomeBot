@@ -666,6 +666,8 @@ class VideoStreamClient:
         self._thread: Optional[Thread] = None
         self._latest_frame: Optional[bytes] = None
         self._frame_lock = Lock()
+        self._state_lock = Lock()  # 保护连接状态变更
+        self._client_count = 0     # 引用计数，多个HTTP客户端共享同一个ZMQ连接
         
     def connect(self) -> bool:
         """连接到VisionService"""
@@ -683,39 +685,74 @@ class VideoStreamClient:
             return False
     
     def start(self) -> bool:
-        """启动视频流接收线程"""
-        if not self._connected:
-            if not self.connect():
-                return False
-        self._running = True
-        self._thread = Thread(target=self._receive_loop, daemon=True)
-        self._thread.start()
-        print("[Video] 视频流接收已启动")
-        return True
+        """启动视频流接收线程（引用计数，允许多个HTTP客户端共享）"""
+        with self._state_lock:
+            self._client_count += 1
+            
+            # 如果已经在运行，直接返回成功
+            if self._running and self._thread and self._thread.is_alive():
+                print(f"[Video] Client joined, total clients: {self._client_count}")
+                return True
+            
+            # 需要启动新的接收线程
+            if not self._connected:
+                if not self.connect():
+                    self._client_count -= 1
+                    return False
+            
+            self._running = True
+            self._thread = Thread(target=self._receive_loop, daemon=True)
+            self._thread.start()
+            print(f"[Video] 视频流接收已启动 (clients: {self._client_count})")
+            return True
     
     def stop(self):
-        """停止视频流接收"""
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1.0)
+        """停止视频流接收（引用计数，最后一个客户端才实际停止）"""
+        with self._state_lock:
+            self._client_count = max(0, self._client_count - 1)
+            
+            # 还有客户端在使用，不实际停止
+            if self._client_count > 0:
+                print(f"[Video] Client left, remaining: {self._client_count}")
+                return
+            
+            print("[Video] 最后一个客户端离开，停止接收...")
+            self._running = False
+        
+        # 在锁外执行实际的停止操作
+        # 先关闭 socket，让 recv_multipart 立即返回错误
         if self._socket:
-            self._socket.close()
+            try:
+                self._socket.close(linger=0)
+            except:
+                pass
+        
+        # 等待线程结束
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        
+        # 终止上下文
         if self._context:
-            self._context.term()
-        self._connected = False
+            try:
+                self._context.term()
+            except:
+                pass
+        
+        with self._state_lock:
+            self._connected = False
+            self._socket = None
+            self._context = None
+        
         print("[Video] 视频流接收已停止")
     
     def _receive_loop(self):
         """后台线程接收视频帧"""
-        import cv2
-        import numpy as np
-        
         retry_count = 0
         max_retries = 5
         frame_count = 0
         last_log = time.time()
         
-        print(f"[Video] Receive loop started, connecting to {self.vision_addr}")
+        print(f"[Video] Receive loop started for {self.vision_addr}")
         
         while self._running:
             try:
@@ -744,7 +781,7 @@ class VideoStreamClient:
                     # 每5秒打印一次统计
                     if time.time() - last_log > 5:
                         fps = frame_count / 5
-                        print(f"[Video] Receiving {fps:.1f} fps, {len(jpeg_bytes)} bytes/frame")
+                        print(f"[Video] Receiving {fps:.1f} fps from {self.vision_addr}")
                         frame_count = 0
                         last_log = time.time()
                 
@@ -755,6 +792,8 @@ class VideoStreamClient:
                 print(f"[Video] Receive error: {e}")
                 self._connected = False
                 time.sleep(1)
+        
+        print(f"[Video] Receive loop ended for {self.vision_addr}")
     
     def get_frame(self) -> Optional[bytes]:
         """获取最新的JPEG帧数据"""
@@ -762,48 +801,54 @@ class VideoStreamClient:
             return self._latest_frame
     
     def generate_mjpeg(self) -> Generator[bytes, None, None]:
-        """生成MJPEG流用于HTTP响应"""
+        """生成MJPEG流用于HTTP响应（结束时自动减少引用计数）"""
         import cv2
         import numpy as np
         
-        # 等待第一帧
-        timeout = 5.0
-        start = time.time()
-        while self._running and not self.get_frame():
-            if time.time() - start > timeout:
-                print("[Video] Timeout waiting for first frame")
-                break
-            time.sleep(0.1)
-        
-        frame_count = 0
-        last_log = time.time()
-        
-        while self._running:
-            frame = self.get_frame()
-            if frame:
-                frame_count += 1
-                if time.time() - last_log > 5:
-                    print(f"[Video] Streaming {frame_count} frames")
-                    frame_count = 0
-                    last_log = time.time()
-                
-                # 正确的 MJPEG multipart 格式
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n'
-                       b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
-                       b'\r\n' + frame + b'\r\n')
-            else:
-                # 没有帧时发送占位图片
-                img = np.zeros((240, 320, 3), dtype=np.uint8)
-                cv2.putText(img, "No Signal", (80, 120), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                ret, buf = cv2.imencode('.jpg', img)
-                if ret:
+        try:
+            # 等待第一帧
+            timeout = 5.0
+            start = time.time()
+            while self._running and not self.get_frame():
+                if time.time() - start > timeout:
+                    print("[Video] Timeout waiting for first frame")
+                    break
+                time.sleep(0.1)
+            
+            frame_count = 0
+            last_log = time.time()
+            
+            while self._running:
+                frame = self.get_frame()
+                if frame:
+                    frame_count += 1
+                    if time.time() - last_log > 5:
+                        print(f"[Video] Streaming {frame_count} frames")
+                        frame_count = 0
+                        last_log = time.time()
+                    
+                    # 正确的 MJPEG multipart 格式
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n'
-                           b'Content-Length: ' + str(len(buf)).encode() + b'\r\n'
-                           b'\r\n' + buf.tobytes() + b'\r\n')
-                time.sleep(0.5)
+                           b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
+                           b'\r\n' + frame + b'\r\n')
+                    
+                    # 无帧率限制，以最大速度推送
+                else:
+                    # 没有帧时发送占位图片
+                    img = np.zeros((240, 320, 3), dtype=np.uint8)
+                    cv2.putText(img, "No Signal", (80, 120), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    ret, buf = cv2.imencode('.jpg', img)
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n'
+                               b'Content-Length: ' + str(len(buf)).encode() + b'\r\n'
+                               b'\r\n' + buf.tobytes() + b'\r\n')
+                    time.sleep(0.5)
+        finally:
+            # 确保无论生成器如何结束（正常结束或客户端断开），都减少引用计数
+            self.stop()
 
 
 class ZMQBridge:

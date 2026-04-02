@@ -94,11 +94,18 @@ class VisionSecrets:
 
 
 @dataclass
+class TRTCSecrets:
+    """腾讯云 TRTC 密钥配置"""
+    secret_key: str = ""  # TRTC SecretKey，用于生成 UserSig
+
+
+@dataclass
 class Secrets:
     """所有密钥配置"""
     tts: TTSSecrets = field(default_factory=TTSSecrets)
     llm: LLMSecrets = field(default_factory=LLMSecrets)
     vision: VisionSecrets = field(default_factory=VisionSecrets)
+    trtc: TRTCSecrets = field(default_factory=TRTCSecrets)
 
 
 # 全局密钥实例
@@ -178,7 +185,12 @@ def load_secrets() -> Secrets:
         model=vision_model,
     )
     
-    return Secrets(tts=tts, llm=llm, vision=vision)
+    # TRTC 配置
+    trtc = TRTCSecrets(
+        secret_key=_get_env("TRTC_SECRET_KEY", ""),
+    )
+    
+    return Secrets(tts=tts, llm=llm, vision=vision, trtc=trtc)
 
 
 def get_secrets() -> Secrets:

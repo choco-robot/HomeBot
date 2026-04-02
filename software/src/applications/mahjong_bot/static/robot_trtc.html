@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HomeBot 麻将机器人 - 音视频终端</title>
+    <!-- 腾讯云 TRTC Web SDK -->
+    <script src="https://web.sdk.qcloud.com/trtc/webrtc/v5/dist/trtc.js"></script>
+    <!-- 本地调试用的 UserSig 生成库（生产环境应从后端获取） -->
+    <script src="https://web.sdk.qcloud.com/trtc/webrtc/v5/libs/lib-generate-test-usersig.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #000;
+            color: #0f0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #status-bar {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 40px;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            z-index: 100;
+            border-bottom: 1px solid #333;
+        }
+        
+        .status-left { display: flex; gap: 20px; align-items: center; }
+        .status-item { display: flex; gap: 6px; align-items: center; }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #ff4444;
+        }
+        .status-dot.connected { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .status-dot.pending { background: #ffaa00; animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        #main-grid {
+            position: absolute;
+            top: 40px; left: 0; right: 0; bottom: 0;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 2px;
+            background: #111;
+        }
+        
+        .video-panel {
+            position: relative;
+            background: #000;
+            overflow: hidden;
+        }
+        
+        .video-panel video {
+            width: 100%; height: 100%;
+            object-fit: cover;
+        }
+        
+        .panel-label {
+            position: absolute;
+            top: 10px; left: 10px;
+            background: rgba(0,0,0,0.6);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #fff;
+            z-index: 10;
+        }
+        
+        .panel-info {
+            position: absolute;
+            bottom: 10px; left: 10px;
+            background: rgba(0,0,0,0.6);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #aaa;
+            z-index: 10;
+            max-width: 90%;
+            word-break: break-all;
+        }
+        
+        #remote-audio-indicator {
+            position: absolute;
+            top: 10px; right: 10px;
+            background: rgba(0,0,0,0.6);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #00ff88;
+            display: none;
+        }
+        
+        #error-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #ff4444;
+            z-index: 200;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        #error-overlay h2 { margin-bottom: 10px; }
+        #error-overlay p { color: #aaa; font-size: 13px; }
+        
+        .btn-retry {
+            margin-top: 20px;
+            padding: 10px 24px;
+            background: #ff4444;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div id="status-bar">
+        <div class="status-left">
+            <div class="status-item">
+                <div class="status-dot pending" id="dot-trtc"></div>
+                <span id="text-trtc">TRTC 连接中...</span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot pending" id="dot-front"></div>
+                <span>前置摄像头</span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot pending" id="dot-top"></div>
+                <span>顶置摄像头</span>
+            </div>
+        </div>
+        <div class="status-item">
+            <span id="room-info">Room: --</span>
+        </div>
+    </div>
+    
+    <div id="main-grid">
+        <!-- 前置摄像头 -->
+        <div class="video-panel">
+            <div class="panel-label">前置摄像头 (现场玩家)</div>
+            <div class="panel-info" id="info-front">初始化中...</div>
+            <video id="video-front" autoplay muted playsinline></video>
+        </div>
+        
+        <!-- 顶置摄像头 -->
+        <div class="video-panel">
+            <div class="panel-label">顶置摄像头 (牌桌)</div>
+            <div class="panel-info" id="info-top">初始化中...</div>
+            <video id="video-top" autoplay muted playsinline></video>
+        </div>
+        
+        <!-- 远端视频 1 -->
+        <div class="video-panel">
+            <div class="panel-label">远程玩家 1</div>
+            <div class="panel-info" id="info-remote1">等待连接...</div>
+            <div id="container-remote1" style="width:100%; height:100%;"></div>
+            <div id="remote-audio-indicator">🔊 正在播放远程音频</div>
+        </div>
+        
+        <!-- 远端视频 2 -->
+        <div class="video-panel">
+            <div class="panel-label">远程玩家 2 / 其他</div>
+            <div class="panel-info" id="info-remote2">等待连接...</div>
+            <div id="container-remote2" style="width:100%; height:100%;"></div>
+        </div>
+    </div>
+    
+    <div id="error-overlay">
+        <h2>连接异常</h2>
+        <p id="error-message"></p>
+        <button class="btn-retry" onclick="location.reload()">重新加载</button>
+    </div>
+
+    <script>
+        // ============================================================
+        // 配置区 - 请根据实际腾讯云账号修改以下参数
+        // ============================================================
+        const SDKAPPID = 0;           // 替换为你的腾讯云 SDKAppID
+        const SECRETKEY = 'YOUR_SECRET_KEY';  // 替换为你的腾讯云 SecretKey（仅本地测试用）
+        const ROOMID = 'mahjong_room_001';    // 房间号
+        const USERID = 'robot';               // 机器人在房间中的 UserID
+        
+        // ============================================================
+        
+        let trtcClient = null;
+        let frontStream = null;
+        let topStream = null;
+        let remoteUserCount = 0;
+        
+        function setStatus(id, status, text) {
+            const dot = document.getElementById('dot-' + id);
+            const txt = document.getElementById('text-' + id);
+            if (dot) {
+                dot.classList.remove('connected', 'pending');
+                dot.classList.add(status);
+            }
+            if (txt && text) txt.innerText = text;
+        }
+        
+        function setInfo(id, text) {
+            const el = document.getElementById('info-' + id);
+            if (el) el.innerText = text;
+        }
+        
+        function showError(msg) {
+            document.getElementById('error-message').innerText = msg;
+            document.getElementById('error-overlay').style.display = 'flex';
+        }
+        
+        // 生成 UserSig（本地测试用，生产环境应从后端 API 获取）
+        function genUserSig(userId) {
+            try {
+                const generator = new window.LibGenerateTestUserSig(SDKAPPID, SECRETKEY, 604800);
+                return generator.genTestUserSig(userId);
+            } catch (e) {
+                console.error('生成 UserSig 失败:', e);
+                throw e;
+            }
+        }
+        
+        async function init() {
+            document.getElementById('room-info').innerText = `Room: ${ROOMID}`;
+            
+            try {
+                // 1. 枚举摄像头设备
+                const devices = await TRTC.getCameraList();
+                console.log('[TRTC] 可用摄像头:', devices);
+                
+                if (devices.length < 2) {
+                    showError(`只检测到 ${devices.length} 个摄像头，需要至少 2 个（前置+顶置）`);
+                    return;
+                }
+                
+                const frontDevice = devices[0];
+                const topDevice = devices[1];
+                
+                setInfo('front', frontDevice.label || 'Camera 0');
+                setInfo('top', topDevice.label || 'Camera 1');
+                
+                // 2. 创建前置摄像头视频流
+                frontStream = TRTC.createStream({
+                    userId: USERID,
+                    audio: true,  // 机器人的麦克风
+                    video: true,
+                    cameraId: frontDevice.deviceId
+                });
+                await frontStream.initialize();
+                frontStream.play('video-front');
+                setStatus('front', 'connected');
+                
+                // 3. 创建顶置摄像头视频流（辅路，不带音频）
+                topStream = TRTC.createStream({
+                    userId: USERID + '_top',
+                    audio: false,
+                    video: true,
+                    cameraId: topDevice.deviceId
+                });
+                await topStream.initialize();
+                topStream.play('video-top');
+                setStatus('top', 'connected');
+                
+                // 4. 创建 TRTC Client 并加入房间
+                trtcClient = TRTC.createClient({
+                    mode: 'rtc',
+                    sdkAppId: SDKAPPID,
+                    userId: USERID,
+                    userSig: genUserSig(USERID)
+                });
+                
+                await trtcClient.join({ roomId: ROOMID });
+                console.log('[TRTC] 已加入房间:', ROOMID);
+                
+                // 5. 发布两路视频 + 一路音频
+                // 前置流包含音频，顶置流纯视频
+                await trtcClient.publish(frontStream);
+                await trtcClient.publish(topStream);
+                
+                setStatus('trtc', 'connected', 'TRTC 已连接');
+                
+                // 6. 订阅远端用户
+                trtcClient.on('stream-added', async (event) => {
+                    const remoteStream = event.stream;
+                    const userId = remoteStream.getUserId();
+                    console.log('[TRTC] 远端用户加入:', userId);
+                    
+                    await trtcClient.subscribe(remoteStream);
+                    
+                    // 分配显示容器
+                    remoteUserCount++;
+                    const containerId = remoteUserCount <= 1 ? 'container-remote1' : 'container-remote2';
+                    const infoId = remoteUserCount <= 1 ? 'info-remote1' : 'info-remote2';
+                    
+                    document.getElementById(infoId).innerText = `用户: ${userId}`;
+                    
+                    if (remoteStream.hasVideo()) {
+                        remoteStream.play(containerId);
+                    }
+                    
+                    if (remoteStream.hasAudio()) {
+                        remoteStream.play(containerId); // 音频会自动从系统默认设备播放
+                        document.getElementById('remote-audio-indicator').style.display = 'block';
+                    }
+                });
+                
+                trtcClient.on('stream-removed', (event) => {
+                    const remoteStream = event.stream;
+                    const userId = remoteStream.getUserId();
+                    console.log('[TRTC] 远端用户离开:', userId);
+                    remoteStream.stop();
+                    remoteUserCount = Math.max(0, remoteUserCount - 1);
+                    
+                    if (remoteUserCount === 0) {
+                        document.getElementById('info-remote1').innerText = '等待连接...';
+                        document.getElementById('info-remote2').innerText = '等待连接...';
+                        document.getElementById('remote-audio-indicator').style.display = 'none';
+                    }
+                });
+                
+                trtcClient.on('peer-leave', (event) => {
+                    console.log('[TRTC] Peer 离开:', event.userId);
+                });
+                
+                trtcClient.on('error', (error) => {
+                    console.error('[TRTC] 错误:', error);
+                    setStatus('trtc', 'pending', 'TRTC 异常');
+                });
+                
+            } catch (err) {
+                console.error('初始化失败:', err);
+                setStatus('trtc', 'pending', '连接失败');
+                showError(err.message || '未知错误');
+            }
+        }
+        
+        // 页面加载完成后初始化
+        window.addEventListener('DOMContentLoaded', init);
+        
+        // 防止屏幕休眠（通过播放一个无声的 video）
+        function preventSleep() {
+            const silentVideo = document.createElement('video');
+            silentVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAACKBtZGF0AAAC'; // 空 mp4
+            silentVideo.loop = true;
+            silentVideo.muted = true;
+            silentVideo.play().catch(() => {});
+        }
+        preventSleep();
+    </script>
+</body>
+</html>

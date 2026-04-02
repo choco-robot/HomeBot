@@ -62,7 +62,7 @@ class LiftPlatformConfig:
     step_direction: int = 1   # 正步数对应的运动方向 (1=向下, -1=向上)
     
     # ========== 零点初始化参数 ==========
-    auto_homing_on_startup: bool = True   # 启动时自动找零
+    auto_homing_on_startup: bool = False   # 启动时自动找零
     homing_direction: str = "up"          # 找零方向: "up"(向上找最高点) 或 "down"(向下找最低点)
     homing_speed: int = 1500               # 找零速度 (不宜过快)
     homing_current_threshold: int = 80   # 电流阈值，超过此值判定为碰到限位 (需根据实际校准)
@@ -73,7 +73,7 @@ class LiftPlatformConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM25"  # 与底盘共用串口
+    serial_port: str = "COM4"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -83,11 +83,11 @@ class ArmConfig:
     wrist_roll_id: int = 5
     gripper_id: int = 6
     # 连杆长度 (mm) 人工设置，AI勿动
-    upper_arm_length: float = 115.0  # 大臂长度 (L1)
-    forearm_length: float = 130.0    # 小臂长度 (L2)
+    upper_arm_length: float = 215.0  # 大臂长度 (L1)
+    forearm_length: float = 230.0    # 小臂长度 (L2)
     # 关节角度限制 (度) 人工设置，AI勿动
     joint_limits: dict = field(default_factory=lambda: {
-        "base": (-180, 180),
+        "base": (-90, 90),
         "shoulder": (0, 180),
         "elbow": (0, 180),
         "wrist_flex": (-90, 90),
@@ -383,6 +383,74 @@ class BatteryConfig:
 
 
 @dataclass
+class MahjongConfig:
+    """麻将机器人配置"""
+    # 摄像头配置
+    top_camera_device_id: int = 0              # 顶置摄像头 OpenCV device_id
+    front_camera_device_id: int = 1            # 前置摄像头 OpenCV device_id
+    
+    # ZeroMQ 视频流地址
+    top_vision_addr: str = "tcp://127.0.0.1:5560"
+    front_vision_addr: str = "tcp://127.0.0.1:5562"
+    
+    # 机械臂服务地址
+    arm_service_addr: str = "tcp://127.0.0.1:5557"
+    
+    # 检测模型
+    detector_model_path: str = "models/mahjong_yolo.pt"
+    detector_conf_threshold: float = 0.6
+    detector_inference_size: int = 640
+    
+    # 标定参数 (Homography 矩阵，3x3 展平为 9 个元素)
+    # 默认值是单位矩阵，表示未标定
+    homography_matrix: list = field(default_factory=lambda: [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+    ])
+    
+    # 牌桌物理尺寸 (mm)
+    table_width_mm: float = 600.0
+    table_height_mm: float = 400.0
+    
+    # 机械臂底座相对于牌桌的偏移 (mm)
+    arm_offset_x: float = 0.0
+    arm_offset_y: float = -200.0
+    
+    # 出牌槽位置 (机械臂坐标系 mm)
+    discard_slot_x: float = 150.0
+    discard_slot_y: float = 0.0
+    discard_slot_z: float = 30.0
+    
+    # 牌河区域裁剪配置 (从 1920x1080 画面中提取中间长条区域)
+    river_crop_x: int = 0              # 裁剪起始 X 坐标
+    river_crop_y: int = 380            # 裁剪起始 Y 坐标 (1080-320)/2 = 380
+    river_crop_width: int = 1920       # 裁剪宽度
+    river_crop_height: int = 320       # 裁剪高度
+    
+    # 采集图像保存配置
+    capture_save_original: bool = True     # 是否保存原始图
+    capture_save_cropped: bool = True      # 是否保存裁剪后的图
+
+
+@dataclass
+class TRTCConfig:
+    """腾讯云 TRTC 音视频配置
+    
+    敏感信息（secret_key）从 secrets 模块加载
+    """
+    sdk_app_id: int = 0                        # 腾讯云 SDKAppID
+    secret_key: str = ""                       # 腾讯云 SecretKey（仅本地测试）
+    room_id: str = "mahjong_room_001"          # 默认房间号
+    
+    def __post_init__(self):
+        """从密钥管理加载敏感配置"""
+        secrets = get_secrets()
+        if not self.secret_key:
+            self.secret_key = secrets.trtc.secret_key if hasattr(secrets, 'trtc') else ""
+
+
+@dataclass
 class Config:
     """全局配置"""
     camera: CameraConfig = field(default_factory=CameraConfig)
@@ -398,6 +466,8 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     gamepad: GamepadConfig = field(default_factory=GamepadConfig)
+    mahjong: MahjongConfig = field(default_factory=MahjongConfig)
+    trtc: TRTCConfig = field(default_factory=TRTCConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -418,7 +488,9 @@ class Config:
             tts=TTSConfig(**data.get("tts", {})),
             llm=LLMConfig(**data.get("llm", {})),
             vision=VisionConfig(**data.get("vision", {})),
-            gamepad=GamepadConfig(**data.get("gamepad", {}))
+            gamepad=GamepadConfig(**data.get("gamepad", {})),
+            mahjong=MahjongConfig(**data.get("mahjong", {})),
+            trtc=TRTCConfig(**data.get("trtc", {}))
         )
 
 
