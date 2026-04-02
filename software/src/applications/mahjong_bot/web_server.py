@@ -1,18 +1,22 @@
 """
-HomeBot 麻将机器人 Web 服务器
+HomeBot 麻将机器人 Web 服务器（云服务器版）
 
 功能:
-1. 双路 MJPEG 视频流 (顶置摄像头 5560 + 前置摄像头 5562)
+1. 提供玩家访问的 Web 页面 (mahjong.html)
 2. 腾讯云 TRTC UserSig 生成接口
-3. SocketIO 实时通信 (选牌、出牌、状态同步)
-4. 集成 ArmClient 与机械臂服务通信
+3. SocketIO 实时通信与前端交互
+4. 通过 MQTT 与机器人本地桥接服务通信（控制指令 / 状态同步）
+5. 自动 HTTPS（检测到证书时启用）
 
 使用方法:
     cd software/src
     python -m applications.mahjong_bot
     
 访问:
-    http://<机器人IP>:5100/mahjong
+    http://<云服务器IP>:5100/mahjong
+    
+HTTPS 配置:
+    将证书文件放入 applications/mahjong_bot/certs/ 目录
 """
 
 import os
@@ -23,47 +27,50 @@ import base64
 import hashlib
 import hmac
 from threading import Thread, Lock
-from typing import Optional, Dict, Any, Generator
+from typing import Optional, Dict, Any
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from flask import Flask, render_template, Response, request, jsonify
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 
-import zmq
+try:
+    from flask_sslify import SSLify
+    _sslify_available = True
+except ImportError:
+    _sslify_available = False
+
+import paho.mqtt.client as mqtt
 from configs import get_config
-
-# ========== 导入现有组件 ==========
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'remote_control'))
-from web_server import VideoStreamClient, ArmClient
-
-from applications.mahjong_bot.detector import MahjongDetector
-
-DEFAULT_TOP_VISION_ADDR = "tcp://127.0.0.1:5560"
-DEFAULT_FRONT_VISION_ADDR = "tcp://127.0.0.1:5562"
-DEFAULT_ARM_ADDR = "tcp://127.0.0.1:5557"
 
 # ========== Flask + SocketIO 应用 ==========
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'homebot-mahjong-secret'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+sslify = None
+
 
 # ========== TRTC UserSig 生成 ==========
 def gen_trtc_usersig(sdkappid: int, secret_key: str, userid: str, expire: int = 86400) -> str:
-    """
-    生成腾讯云 TRTC UserSig
-    
-    Args:
-        sdkappid: 腾讯云 SDKAppID
-        secret_key: 腾讯云 SecretKey
-        userid: 用户ID
-        expire: 过期时间（秒）
-    
-    Returns:
-        base64 编码的 UserSig
-    """
+    """生成腾讯云 TRTC UserSig"""
+    try:
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'common'))
+        from TLSSigAPIv2 import TLSSigAPIv2
+        api = TLSSigAPIv2(sdkappid, secret_key)
+        return api.genUserSig(userid, expire)
+    except ImportError:
+        print("[WARN] TLSSigAPIv2 未找到，使用备用 UserSig 生成")
+        return _gen_usersig_fallback(sdkappid, secret_key, userid, expire)
+    except AttributeError as e:
+        print(f"[WARN] TLSSigAPIv2 方法错误: {e}，使用备用实现")
+        return _gen_usersig_fallback(sdkappid, secret_key, userid, expire)
+
+
+def _gen_usersig_fallback(sdkappid: int, secret_key: str, userid: str, expire: int = 86400) -> str:
+    """备用 UserSig 生成"""
     curr_time = int(time.time())
     m = json.dumps({
         "TLS.ver": "2.0",
@@ -89,71 +96,114 @@ def gen_trtc_usersig(sdkappid: int, secret_key: str, userid: str, expire: int = 
     }).encode('utf-8')).decode('utf-8')
 
 
-# ========== 全局服务实例 ==========
-class MahjongService:
-    """麻将应用全局服务"""
+# ========== MQTT 桥接服务 ==========
+class MahjongCloudService:
+    """麻将应用云服务：SocketIO ↔ MQTT 桥接"""
     
     def __init__(self):
         config = get_config()
         self.mahjong_cfg = config.mahjong
-        self.trtc_cfg = config.trtc
         
-        # 双路视频客户端
-        self.top_video = VideoStreamClient(self.mahjong_cfg.top_vision_addr)
-        self.front_video = VideoStreamClient(self.mahjong_cfg.front_vision_addr)
+        # MQTT 配置
+        self.mqtt_broker = self.mahjong_cfg.mqtt_broker
+        self.mqtt_port = self.mahjong_cfg.mqtt_port
+        self.mqtt_username = self.mahjong_cfg.mqtt_username
+        self.mqtt_password = self.mahjong_cfg.mqtt_password
+        self.command_topic = self.mahjong_cfg.mqtt_command_topic
+        self.status_topic = self.mahjong_cfg.mqtt_status_topic
+        self.mqtt_client_id = self.mahjong_cfg.mqtt_client_id_cloud
         
-        # 机械臂客户端
-        self.arm_client = ArmClient(self.mahjong_cfg.arm_service_addr)
+        self.mqtt_client = mqtt.Client(client_id=self.mqtt_client_id)
+        if self.mqtt_username:
+            self.mqtt_client.username_pw_set(self.mqtt_username, self.mqtt_password)
+        self.mqtt_client.on_connect = self._on_mqtt_connect
+        self.mqtt_client.on_message = self._on_mqtt_message
+        self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
         
-        # 状态
-        self._running = False
+        self._mqtt_connected = False
         self._lock = Lock()
-        self._last_detected_tiles: list = []  # 最近一次检测到的手牌
-        self._selected_tile_index: int = -1   # 用户选中的牌索引
-        self._system_status: str = "idle"     # idle/detecting/executing
         
-        # 检测器（修复模型路径，确保指向 software/models/）
-        software_dir = Path(__file__).parent.parent.parent.parent
-        model_path = str(software_dir / self.mahjong_cfg.detector_model_path)
-        self.detector = MahjongDetector(
-            model_path=model_path,
-            conf_threshold=self.mahjong_cfg.detector_conf_threshold,
-            inference_size=self.mahjong_cfg.detector_inference_size,
-            device="cuda",
-            use_roboflow_classes=True
-        )
+        # 本地缓存状态（用于 /api/status）
+        self._system_status = "idle"
+        self._selected_tile_index = -1
+        self._last_detected_tiles = []
+        self._arm_connected = False
         
     def start(self) -> bool:
-        """启动所有客户端连接"""
-        ok1 = self.top_video.start()
-        ok2 = self.front_video.start()
-        ok3 = self.arm_client.connect()
-        ok4 = self.detector.initialize()
-        
-        self._running = True
-        print(f"[MahjongService] 顶置视频: {'OK' if ok1 else 'FAIL'}")
-        print(f"[MahjongService] 前置视频: {'OK' if ok2 else 'FAIL'}")
-        print(f"[MahjongService] 机械臂: {'OK' if ok3 else 'FAIL'}")
-        print(f"[MahjongService] 检测器: {'OK' if ok4 else 'FAIL'}")
-        return ok1 or ok2  # 至少一路视频成功即可启动
+        """启动 MQTT 连接"""
+        try:
+            print(f"[MQTT] 连接到 {self.mqtt_broker}:{self.mqtt_port}...")
+            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, keepalive=60)
+            self.mqtt_client.loop_start()
+            return True
+        except Exception as e:
+            print(f"[MQTT] 连接失败: {e}")
+            return False
     
     def stop(self):
-        """停止所有服务"""
-        self._running = False
-        self.top_video.stop()
-        self.front_video.stop()
-        self.arm_client.disconnect()
-        self.detector.release()
+        """停止 MQTT"""
+        self.mqtt_client.loop_stop()
+        self.mqtt_client.disconnect()
+        print("[MQTT] 已断开")
+    
+    def _on_mqtt_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            print(f"[MQTT] 已连接，订阅 {self.status_topic}")
+            self._mqtt_connected = True
+            client.subscribe(self.status_topic, qos=0)
+        else:
+            print(f"[MQTT] 连接失败，返回码: {rc}")
+            self._mqtt_connected = False
+    
+    def _on_mqtt_disconnect(self, client, userdata, rc):
+        print(f"[MQTT] 断开连接，返回码: {rc}")
+        self._mqtt_connected = False
+    
+    def _on_mqtt_message(self, client, userdata, msg):
+        """收到 MQTT 状态消息，转发到 SocketIO"""
+        try:
+            payload = json.loads(msg.payload.decode('utf-8'))
+            msg_type = payload.get('type')
+            data = payload.get('data', {})
+            
+            # 更新本地缓存状态
+            with self._lock:
+                if msg_type == 'tiles_update':
+                    self._last_detected_tiles = data.get('tiles', [])
+                elif msg_type == 'system_status':
+                    self._system_status = data.get('status', 'idle')
+                elif msg_type == 'tile_selected' and data.get('success'):
+                    self._selected_tile_index = data.get('index', -1)
+                elif msg_type == 'arm_update':
+                    self._arm_connected = data.get('success', False)
+            
+            # 转发到所有 SocketIO 客户端
+            if msg_type:
+                socketio.emit(msg_type, data)
+                
+        except Exception as e:
+            print(f"[MQTT] 处理状态消息异常: {e}")
+    
+    def publish_command(self, cmd: str, data: dict):
+        """发布控制指令到 MQTT"""
+        payload = json.dumps({
+            "cmd": cmd,
+            "data": data,
+            "timestamp": time.time()
+        })
+        if self._mqtt_connected:
+            self.mqtt_client.publish(self.command_topic, payload, qos=1)
+        else:
+            print(f"[WARN] MQTT 未连接，无法发送指令: {cmd}")
 
 
 # 全局服务实例
 def _create_service():
-    """创建服务实例，带错误处理"""
     try:
-        return MahjongService()
+        return MahjongCloudService()
     except Exception as e:
         print(f"\n{'='*60}")
-        print(f"[FATAL] 初始化 MahjongService 失败: {e}")
+        print(f"[FATAL] 初始化 MahjongCloudService 失败: {e}")
         print(f"{'='*60}")
         import traceback
         traceback.print_exc()
@@ -174,32 +224,9 @@ def index():
                          trtc_room_id=config.trtc.room_id)
 
 
-@app.route('/video_feed_top')
-def video_feed_top():
-    """顶置摄像头 MJPEG 流"""
-    # start() 增加引用计数，generate_mjpeg() 结束时会自动调用 stop() 减少引用
-    service.top_video.start()
-    return Response(service.top_video.generate_mjpeg(), 
-                   mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
-@app.route('/video_feed_front')
-def video_feed_front():
-    """前置摄像头 MJPEG 流"""
-    service.front_video.start()
-    return Response(service.front_video.generate_mjpeg(), 
-                   mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
 @app.route('/api/trtc/usersig')
 def api_trtc_usersig():
-    """
-    生成 TRTC UserSig
-    
-    Query params:
-        userid: 用户ID（必填）
-        expire: 过期时间秒数（可选，默认86400）
-    """
+    """生成 TRTC UserSig"""
     config = get_config()
     userid = request.args.get('userid', '')
     expire = request.args.get('expire', 86400, type=int)
@@ -231,16 +258,14 @@ def api_trtc_usersig():
 
 @app.route('/api/status')
 def api_status():
-    """获取系统状态"""
+    """获取系统状态（本地缓存）"""
     with service._lock:
         return jsonify({
             "success": True,
             "system_status": service._system_status,
             "selected_tile": service._selected_tile_index,
-            "detected_tiles": [t.class_name for t in service._last_detected_tiles],
-            "arm_connected": service.arm_client._connected if service.arm_client else False,
-            "top_video_active": service.top_video._connected if service.top_video else False,
-            "front_video_active": service.front_video._connected if service.front_video else False,
+            "detected_tiles": [t.get('name', '') for t in service._last_detected_tiles],
+            "arm_connected": service._arm_connected,
         })
 
 
@@ -266,109 +291,38 @@ def handle_select_tile(data):
     """用户点击选中某张牌"""
     index = data.get('index', -1)
     with service._lock:
-        tiles = service._last_detected_tiles
-        if 0 <= index < len(tiles):
-            service._selected_tile_index = index
-            tile = tiles[index]
-            emit('tile_selected', {
-                "success": True,
-                "index": index,
-                "tile": {
-                    "name": tile.class_name,
-                    "bbox": tile.bbox,
-                    "confidence": tile.confidence
-                }
-            }, broadcast=False)
-            print(f'[Mahjong] 选中第 {index} 张牌: {tile.class_name}')
-        else:
-            emit('tile_selected', {
-                "success": False,
-                "error": "无效的牌索引"
-            }, broadcast=False)
+        service._selected_tile_index = index
+    service.publish_command('select_tile', {'index': index})
 
 
 @socketio.on('play_tile')
 def handle_play_tile(data):
     """用户确认出牌"""
-    with service._lock:
-        index = service._selected_tile_index
-        tiles = service._last_detected_tiles
-        
-        if index < 0 or index >= len(tiles):
-            emit('play_result', {
-                "success": False,
-                "error": "未选择有效的牌"
-            })
-            return
-        
-        tile = tiles[index]
-        service._system_status = "executing"
-        
-        # TODO: 将图像坐标通过 Homography 转换为机械臂坐标
-        # 这里先返回模拟执行结果
-        print(f'[Mahjong] 执行出牌: {tile.class_name} @ {tile.bbox}')
-        
-        emit('play_result', {
-            "success": True,
-            "message": f"开始执行出牌: {tile.class_name}",
-            "tile": {
-                "name": tile.class_name,
-                "center": tile.center
-            }
-        })
-        
-        # 广播给所有客户端
-        socketio.emit('system_status', {
-            "status": "executing",
-            "message": f"正在打出 {tile.class_name}..."
-        })
-        
-        # TODO: 实际调用动作规划器执行机械臂动作
-        # 完成后重置状态
-        # service._system_status = "idle"
-        # service._selected_tile_index = -1
+    service.publish_command('play_tile', {})
 
 
 @socketio.on('arm_joystick')
 def handle_arm_joystick(data):
     """机械臂摇杆控制（调试用）"""
-    x = data.get('x', 0.0)
-    y = data.get('y', 0.0)
-    axis = data.get('axis', 'base')
-    
-    if service.arm_client and service.arm_client._connected:
-        result = service.arm_client.process_joystick(x, y, axis)
-        emit('arm_update', {
-            "success": result.get('success', False),
-            "angles": result.get('angles', {}),
-            "message": result.get('message', '')
-        })
-    else:
-        emit('arm_update', {"success": False, "message": "机械臂未连接"})
+    service.publish_command('arm_joystick', {
+        'x': data.get('x', 0.0),
+        'y': data.get('y', 0.0),
+        'axis': data.get('axis', 'base')
+    })
 
 
 @socketio.on('gripper_toggle')
 def handle_gripper_toggle(data):
     """夹爪控制"""
-    closed = data.get('closed', False)
-    if service.arm_client and service.arm_client._connected:
-        result = service.arm_client.set_gripper(closed)
-        emit('gripper_update', result)
-    else:
-        emit('gripper_update', {"success": False, "message": "机械臂未连接"})
+    service.publish_command('gripper_toggle', {
+        'closed': data.get('closed', False)
+    })
 
 
 @socketio.on('arm_home')
 def handle_arm_home():
     """机械臂归位"""
-    if service.arm_client and service.arm_client._connected:
-        result = service.arm_client.move_to_home()
-        emit('arm_update', {
-            "success": result.get('success', False),
-            "message": "机械臂已归位"
-        })
-    else:
-        emit('arm_update', {"success": False, "message": "机械臂未连接"})
+    service.publish_command('arm_home', {})
 
 
 @socketio.on('get_status')
@@ -379,75 +333,8 @@ def handle_get_status():
             "status": service._system_status,
             "selected_tile": service._selected_tile_index,
             "tiles_count": len(service._last_detected_tiles),
-            "arm_connected": service.arm_client._connected if service.arm_client else False,
+            "arm_connected": service._arm_connected,
         })
-
-
-def broadcast_detection_loop():
-    """
-    后台线程：定期从顶置视频流获取帧，执行麻将牌检测，并广播结果到前端
-    """
-    import cv2
-    import numpy as np
-    
-    detector = service.detector
-    broadcast_interval = 1.0  # 目标广播间隔（秒）
-    
-    while service._running:
-        try:
-            loop_start = time.time()
-            detections = []
-            
-            # 若检测器已初始化，执行推理
-            if detector._initialized:
-                frame_bytes = service.top_video.get_frame()
-                if frame_bytes is not None:
-                    nparr = np.frombuffer(frame_bytes, np.uint8)
-                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                    if img is not None:
-                        detections = detector.detect(img)
-                        
-                        # 更新检测结果和状态（在锁内）
-                        with service._lock:
-                            service._last_detected_tiles = detections
-                            # 仅在非执行状态时更新为 detecting/idle
-                            if service._system_status != "executing":
-                                service._system_status = "detecting" if detections else "idle"
-            
-            # 构造广播数据（在锁内读取状态）
-            with service._lock:
-                tiles_data = []
-                for i, t in enumerate(service._last_detected_tiles):
-                    # 将 numpy int64 转换为 Python int，确保 JSON 可序列化
-                    bbox_list = [int(x) for x in t.bbox]
-                    tiles_data.append({
-                        "index": i,
-                        "name": t.class_name,
-                        "confidence": round(float(t.confidence), 2),
-                        "bbox": bbox_list
-                    })
-                current_status = service._system_status
-            
-            # 广播检测结果
-            socketio.emit('tiles_update', {
-                "tiles": tiles_data,
-                "timestamp": time.time()
-            })
-            
-            # 广播当前状态
-            socketio.emit('system_status', {
-                "status": current_status,
-                "tiles_count": len(tiles_data)
-            })
-            
-            # 精确控制广播间隔
-            elapsed = time.time() - loop_start
-            sleep_time = max(0, broadcast_interval - elapsed)
-            time.sleep(sleep_time)
-            
-        except Exception as e:
-            print(f'[broadcast_detection_loop] 异常: {e}')
-            time.sleep(1.0)
 
 
 # ========== 主入口 ==========
@@ -455,29 +342,60 @@ def broadcast_detection_loop():
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='HomeBot Mahjong Bot')
+    parser = argparse.ArgumentParser(description='HomeBot Mahjong Bot Cloud Server')
     parser.add_argument('--host', default='0.0.0.0', help='监听地址')
     parser.add_argument('--port', type=int, default=5100, help='监听端口')
     args = parser.parse_args()
     
     print("=" * 60)
-    print("HomeBot 麻将机器人 Web 服务")
+    print("HomeBot 麻将机器人 Web 服务（云服务器版）")
     print("=" * 60)
     
-    # 启动视频和机械臂连接
+    # 启动 MQTT 连接
     if not service.start():
-        print("[WARN] 部分服务启动失败，但仍继续运行 Web 服务器")
+        print("[WARN] MQTT 连接失败，服务仍会继续运行但无法与机器人通信")
     
-    # 启动检测广播线程
-    broadcast_thread = Thread(target=broadcast_detection_loop, daemon=True)
-    broadcast_thread.start()
+    # 准备 SSL 上下文
+    ssl_context = None
+    cert_dir = Path(__file__).parent / 'certs'
     
-    print(f"\n请访问: http://{args.host}:{args.port}/mahjong")
-    print(f"机器人 TRTC 终端: file://{os.path.abspath('static/robot_trtc.html')}")
+    cert_combinations = [
+        ('cert.pem', 'key.pem'),
+        ('server.crt', 'server.key'),
+        ('localhost.crt', 'localhost.key'),
+    ]
+    
+    cert_file = None
+    key_file = None
+    
+    for cert_name, key_name in cert_combinations:
+        cf = cert_dir / cert_name
+        kf = cert_dir / key_name
+        if cf.exists() and kf.exists():
+            cert_file = cf
+            key_file = kf
+            break
+    
+    if cert_file and key_file:
+        ssl_context = (str(cert_file), str(key_file))
+        print(f"\n[HTTPS] 已自动启用 SSL")
+        print(f"  证书: {cert_file}")
+        print(f"  私钥: {key_file}")
+        print(f"\n请访问: https://{args.host}:{args.port}/mahjong")
+        
+        if _sslify_available:
+            global sslify
+            sslify = SSLify(app, permanent=True)
+            print(f"  已启用 SSLify")
+    else:
+        print(f"\n[HTTP] 以 HTTP 模式运行")
+        print(f"\n请访问: http://{args.host}:{args.port}/mahjong")
+    
     print("=" * 60)
     
     try:
-        socketio.run(app, host=args.host, port=args.port, debug=False, use_reloader=False)
+        socketio.run(app, host=args.host, port=args.port, debug=False, 
+                     use_reloader=False, ssl_context=ssl_context)
     except KeyboardInterrupt:
         print("\n[MahjongBot] 正在关闭...")
     finally:

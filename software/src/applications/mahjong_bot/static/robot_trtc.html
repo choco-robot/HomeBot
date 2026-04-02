@@ -51,8 +51,8 @@
             position: absolute;
             top: 40px; left: 0; right: 0; bottom: 0;
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: 1fr 1fr;
+            grid-template-columns: 2fr 1fr;
+            grid-template-rows: 1fr;
             gap: 2px;
             background: #111;
         }
@@ -140,10 +140,6 @@
                 <span id="text-trtc">TRTC 连接中...</span>
             </div>
             <div class="status-item">
-                <div class="status-dot pending" id="dot-front"></div>
-                <span>前置摄像头</span>
-            </div>
-            <div class="status-item">
                 <div class="status-dot pending" id="dot-top"></div>
                 <span>顶置摄像头</span>
             </div>
@@ -154,33 +150,19 @@
     </div>
     
     <div id="main-grid">
-        <!-- 前置摄像头 -->
+        <!-- 顶置摄像头（牌桌视角）-->
         <div class="video-panel">
-            <div class="panel-label">前置摄像头 (现场玩家)</div>
-            <div class="panel-info" id="info-front">初始化中...</div>
-            <video id="video-front" autoplay muted playsinline></video>
-        </div>
-        
-        <!-- 顶置摄像头 -->
-        <div class="video-panel">
-            <div class="panel-label">顶置摄像头 (牌桌)</div>
+            <div class="panel-label">顶置摄像头 - 牌桌视角</div>
             <div class="panel-info" id="info-top">初始化中...</div>
             <video id="video-top" autoplay muted playsinline></video>
         </div>
         
-        <!-- 远端视频 1 -->
+        <!-- 远端视频（远程玩家）-->
         <div class="video-panel">
-            <div class="panel-label">远程玩家 1</div>
-            <div class="panel-info" id="info-remote1">等待连接...</div>
-            <div id="container-remote1" style="width:100%; height:100%;"></div>
+            <div class="panel-label">远程玩家</div>
+            <div class="panel-info" id="info-remote">等待连接...</div>
+            <div id="container-remote" style="width:100%; height:100%;"></div>
             <div id="remote-audio-indicator">🔊 正在播放远程音频</div>
-        </div>
-        
-        <!-- 远端视频 2 -->
-        <div class="video-panel">
-            <div class="panel-label">远程玩家 2 / 其他</div>
-            <div class="panel-info" id="info-remote2">等待连接...</div>
-            <div id="container-remote2" style="width:100%; height:100%;"></div>
         </div>
     </div>
     
@@ -192,18 +174,25 @@
 
     <script>
         // ============================================================
-        // 配置区 - 请根据实际腾讯云账号修改以下参数
+        // 配置区 - 优先从后端 API 获取配置
         // ============================================================
-        const SDKAPPID = 0;           // 替换为你的腾讯云 SDKAppID
-        const SECRETKEY = 'YOUR_SECRET_KEY';  // 替换为你的腾讯云 SecretKey（仅本地测试用）
-        const ROOMID = 'mahjong_room_001';    // 房间号
-        const USERID = 'robot';               // 机器人在房间中的 UserID
+        const FALLBACK_SDKAPPID = 0;
+        const FALLBACK_SECRETKEY = 'YOUR_SECRET_KEY';
+        const FALLBACK_ROOMID = 'mahjong_room_001';
+        const USERID = 'robot';
+        
+        // 后端 API 地址（自动检测当前协议和主机）
+        const API_BASE_URL = (() => {
+            if (window.location.protocol.startsWith('http')) {
+                return `${window.location.protocol}//${window.location.host}`;
+            }
+            return 'http://localhost:5200';
+        })();
         
         // ============================================================
         
-        let trtcClient = null;
-        let frontStream = null;
-        let topStream = null;
+        let trtc = null;
+        let config = null;
         let remoteUserCount = 0;
         
         function setStatus(id, status, text) {
@@ -226,10 +215,48 @@
             document.getElementById('error-overlay').style.display = 'flex';
         }
         
-        // 生成 UserSig（本地测试用，生产环境应从后端 API 获取）
-        function genUserSig(userId) {
+        async function fetchTRTCConfig() {
             try {
-                const generator = new window.LibGenerateTestUserSig(SDKAPPID, SECRETKEY, 604800);
+                console.log('[TRTC] 从后端获取配置:', `${API_BASE_URL}/api/trtc/usersig?userid=${USERID}`);
+                const response = await fetch(`${API_BASE_URL}/api/trtc/usersig?userid=${USERID}`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log('[TRTC] 已从后端获取配置');
+                    return {
+                        sdkAppId: data.sdkAppId,
+                        userSig: data.userSig,
+                        roomId: data.roomId || FALLBACK_ROOMID,
+                        fromBackend: true
+                    };
+                } else {
+                    throw new Error(data.error || '后端返回错误');
+                }
+            } catch (e) {
+                console.warn('[TRTC] 无法从后端获取配置:', e.message);
+                if (FALLBACK_SDKAPPID !== 0 && FALLBACK_SECRETKEY !== 'YOUR_SECRET_KEY') {
+                    console.log('[TRTC] 使用本地备用配置');
+                    return {
+                        sdkAppId: FALLBACK_SDKAPPID,
+                        roomId: FALLBACK_ROOMID,
+                        fromBackend: false
+                    };
+                }
+                throw new Error(`无法获取 TRTC 配置: ${e.message}`);
+            }
+        }
+        
+        function genLocalUserSig(userId, sdkAppId, secretKey) {
+            try {
+                const generator = new window.LibGenerateTestUserSig(sdkAppId, secretKey, 604800);
                 return generator.genTestUserSig(userId);
             } catch (e) {
                 console.error('生成 UserSig 失败:', e);
@@ -238,110 +265,89 @@
         }
         
         async function init() {
-            document.getElementById('room-info').innerText = `Room: ${ROOMID}`;
+            console.log('[Init] API_BASE_URL:', API_BASE_URL);
             
             try {
-                // 1. 枚举摄像头设备
-                const devices = await TRTC.getCameraList();
-                console.log('[TRTC] 可用摄像头:', devices);
+                // 1. 获取 TRTC 配置
+                config = await fetchTRTCConfig();
+                document.getElementById('room-info').innerText = `Room: ${config.roomId}`;
+                console.log(`[TRTC] 配置来源: ${config.fromBackend ? '后端API' : '本地配置'}`);
                 
-                if (devices.length < 2) {
-                    showError(`只检测到 ${devices.length} 个摄像头，需要至少 2 个（前置+顶置）`);
+                if (!config.fromBackend && (!config.sdkAppId || config.sdkAppId === 0)) {
+                    showError('无法获取 TRTC 配置\n\n请确保桥接服务已启动，并检查 API_BASE_URL 设置');
                     return;
                 }
                 
-                const frontDevice = devices[0];
-                const topDevice = devices[1];
+                // 2. 创建 TRTC 实例
+                trtc = TRTC.create();
+                console.log('[TRTC] 实例创建成功');
                 
-                setInfo('front', frontDevice.label || 'Camera 0');
-                setInfo('top', topDevice.label || 'Camera 1');
+                // 3. 枚举摄像头设备
+                const devices = await trtc.getCameraList();
+                console.log('[TRTC] 可用摄像头:', devices);
                 
-                // 2. 创建前置摄像头视频流
-                frontStream = TRTC.createStream({
+                if (devices.length < 1) {
+                    showError('未检测到摄像头');
+                    return;
+                }
+                
+                // 使用第一个设备作为顶置摄像头（牌桌视角）
+                // 如果系统中有多个摄像头，顶置摄像头应被配置为默认设备
+                const topDevice = devices.find(d => d.label.toLowerCase().includes('top')) 
+                    || devices.find(d => d.label.toLowerCase().includes('usb')) 
+                    || devices[0];
+                
+                setInfo('top', topDevice.label || 'Camera 0');
+                
+                // 4. 准备 UserSig
+                let userSig = config.userSig;
+                if (!userSig && !config.fromBackend) {
+                    userSig = genLocalUserSig(USERID, config.sdkAppId, FALLBACK_SECRETKEY);
+                }
+                
+                // 5. 进入房间
+                const roomIdNum = parseInt(config.roomId) || 8888;
+                await trtc.enterRoom({
+                    sdkAppId: config.sdkAppId,
                     userId: USERID,
-                    audio: true,  // 机器人的麦克风
-                    video: true,
-                    cameraId: frontDevice.deviceId
+                    userSig: userSig,
+                    roomId: roomIdNum
                 });
-                await frontStream.initialize();
-                frontStream.play('video-front');
-                setStatus('front', 'connected');
-                
-                // 3. 创建顶置摄像头视频流（辅路，不带音频）
-                topStream = TRTC.createStream({
-                    userId: USERID + '_top',
-                    audio: false,
-                    video: true,
-                    cameraId: topDevice.deviceId
-                });
-                await topStream.initialize();
-                topStream.play('video-top');
-                setStatus('top', 'connected');
-                
-                // 4. 创建 TRTC Client 并加入房间
-                trtcClient = TRTC.createClient({
-                    mode: 'rtc',
-                    sdkAppId: SDKAPPID,
-                    userId: USERID,
-                    userSig: genUserSig(USERID)
-                });
-                
-                await trtcClient.join({ roomId: ROOMID });
-                console.log('[TRTC] 已加入房间:', ROOMID);
-                
-                // 5. 发布两路视频 + 一路音频
-                // 前置流包含音频，顶置流纯视频
-                await trtcClient.publish(frontStream);
-                await trtcClient.publish(topStream);
-                
+                console.log('[TRTC] 已进入房间:', roomIdNum);
                 setStatus('trtc', 'connected', 'TRTC 已连接');
                 
-                // 6. 订阅远端用户
-                trtcClient.on('stream-added', async (event) => {
-                    const remoteStream = event.stream;
-                    const userId = remoteStream.getUserId();
-                    console.log('[TRTC] 远端用户加入:', userId);
-                    
-                    await trtcClient.subscribe(remoteStream);
-                    
-                    // 分配显示容器
+                // 6. 开启本地音视频（顶置摄像头）
+                await trtc.startLocalAudio();
+                await trtc.startLocalVideo({ 
+                    view: 'video-top',
+                    cameraId: topDevice.deviceId
+                });
+                setStatus('top', 'connected');
+                console.log('[TRTC] 顶置摄像头推流已启动');
+                
+                // 7. 监听远端视频（远程玩家）
+                trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, ({ userId, streamType }) => {
+                    console.log('[TRTC] 远端视频可用:', userId, streamType);
                     remoteUserCount++;
-                    const containerId = remoteUserCount <= 1 ? 'container-remote1' : 'container-remote2';
-                    const infoId = remoteUserCount <= 1 ? 'info-remote1' : 'info-remote2';
-                    
-                    document.getElementById(infoId).innerText = `用户: ${userId}`;
-                    
-                    if (remoteStream.hasVideo()) {
-                        remoteStream.play(containerId);
-                    }
-                    
-                    if (remoteStream.hasAudio()) {
-                        remoteStream.play(containerId); // 音频会自动从系统默认设备播放
-                        document.getElementById('remote-audio-indicator').style.display = 'block';
-                    }
+                    document.getElementById('info-remote').innerText = `用户: ${userId}`;
+                    trtc.startRemoteVideo({ userId, streamType, view: 'container-remote' });
+                    document.getElementById('remote-audio-indicator').style.display = 'block';
                 });
                 
-                trtcClient.on('stream-removed', (event) => {
-                    const remoteStream = event.stream;
-                    const userId = remoteStream.getUserId();
-                    console.log('[TRTC] 远端用户离开:', userId);
-                    remoteStream.stop();
+                trtc.on(TRTC.EVENT.REMOTE_VIDEO_UNAVAILABLE, ({ userId, streamType }) => {
+                    console.log('[TRTC] 远端视频停止:', userId, streamType);
                     remoteUserCount = Math.max(0, remoteUserCount - 1);
-                    
                     if (remoteUserCount === 0) {
-                        document.getElementById('info-remote1').innerText = '等待连接...';
-                        document.getElementById('info-remote2').innerText = '等待连接...';
+                        document.getElementById('info-remote').innerText = '等待连接...';
                         document.getElementById('remote-audio-indicator').style.display = 'none';
                     }
                 });
                 
-                trtcClient.on('peer-leave', (event) => {
-                    console.log('[TRTC] Peer 离开:', event.userId);
-                });
-                
-                trtcClient.on('error', (error) => {
-                    console.error('[TRTC] 错误:', error);
-                    setStatus('trtc', 'pending', 'TRTC 异常');
+                // 监听被踢出房间
+                trtc.on(TRTC.EVENT.KICKED_OUT, (error) => {
+                    console.error('[TRTC] 被踢出房间:', error);
+                    setStatus('trtc', 'pending', '连接断开');
+                    showError(`被踢出房间: ${error.message}`);
                 });
                 
             } catch (err) {
@@ -351,13 +357,12 @@
             }
         }
         
-        // 页面加载完成后初始化
         window.addEventListener('DOMContentLoaded', init);
         
-        // 防止屏幕休眠（通过播放一个无声的 video）
+        // 防止屏幕休眠
         function preventSleep() {
             const silentVideo = document.createElement('video');
-            silentVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAACKBtZGF0AAAC'; // 空 mp4
+            silentVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAACKBtZGF0AAAC';
             silentVideo.loop = true;
             silentVideo.muted = true;
             silentVideo.play().catch(() => {});

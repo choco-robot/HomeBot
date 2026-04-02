@@ -431,6 +431,16 @@ class MahjongConfig:
     # 采集图像保存配置
     capture_save_original: bool = True     # 是否保存原始图
     capture_save_cropped: bool = True      # 是否保存裁剪后的图
+    
+    # MQTT 配置（云-端分离架构）
+    mqtt_broker: str = "localhost"
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_command_topic: str = "homebot/mahjong/command"
+    mqtt_status_topic: str = "homebot/mahjong/status"
+    mqtt_client_id_cloud: str = "mahjong_cloud"
+    mqtt_client_id_robot: str = "mahjong_robot"
 
 
 @dataclass
@@ -438,15 +448,28 @@ class TRTCConfig:
     """腾讯云 TRTC 音视频配置
     
     敏感信息（secret_key）从 secrets 模块加载
+    sdk_app_id 可从环境变量 TRTC_SDK_APP_ID 读取
     """
-    sdk_app_id: int = 0                        # 腾讯云 SDKAppID
-    secret_key: str = ""                       # 腾讯云 SecretKey（仅本地测试）
+    sdk_app_id: int = 0                        # 腾讯云 SDKAppID，默认从环境变量读取
+    secret_key: str = ""                       # 腾讯云 SecretKey，从 secrets 模块加载
     room_id: str = "mahjong_room_001"          # 默认房间号
     
     def __post_init__(self):
-        """从密钥管理加载敏感配置"""
-        secrets = get_secrets()
+        """从环境变量和密钥管理加载配置"""
+        import os
+        
+        # 从环境变量读取 SDKAppID（如果默认值为0）
+        if self.sdk_app_id == 0:
+            env_sdk_id = os.environ.get("TRTC_SDK_APP_ID", "")
+            if env_sdk_id:
+                try:
+                    self.sdk_app_id = int(env_sdk_id)
+                except ValueError:
+                    pass
+        
+        # 从 secrets 加载 SecretKey
         if not self.secret_key:
+            secrets = get_secrets()
             self.secret_key = secrets.trtc.secret_key if hasattr(secrets, 'trtc') else ""
 
 

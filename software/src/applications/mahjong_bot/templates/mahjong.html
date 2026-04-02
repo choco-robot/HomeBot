@@ -219,6 +219,7 @@
             gap: 8px;
             padding: 8px;
             overflow-y: auto;
+            min-height: 100px;
         }
         
         .rtc-video-box {
@@ -315,12 +316,85 @@
         @media (max-width: 900px) {
             .main-content { flex-direction: column; }
             .right-panel {
-                width: 100%; height: 280px; flex-direction: row;
+                width: 100%; height: auto;
+                flex-direction: row;
                 border-left: none; border-top: 1px solid rgba(255,255,255,0.1);
                 padding: 10px;
             }
-            .rtc-panel { flex: 2; }
-            .debug-panel { flex: 1; min-width: 140px; }
+            .rtc-panel { flex: 2; min-width: 0; height: auto; }
+            .rtc-videos {
+                flex: none !important;
+                flex-direction: row;
+                height: 90px !important;
+                min-height: 90px;
+                overflow: hidden;
+            }
+            .rtc-video-box {
+                flex: 1;
+                min-height: 70px;
+            }
+            .rtc-controls {
+                padding: 8px;
+                flex-shrink: 0;
+            }
+            .debug-panel { flex: 1; min-width: 120px; }
+        }
+        
+        @media (max-width: 600px) {
+            .right-panel {
+                flex-direction: column;
+                height: auto;
+                max-height: none;
+                padding: 8px;
+            }
+            .rtc-panel { 
+                flex: none;
+                height: auto;
+                margin-bottom: 8px;
+            }
+            .rtc-header {
+                padding: 6px 10px;
+                font-size: 11px;
+            }
+            .rtc-videos {
+                flex: none !important;
+                height: 70px !important;
+                min-height: 70px;
+                padding: 5px;
+            }
+            .rtc-video-box {
+                min-height: 50px;
+            }
+            .rtc-controls {
+                padding: 6px;
+                flex-shrink: 0;
+            }
+            .rtc-btn { 
+                padding: 8px 16px; 
+                font-size: 13px;
+            }
+            .debug-panel {
+                flex: none;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 10px;
+                padding: 8px;
+            }
+            .debug-title { margin-bottom: 0; font-size: 11px; }
+            .debug-btns { flex-wrap: nowrap; }
+            .debug-btn { padding: 5px 10px; font-size: 11px; }
+        }
+        
+        @media (max-width: 400px) {
+            .rtc-videos {
+                height: 60px !important;
+                min-height: 60px;
+            }
+            .rtc-btn {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
         }
     </style>
 </head>
@@ -353,14 +427,10 @@
     <div class="main-content">
         <!-- 左侧：视频 + 手牌 -->
         <div class="left-panel">
-            <div class="video-row">
+            <div class="video-row" style="height: 65%;">
                 <div class="video-box">
-                    <div class="video-label">📷 牌桌视角 (顶置摄像头)</div>
-                    <img class="video-feed" id="videoTop" src="/video_feed_top" alt="牌桌">
-                </div>
-                <div class="video-box">
-                    <div class="video-label">📷 现场视角 (前置摄像头)</div>
-                    <img class="video-feed" id="videoFront" src="/video_feed_front" alt="现场">
+                    <div class="video-label">📷 牌桌视角 (TRTC)</div>
+                    <video class="video-feed" id="videoTopTable" autoplay playsinline muted></video>
                 </div>
             </div>
             
@@ -396,9 +466,9 @@
                         <div class="rtc-video-label">我</div>
                         <video class="rtc-video-el" id="localVideo" autoplay muted playsinline></video>
                     </div>
-                    <!-- 远端视频容器 -->
+                    <!-- 远端视频容器（其他玩家/现场） -->
                     <div class="rtc-video-box" id="remoteVideoBox" style="display: none;">
-                        <div class="rtc-video-label" id="remoteLabel">机器人/现场</div>
+                        <div class="rtc-video-label" id="remoteLabel">其他用户</div>
                         <div class="rtc-video-el" id="remoteVideo"></div>
                     </div>
                 </div>
@@ -440,9 +510,9 @@
                 this.localStream = null;
                 this.isInRTC = false;
                 this.userId = 'player_' + Date.now().toString().slice(-6);
+                this.trtcReady = false;
                 
                 this.initSocket();
-                this.initVideoStatusCheck();
             }
             
             // ========== SocketIO ==========
@@ -511,7 +581,7 @@
                 const countEl = document.getElementById('tilesCount');
                 
                 if (this.tiles.length === 0) {
-                    container.innerHTML = '<div style="color:#666; font-size:13px; padding:20px;">暂无检测到手牌，请确保牌桌视角正常后点击刷新检测</div>';
+                    container.innerHTML = '<div style="color:#666; font-size:13px; padding:20px;">暂无检测到手牌，请等待机器人端检测...</div>';
                     countEl.innerText = '0 张';
                     return;
                 }
@@ -577,65 +647,86 @@
             
             refreshDetection() {
                 this.showToast('正在刷新检测...', 'info');
-                // 后端 broadcast_detection_loop 会自动推送，这里可以额外触发一次
             }
             
             // ========== TRTC 音视频 ==========
             async joinRTC() {
                 if (this.isInRTC) return;
                 
+                if (typeof TRTC === 'undefined') {
+                    this.showToast('TRTC SDK 未加载，请检查网络连接', 'error');
+                    return;
+                }
+                
+                if (!window.isSecureContext) {
+                    this.showToast('TRTC 需要 HTTPS 或 localhost', 'error');
+                    console.warn('[TRTC] 当前不是安全上下文');
+                    return;
+                }
+                
+                let trtc = null;
                 try {
-                    // 1. 获取 UserSig
+                    trtc = TRTC.create();
+                    console.log('[TRTC] 实例创建成功');
+                } catch (e) {
+                    this.showToast('TRTC 初始化失败', 'error');
+                    console.error('[TRTC] TRTC.create() 失败:', e);
+                    return;
+                }
+                
+                try {
+                    console.log('[TRTC] 从后端获取 UserSig...');
                     const resp = await fetch(`/api/trtc/usersig?userid=${this.userId}`);
                     const data = await resp.json();
                     
                     if (!data.success) {
                         this.showToast('加入通话失败: ' + data.error, 'error');
+                        console.error('[TRTC] 获取 UserSig 失败:', data.error);
                         return;
                     }
                     
-                    // 2. 创建 TRTC Client
-                    this.trtcClient = TRTC.createClient({
-                        mode: 'rtc',
+                    console.log('[TRTC] UserSig 获取成功');
+                    
+                    await trtc.enterRoom({
                         sdkAppId: data.sdkAppId,
                         userId: data.userId,
-                        userSig: data.userSig
+                        userSig: data.userSig,
+                        roomId: parseInt(data.roomId) || 8888
                     });
+                    console.log('[TRTC] 已进入房间:', data.roomId);
                     
-                    // 3. 创建并发布本地音视频
-                    this.localStream = TRTC.createStream({
-                        userId: data.userId,
-                        audio: true,
-                        video: true
-                    });
-                    await this.localStream.initialize();
-                    await this.localStream.play('localVideo');
+                    await trtc.startLocalAudio();
+                    await trtc.startLocalVideo({ view: 'localVideo' });
+                    console.log('[TRTC] 本地音视频已开启');
                     
-                    await this.trtcClient.join({ roomId: data.roomId });
-                    await this.trtcClient.publish(this.localStream);
-                    
-                    // 4. 订阅远端流
-                    this.trtcClient.on('stream-added', async (event) => {
-                        const remoteStream = event.stream;
-                        await this.trtcClient.subscribe(remoteStream);
+                    // 监听远端视频
+                    trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, ({ userId, streamType }) => {
+                        console.log('[TRTC] 远端视频可用:', userId, streamType);
                         
-                        const streamId = remoteStream.getId();
-                        const userId = remoteStream.getUserId();
-                        console.log('[TRTC] 订阅远端流:', userId, streamId);
-                        
-                        // 显示远端视频
-                        const remoteBox = document.getElementById('remoteVideoBox');
-                        remoteBox.style.display = 'block';
-                        document.getElementById('remoteLabel').innerText = userId === 'robot' ? '机器人现场' : userId;
-                        remoteStream.play('remoteVideo');
+                        if (userId === 'robot') {
+                            // 机器人的视频是牌桌顶置视角，渲染到左侧大画面
+                            trtc.startRemoteVideo({ userId, streamType, view: 'videoTopTable' });
+                        } else {
+                            // 其他用户（现场玩家）渲染到右侧小画面
+                            const view = `remoteVideo_${userId}_${streamType}`;
+                            const remoteVideoEl = document.getElementById('remoteVideo');
+                            remoteVideoEl.id = view;
+                            trtc.startRemoteVideo({ userId, streamType, view: view });
+                            
+                            const remoteBox = document.getElementById('remoteVideoBox');
+                            remoteBox.style.display = 'block';
+                            document.getElementById('remoteLabel').innerText = userId;
+                        }
                     });
                     
-                    this.trtcClient.on('stream-removed', (event) => {
-                        const remoteStream = event.stream;
-                        remoteStream.stop();
-                        document.getElementById('remoteVideoBox').style.display = 'none';
+                    trtc.on(TRTC.EVENT.REMOTE_VIDEO_UNAVAILABLE, ({ userId, streamType }) => {
+                        console.log('[TRTC] 远端视频停止:', userId, streamType);
+                        if (userId !== 'robot') {
+                            document.getElementById('remoteVideoBox').style.display = 'none';
+                        }
                     });
                     
+                    this._trtc = trtc;
                     this.isInRTC = true;
                     this.updateStatusDot('rtc', true);
                     document.getElementById('btnRtcJoin').style.display = 'none';
@@ -652,14 +743,10 @@
                 if (!this.isInRTC) return;
                 
                 try {
-                    if (this.localStream) {
-                        this.localStream.stop();
-                        this.localStream.close();
-                        this.localStream = null;
-                    }
-                    if (this.trtcClient) {
-                        await this.trtcClient.leave();
-                        this.trtcClient = null;
+                    if (this._trtc) {
+                        await this._trtc.exitRoom();
+                        this._trtc.destroy();
+                        this._trtc = null;
                     }
                     
                     this.isInRTC = false;
@@ -681,7 +768,7 @@
             
             toggleGripper() {
                 if (!this.isConnected) return;
-                this.socket.emit('gripper_toggle', { closed: true }); // 简化：直接闭合
+                this.socket.emit('gripper_toggle', { closed: true });
             }
             
             // ========== 工具方法 ==========
@@ -701,19 +788,6 @@
             getStatusText(status) {
                 const map = { idle: '待机中', detecting: '检测中', executing: '执行中' };
                 return map[status] || status;
-            }
-            
-            initVideoStatusCheck() {
-                // 简单的视频流状态检查
-                const checkImg = (id, name) => {
-                    const img = document.getElementById(id);
-                    if (!img) return;
-                    img.onerror = () => {
-                        console.warn(`[Video] ${name} 加载失败`);
-                    };
-                };
-                checkImg('videoTop', '顶置视频');
-                checkImg('videoFront', '前置视频');
             }
             
             showToast(message, type = 'info') {
