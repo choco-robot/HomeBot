@@ -35,12 +35,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 
-try:
-    from flask_sslify import SSLify
-    _sslify_available = True
-except ImportError:
-    _sslify_available = False
-
 import paho.mqtt.client as mqtt
 from configs import get_config
 
@@ -48,9 +42,6 @@ from configs import get_config
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'homebot-mahjong-secret'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
-
-sslify = None
-
 
 # ========== TRTC UserSig 生成 ==========
 def gen_trtc_usersig(sdkappid: int, secret_key: str, userid: str, expire: int = 86400) -> str:
@@ -107,13 +98,33 @@ class MahjongCloudService:
         # MQTT 配置
         self.mqtt_broker = self.mahjong_cfg.mqtt_broker
         self.mqtt_port = self.mahjong_cfg.mqtt_port
+        self.mqtt_use_tls = getattr(self.mahjong_cfg, 'mqtt_use_tls', False)
         self.mqtt_username = self.mahjong_cfg.mqtt_username
         self.mqtt_password = self.mahjong_cfg.mqtt_password
         self.command_topic = self.mahjong_cfg.mqtt_command_topic
         self.status_topic = self.mahjong_cfg.mqtt_status_topic
         self.mqtt_client_id = self.mahjong_cfg.mqtt_client_id_cloud
         
-        self.mqtt_client = mqtt.Client(client_id=self.mqtt_client_id)
+        # 生成唯一的 client ID 避免冲突
+        import random
+        unique_id = f"{self.mqtt_client_id}_{random.randint(1000, 9999)}_{int(time.time())}"
+        self.mqtt_client = mqtt.Client(client_id=unique_id)
+        
+        # 启用 TLS/SSL（EMQX Cloud 要求）
+        if self.mqtt_use_tls:
+            import ssl
+            ca_cert = Path(__file__).parent / 'certs' / 'emqxsl-ca.crt'
+            if ca_cert.exists():
+                self.mqtt_client.tls_set(
+                    ca_certs=str(ca_cert),
+                    cert_reqs=ssl.CERT_REQUIRED,
+                    tls_version=ssl.PROTOCOL_TLS_CLIENT
+                )
+                print(f"[MQTT] 已启用 TLS/SSL 加密连接 (CA: {ca_cert})")
+            else:
+                self.mqtt_client.tls_set()
+                print(f"[MQTT] 已启用 TLS/SSL 加密连接 (系统默认 CA)")
+        
         if self.mqtt_username:
             self.mqtt_client.username_pw_set(self.mqtt_username, self.mqtt_password)
         self.mqtt_client.on_connect = self._on_mqtt_connect
@@ -141,9 +152,15 @@ class MahjongCloudService:
             return False
     
     def stop(self):
-        """停止 MQTT"""
-        self.mqtt_client.loop_stop()
-        self.mqtt_client.disconnect()
+        """停止 MQTT（强制退出，避免卡死）"""
+        try:
+            self.mqtt_client.disconnect()
+        except Exception as e:
+            pass
+        try:
+            self.mqtt_client.loop_stop(force=True)
+        except Exception as e:
+            pass
         print("[MQTT] 已断开")
     
     def _on_mqtt_connect(self, client, userdata, flags, rc):
@@ -382,11 +399,6 @@ def main():
         print(f"  证书: {cert_file}")
         print(f"  私钥: {key_file}")
         print(f"\n请访问: https://{args.host}:{args.port}/mahjong")
-        
-        if _sslify_available:
-            global sslify
-            sslify = SSLify(app, permanent=True)
-            print(f"  已启用 SSLify")
     else:
         print(f"\n[HTTP] 以 HTTP 模式运行")
         print(f"\n请访问: http://{args.host}:{args.port}/mahjong")
@@ -394,8 +406,8 @@ def main():
     print("=" * 60)
     
     try:
-        socketio.run(app, host=args.host, port=args.port, debug=False, 
-                     use_reloader=False, ssl_context=ssl_context)
+        socketio.run(app, host=args.host, port=args.port, debug=True, 
+                     use_reloader=True, ssl_context=ssl_context)
     except KeyboardInterrupt:
         print("\n[MahjongBot] 正在关闭...")
     finally:

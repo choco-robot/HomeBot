@@ -100,12 +100,20 @@ class TRTCSecrets:
 
 
 @dataclass
+class MQTTSecrets:
+    """MQTT 认证配置"""
+    username: str = ""  # MQTT 用户名
+    password: str = ""  # MQTT 密码
+
+
+@dataclass
 class Secrets:
     """所有密钥配置"""
     tts: TTSSecrets = field(default_factory=TTSSecrets)
     llm: LLMSecrets = field(default_factory=LLMSecrets)
     vision: VisionSecrets = field(default_factory=VisionSecrets)
     trtc: TRTCSecrets = field(default_factory=TRTCSecrets)
+    mqtt: MQTTSecrets = field(default_factory=MQTTSecrets)
 
 
 # 全局密钥实例
@@ -190,7 +198,13 @@ def load_secrets() -> Secrets:
         secret_key=_get_env("TRTC_SECRET_KEY", ""),
     )
     
-    return Secrets(tts=tts, llm=llm, vision=vision, trtc=trtc)
+    # MQTT 配置
+    mqtt = MQTTSecrets(
+        username=_get_env("MQTT_USERNAME", ""),
+        password=_get_env("MQTT_PASSWORD", ""),
+    )
+    
+    return Secrets(tts=tts, llm=llm, vision=vision, trtc=trtc, mqtt=mqtt)
 
 
 def get_secrets() -> Secrets:

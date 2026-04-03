@@ -100,13 +100,33 @@ class RobotBridgeService:
         # MQTT 配置
         self.mqtt_broker = self.mahjong_cfg.mqtt_broker
         self.mqtt_port = self.mahjong_cfg.mqtt_port
+        self.mqtt_use_tls = getattr(self.mahjong_cfg, 'mqtt_use_tls', False)
         self.mqtt_username = self.mahjong_cfg.mqtt_username
         self.mqtt_password = self.mahjong_cfg.mqtt_password
         self.command_topic = self.mahjong_cfg.mqtt_command_topic
         self.status_topic = self.mahjong_cfg.mqtt_status_topic
         self.mqtt_client_id = self.mahjong_cfg.mqtt_client_id_robot
         
-        self.mqtt_client = mqtt.Client(client_id=self.mqtt_client_id)
+        # 生成唯一的 client ID 避免冲突
+        import random
+        unique_id = f"{self.mqtt_client_id}_{random.randint(1000, 9999)}_{int(time.time())}"
+        self.mqtt_client = mqtt.Client(client_id=unique_id)
+        
+        # 启用 TLS/SSL（EMQX Cloud 要求）
+        if self.mqtt_use_tls:
+            import ssl
+            ca_cert = Path(__file__).parent / 'certs' / 'emqxsl-ca.crt'
+            if ca_cert.exists():
+                self.mqtt_client.tls_set(
+                    ca_certs=str(ca_cert),
+                    cert_reqs=ssl.CERT_REQUIRED,
+                    tls_version=ssl.PROTOCOL_TLS_CLIENT
+                )
+                print(f"[MQTT] 已启用 TLS/SSL 加密连接 (CA: {ca_cert})")
+            else:
+                self.mqtt_client.tls_set()
+                print(f"[MQTT] 已启用 TLS/SSL 加密连接 (系统默认 CA)")
+        
         if self.mqtt_username:
             self.mqtt_client.username_pw_set(self.mqtt_username, self.mqtt_password)
         self.mqtt_client.on_connect = self._on_mqtt_connect
@@ -474,7 +494,7 @@ def main():
     print("=" * 60)
     
     try:
-        app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+        app.run(host=args.host, port=args.port, debug=True, use_reloader=True)
     except KeyboardInterrupt:
         print("\n[Bridge] 收到中断信号，正在关闭...")
     finally:

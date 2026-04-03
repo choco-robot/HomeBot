@@ -154,7 +154,8 @@
         <div class="video-panel">
             <div class="panel-label">顶置摄像头 - 牌桌视角</div>
             <div class="panel-info" id="info-top">初始化中...</div>
-            <video id="video-top" autoplay muted playsinline></video>
+            <!-- TRTC v5 SDK 会自动在此 div 中创建 video 元素 -->
+            <div id="video-top" style="width:100%; height:100%; background:#000;"></div>
         </div>
         
         <!-- 远端视频（远程玩家）-->
@@ -178,7 +179,7 @@
         // ============================================================
         const FALLBACK_SDKAPPID = 0;
         const FALLBACK_SECRETKEY = 'YOUR_SECRET_KEY';
-        const FALLBACK_ROOMID = 'mahjong_room_001';
+        const FALLBACK_ROOMID = '8888';
         const USERID = 'robot';
         
         // 后端 API 地址（自动检测当前协议和主机）
@@ -188,6 +189,12 @@
             }
             return 'http://localhost:5200';
         })();
+        
+        // 调试：打印页面加载信息
+        console.log('[Init] 页面加载完成');
+        console.log('[Init] User Agent:', navigator.userAgent);
+        console.log('[Init] 协议:', window.location.protocol);
+        console.log('[Init] 主机:', window.location.host);
         
         // ============================================================
         
@@ -234,7 +241,7 @@
                     return {
                         sdkAppId: data.sdkAppId,
                         userSig: data.userSig,
-                        roomId: data.roomId || FALLBACK_ROOMID,
+                        roomId: parseInt(data.roomId) || parseInt(FALLBACK_ROOMID),
                         fromBackend: true
                     };
                 } else {
@@ -282,55 +289,13 @@
                 trtc = TRTC.create();
                 console.log('[TRTC] 实例创建成功');
                 
-                // 3. 枚举摄像头设备
-                const devices = await trtc.getCameraList();
-                console.log('[TRTC] 可用摄像头:', devices);
-                
-                if (devices.length < 1) {
-                    showError('未检测到摄像头');
-                    return;
-                }
-                
-                // 使用第一个设备作为顶置摄像头（牌桌视角）
-                // 如果系统中有多个摄像头，顶置摄像头应被配置为默认设备
-                const topDevice = devices.find(d => d.label.toLowerCase().includes('top')) 
-                    || devices.find(d => d.label.toLowerCase().includes('usb')) 
-                    || devices[0];
-                
-                setInfo('top', topDevice.label || 'Camera 0');
-                
-                // 4. 准备 UserSig
-                let userSig = config.userSig;
-                if (!userSig && !config.fromBackend) {
-                    userSig = genLocalUserSig(USERID, config.sdkAppId, FALLBACK_SECRETKEY);
-                }
-                
-                // 5. 进入房间
-                const roomIdNum = parseInt(config.roomId) || 8888;
-                await trtc.enterRoom({
-                    sdkAppId: config.sdkAppId,
-                    userId: USERID,
-                    userSig: userSig,
-                    roomId: roomIdNum
-                });
-                console.log('[TRTC] 已进入房间:', roomIdNum);
-                setStatus('trtc', 'connected', 'TRTC 已连接');
-                
-                // 6. 开启本地音视频（顶置摄像头）
-                await trtc.startLocalAudio();
-                await trtc.startLocalVideo({ 
-                    view: 'video-top',
-                    cameraId: topDevice.deviceId
-                });
-                setStatus('top', 'connected');
-                console.log('[TRTC] 顶置摄像头推流已启动');
-                
-                // 7. 监听远端视频（远程玩家）
+                // 3. 注册事件监听器（在进入房间前）
                 trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, ({ userId, streamType }) => {
                     console.log('[TRTC] 远端视频可用:', userId, streamType);
                     remoteUserCount++;
                     document.getElementById('info-remote').innerText = `用户: ${userId}`;
                     trtc.startRemoteVideo({ userId, streamType, view: 'container-remote' });
+                    trtc.startRemoteAudio({ userId });
                     document.getElementById('remote-audio-indicator').style.display = 'block';
                 });
                 
@@ -342,6 +307,72 @@
                         document.getElementById('remote-audio-indicator').style.display = 'none';
                     }
                 });
+                
+                trtc.on(TRTC.EVENT.ERROR, (error) => {
+                    console.error('[TRTC] 错误:', error);
+                });
+                
+                trtc.on(TRTC.EVENT.KICKED_OUT, (event) => {
+                    console.warn('[TRTC] 被踢出房间:', event);
+                    setStatus('trtc', 'pending', '连接断开');
+                    showError(`被踢出房间: ${event.message}`);
+                });
+                
+                // 5. 枚举摄像头设备
+                // 先请求摄像头权限，否则 enumerateDevices 可能返回空标签
+                let videoDevices = [];
+                try {
+                    await navigator.mediaDevices.getUserMedia({ video: true });
+                    const allDevices = await navigator.mediaDevices.enumerateDevices();
+                    videoDevices = allDevices.filter(d => d.kind === 'videoinput');
+                } catch (e) {
+                    console.warn('[Camera] 获取摄像头列表失败:', e);
+                }
+                
+                console.log('[TRTC] 可用摄像头:', videoDevices);
+                
+                if (videoDevices.length < 1) {
+                    showError('未检测到摄像头，请检查摄像头是否已连接并授权');
+                    return;
+                }
+                
+                // 使用第一个设备作为顶置摄像头（牌桌视角）
+                // 如果系统中有多个摄像头，顶置摄像头应被配置为默认设备
+                const topDevice = videoDevices.find(d => d.label && d.label.toLowerCase().includes('top')) 
+                    || videoDevices.find(d => d.label && d.label.toLowerCase().includes('usb')) 
+                    || videoDevices[0];
+                
+                setInfo('top', topDevice.label || 'Camera 0');
+                
+                // 5. 准备 UserSig
+                let userSig = config.userSig;
+                if (!userSig && !config.fromBackend) {
+                    userSig = genLocalUserSig(USERID, config.sdkAppId, FALLBACK_SECRETKEY);
+                }
+                
+                // 6. 进入房间
+                const roomId = parseInt(config.roomId) || 8888;
+                await trtc.enterRoom({
+                    sdkAppId: config.sdkAppId,
+                    userId: USERID,
+                    userSig: userSig,
+                    roomId: roomId
+                });
+                console.log('[TRTC] 已进入房间:', roomId);
+                setStatus('trtc', 'connected', 'TRTC 已连接');
+                
+                // 7. 开启本地音视频（顶置摄像头）
+                console.log('[TRTC] 正在开启本地音频...');
+                await trtc.startLocalAudio();
+                console.log('[TRTC] 正在开启本地视频，deviceId:', topDevice.deviceId);
+                
+                // 启动 TRTC 推流
+                await trtc.startLocalVideo({ 
+                    view: 'video-top',
+                    cameraId: topDevice.deviceId
+                });
+                setStatus('top', 'connected');
+                console.log('[TRTC] 顶置摄像头推流已启动');
                 
                 // 监听被踢出房间
                 trtc.on(TRTC.EVENT.KICKED_OUT, (error) => {

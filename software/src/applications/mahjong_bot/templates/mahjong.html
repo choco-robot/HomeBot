@@ -430,7 +430,8 @@
             <div class="video-row" style="height: 65%;">
                 <div class="video-box">
                     <div class="video-label">📷 牌桌视角 (TRTC)</div>
-                    <video class="video-feed" id="videoTopTable" autoplay playsinline muted></video>
+                    <!-- TRTC v5 SDK 会自动在此 div 中创建 video 元素 -->
+                    <div class="video-feed" id="videoTopTable" style="background: #000;"></div>
                 </div>
             </div>
             
@@ -469,7 +470,7 @@
                     <!-- 远端视频容器（其他玩家/现场） -->
                     <div class="rtc-video-box" id="remoteVideoBox" style="display: none;">
                         <div class="rtc-video-label" id="remoteLabel">其他用户</div>
-                        <div class="rtc-video-el" id="remoteVideo"></div>
+                        <div class="rtc-video-el" id="remoteVideo" style="width:100%; height:100%; background:#000;"></div>
                     </div>
                 </div>
                 <div class="rtc-controls">
@@ -687,31 +688,20 @@
                     
                     console.log('[TRTC] UserSig 获取成功');
                     
-                    await trtc.enterRoom({
-                        sdkAppId: data.sdkAppId,
-                        userId: data.userId,
-                        userSig: data.userSig,
-                        roomId: parseInt(data.roomId) || 8888
-                    });
-                    console.log('[TRTC] 已进入房间:', data.roomId);
-                    
-                    await trtc.startLocalAudio();
-                    await trtc.startLocalVideo({ view: 'localVideo' });
-                    console.log('[TRTC] 本地音视频已开启');
-                    
-                    // 监听远端视频
+                    // TRTC 房间号必须是整数
+                    const roomId = parseInt(data.roomId) || 8888;
+                    console.log('[TRTC] 正在进入房间:', roomId, '用户:', data.userId);
+                    // 先注册事件监听器（在进入房间前）
                     trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, ({ userId, streamType }) => {
                         console.log('[TRTC] 远端视频可用:', userId, streamType);
                         
                         if (userId === 'robot') {
                             // 机器人的视频是牌桌顶置视角，渲染到左侧大画面
                             trtc.startRemoteVideo({ userId, streamType, view: 'videoTopTable' });
+                            console.log('[TRTC] 已开始播放机器人视频流到 videoTopTable');
                         } else {
                             // 其他用户（现场玩家）渲染到右侧小画面
-                            const view = `remoteVideo_${userId}_${streamType}`;
-                            const remoteVideoEl = document.getElementById('remoteVideo');
-                            remoteVideoEl.id = view;
-                            trtc.startRemoteVideo({ userId, streamType, view: view });
+                            trtc.startRemoteVideo({ userId, streamType, view: 'remoteVideo' });
                             
                             const remoteBox = document.getElementById('remoteVideoBox');
                             remoteBox.style.display = 'block';
@@ -725,6 +715,28 @@
                             document.getElementById('remoteVideoBox').style.display = 'none';
                         }
                     });
+                    
+                    trtc.on(TRTC.EVENT.REMOTE_AUDIO_AVAILABLE, ({ userId }) => {
+                        console.log('[TRTC] 远端音频可用:', userId);
+                        trtc.startRemoteAudio({ userId });
+                    });
+                    
+                    trtc.on(TRTC.EVENT.ERROR, (error) => {
+                        console.error('[TRTC] 错误:', error);
+                    });
+                    
+                    // 然后进入房间
+                    await trtc.enterRoom({
+                        sdkAppId: data.sdkAppId,
+                        userId: data.userId,
+                        userSig: data.userSig,
+                        roomId: roomId
+                    });
+                    console.log('[TRTC] 已进入房间:', roomId);
+                    
+                    await trtc.startLocalAudio();
+                    await trtc.startLocalVideo({ view: 'localVideo' });
+                    console.log('[TRTC] 本地音视频已开启');
                     
                     this._trtc = trtc;
                     this.isInRTC = true;

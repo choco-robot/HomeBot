@@ -433,14 +433,25 @@ class MahjongConfig:
     capture_save_cropped: bool = True      # 是否保存裁剪后的图
     
     # MQTT 配置（云-端分离架构）
-    mqtt_broker: str = "localhost"
-    mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
+    # EMQX Cloud 配置
+    mqtt_broker: str = "yc16a710.ala.cn-hangzhou.emqxsl.cn"
+    mqtt_port: int = 8883  # TLS/SSL 端口
+    mqtt_use_tls: bool = True  # 启用 TLS
+    mqtt_username: str = ""  # 从 secrets 加载
+    mqtt_password: str = ""  # 从 secrets 加载
     mqtt_command_topic: str = "homebot/mahjong/command"
     mqtt_status_topic: str = "homebot/mahjong/status"
-    mqtt_client_id_cloud: str = "mahjong_cloud"
-    mqtt_client_id_robot: str = "mahjong_robot"
+    mqtt_client_id_cloud: str = "mahjong_cloud"  # 会自动附加随机后缀
+    mqtt_client_id_robot: str = "mahjong_robot"  # 会自动附加随机后缀
+    
+    def __post_init__(self):
+        """从密钥管理加载 MQTT 认证配置"""
+        secrets = get_secrets()
+        if hasattr(secrets, 'mqtt'):
+            if not self.mqtt_username:
+                self.mqtt_username = secrets.mqtt.username
+            if not self.mqtt_password:
+                self.mqtt_password = secrets.mqtt.password
 
 
 @dataclass
@@ -452,7 +463,7 @@ class TRTCConfig:
     """
     sdk_app_id: int = 0                        # 腾讯云 SDKAppID，默认从环境变量读取
     secret_key: str = ""                       # 腾讯云 SecretKey，从 secrets 模块加载
-    room_id: str = "mahjong_room_001"          # 默认房间号
+    room_id: str = "8888"                     # 默认房间号（TRTC 只支持数字）
     
     def __post_init__(self):
         """从环境变量和密钥管理加载配置"""
