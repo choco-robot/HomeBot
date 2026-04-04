@@ -67,10 +67,10 @@ class MotionPlanner:
     """
     
     # 预设高度
-    HOVER_HEIGHT = 80.0      # 悬停高度 (mm)
-    GRASP_HEIGHT = 30.0      # 抓取高度 (mm)
-    LIFT_HEIGHT = 100.0      # 提起高度 (mm)
-    SLOT_HEIGHT = 80.0       # 出牌槽高度 (mm)
+    HOVER_HEIGHT = 150.0      # 悬停高度 (mm)
+    GRASP_HEIGHT = 100.0      # 抓取高度 (mm)
+    LIFT_HEIGHT = 150.0      # 提起高度 (mm)
+    SLOT_HEIGHT = 100.0       # 出牌槽高度 (mm)
     
     # 出牌槽位置 (机械臂坐标系)
     DISCARD_SLOT_X = 200.0   # 出牌槽X位置
@@ -120,8 +120,11 @@ class MotionPlanner:
             z=pose.z,
             target_orientation=pose.orientation,
             target_yaw=0.0,  # 保持夹爪朝前
-            elbow_up=elbow_up
+            elbow_up=elbow_up  # 使用 elbow_up 构型
         )
+        # 设置 wrist_roll = base，使夹爪随基座同步旋转，保持相对朝向
+        if result and 'base' in result:
+            result['wrist_roll'] = result['base']
         return result
     
     def _validate_joints(self, joints: Dict[str, float]) -> bool:
@@ -156,7 +159,7 @@ class MotionPlanner:
             x=tile_x,
             y=tile_y,
             z=self.HOVER_HEIGHT,
-            orientation=0.0
+            orientation=90.0  # 手腕竖直向下
         )
         hover_joints = self._pose_to_joints(hover_pose)
         if hover_joints:
@@ -174,7 +177,7 @@ class MotionPlanner:
             x=tile_x,
             y=tile_y,
             z=tile_height + 10.0,  # 稍微高于牌面
-            orientation=0.0
+            orientation=90.0  # 手腕竖直向下
         )
         grasp_joints = self._pose_to_joints(grasp_pose)
         if grasp_joints:
@@ -202,7 +205,7 @@ class MotionPlanner:
             x=tile_x,
             y=tile_y,
             z=self.LIFT_HEIGHT,
-            orientation=0.0
+            orientation=270.0  # 手腕竖直向下
         )
         lift_joints = self._pose_to_joints(lift_pose)
         if lift_joints:
@@ -220,7 +223,7 @@ class MotionPlanner:
             x=self.DISCARD_SLOT_X,
             y=self.DISCARD_SLOT_Y,
             z=self.SLOT_HEIGHT,
-            orientation=0.0
+            orientation=270.0  # 手腕竖直向下
         )
         slot_joints = self._pose_to_joints(slot_hover_pose)
         if slot_joints:
@@ -238,7 +241,7 @@ class MotionPlanner:
                 x=self.DISCARD_SLOT_X,
                 y=self.DISCARD_SLOT_Y,
                 z=tile_height + 20.0,
-                orientation=0.0
+                orientation=270.0  # 手腕竖直向下
             )
             release_joints = self._pose_to_joints(slot_release_pose)
             if release_joints:

@@ -21,9 +21,17 @@ import sys
 import time
 import json
 import signal
+import atexit
 from threading import Thread, Lock
 from typing import Optional, Dict, Any
 from pathlib import Path
+
+# Windows 平台兼容性处理
+if sys.platform == 'win32':
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    kernel32.SetConsoleCtrlHandler.restype = ctypes.c_bool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
@@ -200,15 +208,46 @@ class RobotBridgeService:
     
     def stop(self):
         """停止所有服务"""
+        if not self._running:
+            return  # 已经停止，避免重复调用
+            
         print("\n[Bridge] 正在关闭...")
         self._running = False
         
-        self.mqtt_client.loop_stop()
-        self.mqtt_client.disconnect()
-        self.front_video.stop()
-        self.arm_client.disconnect()
-        self.arm_controller.disconnect_arm()
-        self.detector.release()
+        # 等待检测线程结束
+        if hasattr(self, '_detect_thread') and self._detect_thread and self._detect_thread.is_alive():
+            self._detect_thread.join(timeout=2.0)
+        
+        # 关闭 MQTT（带异常处理）
+        try:
+            self.mqtt_client.loop_stop()
+            self.mqtt_client.disconnect()
+        except Exception as e:
+            pass  # 忽略关闭错误
+        
+        # 关闭视频流
+        try:
+            self.front_video.stop()
+        except Exception:
+            pass
+            
+        # 断开机械臂连接
+        try:
+            self.arm_client.disconnect()
+        except Exception:
+            pass
+            
+        try:
+            self.arm_controller.disconnect_arm()
+        except Exception:
+            pass
+            
+        # 释放检测器
+        try:
+            self.detector.release()
+        except Exception:
+            pass
+            
         print("[Bridge] 已关闭")
     
     def _on_mqtt_connect(self, client, userdata, flags, rc):
@@ -493,11 +532,47 @@ def main():
     print(f"\n[Bridge] 静态页面: http://{args.host}:{args.port}/static/robot_trtc.html")
     print("=" * 60)
     
+    # 启动 Flask 服务器（在守护线程中，避免 Windows 上的信号问题）
+    from werkzeug.serving import make_server
+    
+    server = make_server(args.host, args.port, app, threaded=True)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    
+    print(f"[Bridge] HTTP 服务器已启动 http://{args.host}:{args.port}")
+    print("[Bridge] 按 Ctrl+C 退出")
+    
+    # 设置信号处理器
+    def signal_handler(signum, frame):
+        print("\n[Bridge] 收到中断信号...")
+        raise KeyboardInterrupt
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Windows 平台特殊处理
+    if sys.platform == 'win32':
+        # 使用轮询方式等待中断，避免 signal 在 Windows 上的问题
+        try:
+            while server_thread.is_alive():
+                server_thread.join(timeout=0.1)
+        except KeyboardInterrupt:
+            pass
+    else:
+        try:
+            # Unix 平台可以直接等待
+            while True:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+    
+    # 优雅关闭
     try:
-        app.run(host=args.host, port=args.port, debug=True, use_reloader=True)
-    except KeyboardInterrupt:
-        print("\n[Bridge] 收到中断信号，正在关闭...")
-    finally:
+        server.shutdown()
+    except Exception:
+        pass
+    
+    if bridge_service:
         bridge_service.stop()
 
 

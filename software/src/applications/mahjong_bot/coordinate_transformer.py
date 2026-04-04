@@ -42,10 +42,6 @@ class CoordinateTransformer:
         """初始化坐标转换器"""
         config = get_config()
         
-        # 加载标定矩阵（从配置读取，默认单位矩阵）
-        self.homography_matrix = np.array(config.mahjong.homography_matrix).reshape(3, 3)
-        self.inv_homography = np.linalg.inv(self.homography_matrix)
-        
         # 机械臂底座相对于牌桌的偏移
         self.arm_offset_x = config.mahjong.arm_offset_x
         self.arm_offset_y = config.mahjong.arm_offset_y
@@ -54,6 +50,28 @@ class CoordinateTransformer:
         self.table_width = config.mahjong.table_width_mm
         self.table_height = config.mahjong.table_height_mm
         
+        # 尝试从标定文件加载，否则使用配置中的默认矩阵
+        calibration_file = config.mahjong.calibration_file
+        loaded_from_file = False
+        
+        if calibration_file and Path(calibration_file).exists():
+            try:
+                import json
+                with open(calibration_file, 'r') as f:
+                    data = json.load(f)
+                matrix = np.array(data['homography_matrix']).reshape(3, 3)
+                self.homography_matrix = matrix
+                loaded_from_file = True
+                logger.info(f"已从标定文件加载: {calibration_file}")
+            except Exception as e:
+                logger.warning(f"加载标定文件失败: {e}，使用配置中的默认值")
+                self.homography_matrix = np.array(config.mahjong.homography_matrix).reshape(3, 3)
+        else:
+            # 使用配置中的默认矩阵
+            self.homography_matrix = np.array(config.mahjong.homography_matrix).reshape(3, 3)
+        
+        self.inv_homography = np.linalg.inv(self.homography_matrix)
+        
         # 标定状态
         self.is_calibrated = not np.array_equal(self.homography_matrix, np.eye(3))
         
@@ -61,6 +79,10 @@ class CoordinateTransformer:
         logger.info(f"  机械臂偏移: ({self.arm_offset_x}, {self.arm_offset_y}) mm")
         logger.info(f"  牌桌尺寸: {self.table_width}x{self.table_height} mm")
         logger.info(f"  标定状态: {'已标定' if self.is_calibrated else '未标定'}")
+        if loaded_from_file:
+            logger.info(f"  标定来源: 文件 ({calibration_file})")
+        else:
+            logger.info(f"  标定来源: 配置文件")
     
     def set_homography_matrix(self, matrix: np.ndarray):
         """

@@ -1,476 +1,560 @@
 """
-麻将机械臂调试工具
+麻将机械臂调试工具（合并版）
 
-用于：
-1. 测试机械臂各关节运动
-2. 验证定位精度
-3. 测试碰撞检测
-4. 记录和回放动作
+整合了原 arm_debug_tool.py（ZMQ高层调试）和 debug_arm.py（底层串口控制）的功能。
 
-使用方法:
+用法:
     cd software
     python tools/arm_debug_tool.py
+
+命令行快捷模式（底层串口）:
+    python tools/arm_debug_tool.py --disable      # 一键失能扭矩
+    python tools/arm_debug_tool.py --reset        # 一键复位
+    python tools/arm_debug_tool.py --status       # 查看当前状态
+    python tools/arm_debug_tool.py --port COM4 --reset
+
+交互模式菜单:
+    1-6  - ZMQ高层功能（关节测试、精度、轨迹、序列）
+    7-11 - 笛卡尔运动（PTP、直线插补、工作空间）
+    D    - 底层串口调试（扭矩/复位/状态）
+    H    - 一键复位 Home
+    E    - 紧急停止
+    0    - 退出
 """
 
 import argparse
 import sys
 import json
 import time
+import math
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import numpy as np
 
-from applications.mahjong_bot.arm_client import ArmServiceClient, SafeArmController, ArmState
+from applications.mahjong_bot.arm_client import ArmServiceClient, SafeArmController
 from applications.mahjong_bot.motion_planner import MotionPlanner
-from applications.mahjong_bot.coordinate_transformer import CoordinateTransformer
 from hal.arm.Kinematics import Arm3DKinematics
-from common.logging import get_logger
 from configs.config import get_config
+from hal.ftservo_driver import FTServoBus
 
-logger = get_logger(__name__)
+
+# ========== 底层串口常量 ==========
+ARM_JOINTS = {
+    1: ("base", "基座旋转"),
+    2: ("shoulder", "肩关节"),
+    3: ("elbow", "肘关节"),
+    4: ("wrist_flex", "腕关节屈伸"),
+    5: ("wrist_roll", "腕关节旋转"),
+    6: ("gripper", "夹爪"),
+}
 
 
+def angle_to_position(angle: float) -> int:
+    return int(2048 + angle * 11.377)
+
+
+def position_to_angle(position: int) -> float:
+    return (position - 2048) / 11.377
+
+
+# ========== 数据类 ==========
 @dataclass
-class TestResult:
-    """测试结果"""
-    test_name: str
-    success: bool
-    target_position: tuple
-    actual_position: Optional[tuple]
-    error_mm: Optional[float]
-    duration_sec: float
-    notes: str = ""
+class CartesianPoint:
+    """笛卡尔空间点位"""
+    x: float
+    y: float
+    z: float
+    orientation: float = 0.0
+    wrist_roll: float = 0.0
+
+    def to_tuple(self) -> tuple:
+        return (self.x, self.y, self.z)
+
+    def __str__(self) -> str:
+        return f"({self.x:.1f}, {self.y:.1f}, {self.z:.1f}) 姿态={self.orientation:.1f}°"
 
 
+# ========== 主工具类 ==========
 class ArmDebugTool:
-    """机械臂调试工具"""
-    
-    def __init__(self, arm_addr: str = "tcp://localhost:5557"):
-        """初始化调试工具"""
-        self.arm_client = ArmServiceClient(arm_addr)
-        self.safe_controller = SafeArmController(self.arm_client)
-        self.motion_planner = MotionPlanner()
-        self.transformer = CoordinateTransformer()
+    def __init__(self, arm_addr: str = "tcp://localhost:5557", port: str = None):
+        self.arm_addr = arm_addr
+        self.port = port or get_config().arm.serial_port
+        self.baudrate = get_config().arm.baudrate
+
+        # ZMQ 高层连接对象
+        self.arm_client: Optional[ArmServiceClient] = None
+        self.safe_controller: Optional[SafeArmController] = None
+
+        # 底层串口对象
+        self.bus: Optional[FTServoBus] = None
+
         self.kinematics = Arm3DKinematics()
-        
-        self.results: List[TestResult] = []
-        
-    def connect(self) -> bool:
-        """连接机械臂"""
-        return self.arm_client.connect()
-    
-    def disconnect(self):
-        """断开连接"""
-        self.arm_client.disconnect()
-    
-    def test_joint_movement(self, joint_name: str, 
-                           test_angles: List[float]) -> bool:
-        """
-        测试单个关节运动
-        
-        Args:
-            joint_name: 关节名称
-            test_angles: 测试角度列表
-        
-        Returns:
-            是否全部成功
-        """
-        print(f"\n{'='*60}")
-        print(f"测试关节: {joint_name}")
-        print(f"{'='*60}")
-        
-        all_success = True
-        
-        for angle in test_angles:
+        self.motion_planner = MotionPlanner()
+
+    # ---------- 连接管理 ----------
+    def connect_zmq(self) -> bool:
+        self.arm_client = ArmServiceClient(self.arm_addr)
+        ok = self.arm_client.connect()
+        if ok:
+            self.safe_controller = SafeArmController(self.arm_client)
+        return ok
+
+    def disconnect_zmq(self):
+        if self.arm_client:
+            self.arm_client.disconnect()
+            self.arm_client = None
+            self.safe_controller = None
+
+    def connect_bus(self) -> bool:
+        self.bus = FTServoBus(self.port, self.baudrate)
+        return self.bus.connect()
+
+    def disconnect_bus(self):
+        if self.bus:
+            self.bus.disconnect()
+            self.bus = None
+
+    # ---------- 底层串口操作 ----------
+    def _ensure_bus(self) -> bool:
+        if self.bus is None:
+            print("\n[底层] 正在连接串口...")
+            if not self.connect_bus():
+                print("[错误] 串口连接失败")
+                return False
+            print(f"[OK] 串口已连接 ({self.port})")
+            if self.bus._simulation:
+                print("[注意] 运行在模拟模式")
+        return True
+
+    def disable_all_torque(self) -> bool:
+        if not self._ensure_bus():
+            return False
+        print("\n" + "=" * 50)
+        print("一键失能扭矩")
+        print("=" * 50)
+        try:
+            if self.bus.torque_disable(-1):
+                print("[成功] 所有舵机扭矩已失能，可手动调整位置")
+                return True
+            else:
+                print("[错误] 失能失败")
+                return False
+        except Exception as e:
+            print(f"[错误] {e}")
+            return False
+
+    def enable_all_torque(self) -> bool:
+        if not self._ensure_bus():
+            return False
+        try:
+            if self.bus.torque_enable(-1):
+                print("[成功] 扭矩已使能")
+                return True
+            else:
+                print("[错误] 使能失败")
+                return False
+        except Exception as e:
+            print(f"[错误] {e}")
+            return False
+
+    def reset_all_joints(self, speed: int = 800, acc: int = 50) -> bool:
+        if not self._ensure_bus():
+            return False
+        print("\n" + "=" * 50)
+        print("一键复位机械臂")
+        print("=" * 50)
+        rest_pos = get_config().arm.rest_position
+
+        print("目标位置:")
+        for jid, (name, desc) in ARM_JOINTS.items():
+            angle = rest_pos[name]
+            print(f"  {name} ({desc}): {angle}°")
+
+        try:
+            self.bus.torque_enable(-1)
+            time.sleep(0.1)
+            positions = {}
+            for jid, (name, desc) in ARM_JOINTS.items():
+                pos = angle_to_position(rest_pos[name])
+                positions[jid] = (pos, speed, acc)
+            self.bus.sync_write_positions(positions)
+            print("[成功] 复位命令已发送")
+            time.sleep(2.0)
+
+            print(f"\n{'ID':<4} {'名称':<12} {'描述':<12} {'目标':<8} {'当前':<8} {'状态'}")
+            print("-" * 60)
+            all_ok = True
+            for jid, (name, desc) in ARM_JOINTS.items():
+                target = angle_to_position(rest_pos[name])
+                cur = self.bus.read_position(jid)
+                if cur is not None:
+                    diff = abs(cur - target)
+                    status = "OK" if diff < 50 else "偏差"
+                    if diff >= 50:
+                        all_ok = False
+                    print(f"{jid:<4} {name:<12} {desc:<12} {target:<8} {cur:<8} [{status}]")
+                else:
+                    all_ok = False
+                    print(f"{jid:<4} {name:<12} {desc:<12} {'N/A':<8} {'N/A':<8} [无法读取]")
+            return all_ok
+        except Exception as e:
+            print(f"[错误] 复位异常: {e}")
+            return False
+
+    def show_bus_status(self):
+        if not self._ensure_bus():
+            return
+        print("\n" + "=" * 50)
+        print("机械臂当前状态")
+        print("=" * 50)
+        rest_pos = get_config().arm.rest_position
+        print(f"{'ID':<4} {'名称':<12} {'当前位置':<10} {'当前角度':<10} {'复位角度':<10} {'偏差'}")
+        print("-" * 65)
+        for jid, (name, desc) in ARM_JOINTS.items():
+            pos = self.bus.read_position(jid)
+            rest_angle = rest_pos[name]
+            rest_val = angle_to_position(rest_angle)
+            if pos is not None:
+                angle = position_to_angle(pos)
+                print(f"{jid:<4} {name:<12} {pos:<10} {angle:>6.1f}°   {rest_angle:>6.1f}°   {pos - rest_val:+d}")
+            else:
+                print(f"{jid:<4} {name:<12} {'N/A':<10} {'N/A':<10} {rest_angle:>6.1f}°   N/A")
+
+    # ---------- ZMQ 高层操作 ----------
+    def go_home(self, speed: int = 600) -> bool:
+        print(f"\n{'='*50}\n一键复位到 Home 位置\n{'='*50}")
+        config = get_config()
+        home_pos = getattr(config.arm, "home_position", {
+            "base": 0, "shoulder": 0, "elbow": 180,
+            "wrist_flex": 0, "wrist_roll": 0, "gripper": 45
+        })
+        print(f"目标: {home_pos}, 速度: {speed}")
+        confirm = input("确认执行? (yes/no): ")
+        if confirm.lower() != "yes":
+            print("已取消")
+            return False
+        ok = self.safe_controller.move_joints_safe(home_pos, speed=speed)
+        print("✓ 复位完成" if ok else "✗ 复位失败")
+        return ok
+
+    def test_joint_movement(self):
+        joint = input("关节名称 (base/shoulder/elbow/wrist_flex/wrist_roll/gripper): ").strip()
+        angles_str = input("测试角度 (逗号分隔，如 0,30,60): ").strip()
+        try:
+            angles = [float(a.strip()) for a in angles_str.split(",")]
+        except ValueError:
+            print("输入无效")
+            return
+        print(f"\n{'='*50}\n测试关节: {joint}\n{'='*50}")
+        for angle in angles:
             print(f"\n移动到 {angle}°...")
-            
-            start_time = time.time()
-            success = self.safe_controller.move_joints_safe(
-                {joint_name: angle}, speed=500
-            )
-            duration = time.time() - start_time
-            
-            if success:
-                print(f"✓ 成功 ({duration:.2f}s)")
-                time.sleep(1)  # 等待稳定
-                
-                # 获取实际位置
+            ok = self.safe_controller.move_joints_safe({joint: angle}, speed=500)
+            if ok:
+                time.sleep(0.8)
                 state = self.arm_client.get_state()
                 if state:
-                    actual = state.joint_angles.get(joint_name)
+                    actual = state.joint_angles.get(joint)
                     if actual is not None:
-                        error = abs(actual - angle)
-                        print(f"  目标: {angle:.1f}°, 实际: {actual:.1f}°, 误差: {error:.2f}°")
+                        print(f"  目标: {angle:.1f}°, 实际: {actual:.1f}°, 误差: {abs(actual-angle):.2f}°")
             else:
-                print(f"✗ 失败")
-                all_success = False
-        
-        return all_success
-    
-    def test_position_accuracy(self, test_positions: List[tuple]) -> bool:
-        """
-        测试定位精度
-        
-        Args:
-            test_positions: [(x, y, z), ...] 测试位置列表
-        
-        Returns:
-            是否全部成功
-        """
-        print(f"\n{'='*60}")
-        print("测试定位精度")
-        print(f"{'='*60}")
-        
-        all_success = True
-        
-        for i, (x, y, z) in enumerate(test_positions):
-            print(f"\n测试点 {i+1}: ({x}, {y}, {z})")
-            
-            if not self.motion_planner.is_position_reachable(x, y, z):
-                print(f"✗ 位置不可达")
-                all_success = False
-                continue
-            
-            # 求解逆运动学
-            start_time = time.time()
-            joints = self.kinematics.solve_for_position(x, y, z,270)
-            
-            if joints is None:
-                print(f"✗ 逆运动学求解失败")
-                all_success = False
-                continue
-            
-            print(f"  关节解: base={joints['base']:.1f}°, "
-                  f"shoulder={joints['shoulder']:.1f}°, "
-                  f"elbow={joints['elbow']:.1f}°")
-            
-            joints['wrist_roll'] = joints['base']  # 保持手腕水平
-            
-            # 执行运动
-            success = self.safe_controller.move_joints_safe(joints, speed=600)
-            duration = time.time() - start_time
-            
-            if success:
-                time.sleep(1.5)  # 等待稳定
-                
-                # 获取实际位置并计算误差
-                # 注意：这里假设我们能通过某种方式获取实际位置
-                # 实际项目中可能需要外部测量（如视觉反馈）
-                state = self.arm_client.get_state()
-                
-                # 简化：假设执行成功即精度合格
-                # 实际应该比较目标位置和实际测量位置
-                result = TestResult(
-                    test_name=f"定位精度测试-{i+1}",
-                    success=True,
-                    target_position=(x, y, z),
-                    actual_position=None,  # 需要外部测量
-                    error_mm=None,
-                    duration_sec=duration,
-                    notes="执行成功，需外部测量验证精度"
-                )
-                self.results.append(result)
-                
-                print(f"✓ 运动完成 ({duration:.2f}s)")
-            else:
-                print(f"✗ 运动失败")
-                all_success = False
-        
-        return all_success
-    
-    def test_collision_detection(self) -> bool:
-        """
-        测试碰撞检测
-        
-        通过监测电流异常来检测碰撞
-        """
-        print(f"\n{'='*60}")
-        print("测试碰撞检测")
-        print(f"{'='*60}")
-        print("警告：此测试可能会导致机械臂碰撞！")
-        print("请确保：")
-        print("  1. 周围无障碍物")
-        print("  2. 有人随时准备紧急停止")
-        print("  3. 机械臂运动范围内安全")
-        
-        confirm = input("\n是否继续? (yes/no): ")
-        if confirm.lower() != "yes":
-            print("测试已取消")
-            return False
-        
-        print("\n碰撞检测测试尚未实现")
-        print("需要扩展 ArmService 支持实时电流监测")
-        
-        return True
-    
-    def record_motion(self, duration: float = 10.0) -> List[Dict]:
-        """
-        记录机械臂运动轨迹
-        
-        Args:
-            duration: 记录时长 (秒)
-        
-        Returns:
-            轨迹点列表
-        """
-        print(f"\n{'='*60}")
-        print(f"记录运动轨迹 ({duration}秒)")
-        print(f"{'='*60}")
-        print("请在倒计时内手动移动机械臂...")
-        
-        for i in range(3, 0, -1):
-            print(f"{i}...")
-            time.sleep(1)
-        
-        print("开始记录!")
-        
-        trajectory = []
-        start_time = time.time()
-        
-        while time.time() - start_time < duration:
-            state = self.arm_client.get_state()
-            if state and state.joint_angles:
-                point = {
-                    "timestamp": time.time() - start_time,
-                    "joints": state.joint_angles.copy(),
-                    "lift_height": state.lift_height
-                }
-                trajectory.append(point)
-            
-            time.sleep(0.1)  # 10Hz
-        
-        print(f"记录完成，共 {len(trajectory)} 个点")
-        return trajectory
-    
-    def playback_motion(self, trajectory: List[Dict], speed: float = 1.0):
-        """
-        回放记录的运动轨迹
-        
-        Args:
-            trajectory: 轨迹点列表
-            speed: 回放速度倍率 (1.0=正常速度)
-        """
-        print(f"\n{'='*60}")
-        print(f"回放运动轨迹 (速度 x{speed})")
-        print(f"{'='*60}")
-        
-        if not trajectory:
-            print("轨迹为空")
-            return
-        
-        print(f"轨迹点数: {len(trajectory)}")
-        print("按回车开始回放...")
-        input()
-        
-        start_time = time.time()
-        
-        for i, point in enumerate(trajectory):
-            target_time = point["timestamp"] / speed
-            current_time = time.time() - start_time
-            
-            # 等待到达目标时间点
-            while current_time < target_time:
-                time.sleep(0.01)
-                current_time = time.time() - start_time
-            
-            # 发送关节角度
-            joints = point["joints"]
-            self.arm_client.move_joints(joints, speed=800)
-            
-            if (i + 1) % 10 == 0:
-                print(f"进度: {i+1}/{len(trajectory)}")
-        
-        print("回放完成")
-    
-    def test_complete_sequence(self):
-        """测试完整的出牌动作序列"""
-        print(f"\n{'='*60}")
-        print("测试完整出牌序列")
-        print(f"{'='*60}")
-        print("此测试将执行完整的抓取-移动-出牌动作")
-        
-        # 测试位置
-        test_x, test_y, test_z = 150, 50, 30
-        
-        print(f"\n目标位置: ({test_x}, {test_y}, {test_z})")
-        print("请确保：")
-        print(f"  1. 该位置有测试用牌")
-        print(f"  2. 出牌槽位置无障碍")
-        print(f"  3. 已准备好紧急停止")
-        
-        confirm = input("\n是否开始测试? (yes/no): ")
-        if confirm.lower() != "yes":
-            return
-        
-        # 规划动作序列
-        sequence = self.motion_planner.plan_pick_and_place(test_x, test_y, test_z)
-        
-        print(f"\n动作序列 ({len(sequence)} 步):")
-        for i, step in enumerate(sequence):
-            print(f"  {i+1}. {step.name}: {step.description}")
-        
-        print("\n按回车开始执行...")
-        input()
-        
-        # 执行序列
-        def on_step(name, curr, total):
-            print(f"  [{curr}/{total}] {name}")
-        
-        success = self.motion_planner.execute_sequence(
-            self.arm_client,
-            on_step_start=on_step
-        )
-        
-        if success:
-            print("\n✓ 序列执行成功")
-        else:
-            print("\n✗ 序列执行失败")
-    
-    def print_report(self):
-        """打印测试报告"""
-        print(f"\n{'='*60}")
-        print("测试报告")
-        print(f"{'='*60}")
-        
-        if not self.results:
-            print("暂无测试结果")
-            return
-        
-        success_count = sum(1 for r in self.results if r.success)
-        total_count = len(self.results)
-        
-        print(f"总测试数: {total_count}")
-        print(f"成功: {success_count}")
-        print(f"失败: {total_count - success_count}")
-        
-        print("\n详细结果:")
-        for r in self.results:
-            status = "✓" if r.success else "✗"
-            print(f"  {status} {r.test_name}: {r.duration_sec:.2f}s - {r.notes}")
-    
-    def interactive_menu(self):
-        """交互式菜单"""
+                print("  ✗ 失败")
+
+    def test_position_accuracy(self):
+        print("输入测试位置 (每行 x,y,z，空行结束):")
+        positions = []
         while True:
-            print(f"\n{'='*60}")
+            line = input().strip()
+            if not line:
+                break
+            try:
+                x, y, z = map(float, line.split(","))
+                positions.append((x, y, z))
+            except ValueError:
+                print("格式错误")
+        for i, (x, y, z) in enumerate(positions, 1):
+            print(f"\n测试点 {i}: ({x}, {y}, {z})")
+            joints = self.kinematics.solve_for_position(x, y, z, target_orientation=0.0, elbow_up=True)
+            if joints is None:
+                print("  ✗ 逆运动学求解失败")
+                continue
+            joints["wrist_roll"] = joints.get("base", 0)
+            print(f"  关节解: { {k:round(v,1) for k,v in joints.items()} }")
+            ok = self.safe_controller.move_joints_safe(joints, speed=600)
+            print("  ✓ 运动完成" if ok else "  ✗ 运动失败")
+            if ok:
+                time.sleep(1.0)
+
+    def move_to_cartesian(self, point: CartesianPoint, speed: int = 600, wait: bool = True) -> bool:
+        joints = self.kinematics.solve_for_position(
+            point.x, point.y, point.z,
+            target_orientation=point.orientation,
+            target_yaw=point.wrist_roll,
+            elbow_up=True
+        )
+        if joints is None:
+            print(f"✗ 逆解失败: {point}")
+            return False
+        ok = self.safe_controller.move_joints_safe(joints, speed=speed)
+        if ok and wait:
+            time.sleep(0.5)
+        return ok
+
+    def test_ptp_motion(self):
+        print("输入起点 (x,y,z[ori]): ")
+        start_vals = [float(x) for x in input().strip().split(",")]
+        print("输入终点 (x,y,z[ori]): ")
+        end_vals = [float(x) for x in input().strip().split(",")]
+        speed = int(input("速度 (默认600): ") or "600")
+        sp = CartesianPoint(*start_vals)
+        ep = CartesianPoint(*end_vals)
+        print(f"\nPTP 运动: {sp} -> {ep}")
+        if not self.move_to_cartesian(sp, speed=speed):
+            return
+        time.sleep(1.0)
+        t0 = time.time()
+        ok = self.move_to_cartesian(ep, speed=speed)
+        dt = time.time() - t0
+        print(f"✓ PTP完成 (耗时 {dt:.2f}s)" if ok else "✗ PTP失败")
+
+    def test_linear_interpolation(self):
+        print("输入起点 (x,y,z[ori]): ")
+        start_vals = [float(x) for x in input().strip().split(",")]
+        print("输入终点 (x,y,z[ori]): ")
+        end_vals = [float(x) for x in input().strip().split(",")]
+        speed = int(input("速度 (默认400): ") or "400")
+        step = float(input("插补步长mm (默认10): ") or "10")
+        sp = CartesianPoint(*start_vals)
+        ep = CartesianPoint(*end_vals)
+        print(f"\n直线插补: {sp} -> {ep}, 步长={step}mm")
+        if not self.move_to_cartesian(sp, speed=speed):
+            return
+        time.sleep(1.0)
+        dx, dy, dz = ep.x - sp.x, ep.y - sp.y, ep.z - sp.z
+        dist = math.sqrt(dx**2 + dy**2 + dz**2)
+        if dist < 0.1:
+            print("距离过近")
+            return
+        n = max(2, int(dist / step) + 1)
+        print(f"总距离 {dist:.1f}mm, 插补点数 {n}")
+        t0 = time.time()
+        for i in range(1, n):
+            t = i / (n - 1)
+            cp = CartesianPoint(
+                x=sp.x + dx * t,
+                y=sp.y + dy * t,
+                z=sp.z + dz * t,
+                orientation=sp.orientation + (ep.orientation - sp.orientation) * t,
+                wrist_roll=sp.wrist_roll + (ep.wrist_roll - sp.wrist_roll) * t,
+            )
+            joints = self.kinematics.solve_for_position(cp.x, cp.y, cp.z, target_orientation=cp.orientation, elbow_up=True)
+            if joints is None:
+                print(f"  ✗ 第{i}点逆解失败")
+                break
+            self.arm_client.move_joints(joints, speed=speed)
+            time.sleep(0.05)
+        else:
+            dt = time.time() - t0
+            print(f"✓ 直线插补完成 (耗时 {dt:.2f}s)")
+
+    def test_complete_sequence(self):
+        print(f"\n{'='*50}\n测试完整出牌序列\n{'='*50}")
+        tx, ty, tz = 250, 0, 100
+        print(f"目标: ({tx}, {ty}, {tz})")
+        if input("开始? (yes/no): ").lower() != "yes":
+            return
+        seq = self.motion_planner.plan_pick_and_place(tx, ty, tz)
+        print(f"共 {len(seq)} 步:")
+        for i, step in enumerate(seq):
+            print(f"  {i+1}. {step.name}: {step.description}")
+        print("\n按回车执行...")
+        input()
+        # 简化执行：逐关节发送
+        for i, step in enumerate(seq):
+            print(f"  [{i+1}/{len(seq)}] {step.name}")
+            if step.joint_angles:
+                self.arm_client.move_joints(step.joint_angles, speed=600)
+                time.sleep(1.5)
+        print("✓ 序列执行完成")
+
+    def interactive_cartesian_mode(self):
+        print(f"\n{'='*50}\n笛卡尔空间控制\n{'='*50}")
+        state = self.arm_client.get_state()
+        if state and state.joint_angles:
+            j = state.joint_angles
+            pos = self.kinematics.forward_kinematics(j.get("base", 0), j.get("shoulder", 0), j.get("elbow", 0))
+            cp = CartesianPoint(x=pos[0], y=pos[1], z=pos[2])
+            print(f"当前位置: {cp}")
+        else:
+            cp = CartesianPoint(x=200, y=0, z=100)
+
+        speed = 600
+        while True:
+            print(f"\n命令: ptp x,y,z | line x,y,z | current | home | back")
+            cmd = input("输入: ").strip().lower()
+            if cmd == "back":
+                break
+            elif cmd == "current":
+                state = self.arm_client.get_state()
+                if state and state.joint_angles:
+                    j = state.joint_angles
+                    pos = self.kinematics.forward_kinematics(j.get("base", 0), j.get("shoulder", 0), j.get("elbow", 0))
+                    print(f"当前: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+            elif cmd == "home":
+                self.safe_controller.move_joints_safe(
+                    {"base": 0, "shoulder": 45, "elbow": 90, "wrist_flex": 0, "wrist_roll": 0}, speed=600
+                )
+            elif cmd.startswith("ptp ") or cmd.startswith("line "):
+                parts = cmd.split()
+                vals = [float(v) for v in parts[1].split(",")]
+                target = CartesianPoint(*vals)
+                if parts[0] == "ptp":
+                    self.move_to_cartesian(target, speed=speed)
+                else:
+                    # 简化为直接发送目标点
+                    self.move_to_cartesian(target, speed=speed)
+                cp = target
+            else:
+                print("未知命令")
+
+    # ---------- 菜单 ----------
+    def interactive_low_level_menu(self):
+        """底层串口调试子菜单"""
+        while True:
+            print(f"\n{'='*50}\n底层串口调试 (直接控制舵机)\n{'='*50}")
+            print("1. 使能扭矩")
+            print("2. 失能扭矩")
+            print("3. 一键复位")
+            print("4. 查看当前状态")
+            print("0. 返回上级")
+            c = input("选择: ").strip()
+            if c == "1":
+                self.enable_all_torque()
+            elif c == "2":
+                self.disable_all_torque()
+            elif c == "3":
+                speed = int(input("速度 (默认800): ") or "800")
+                self.reset_all_joints(speed=speed)
+            elif c == "4":
+                self.show_bus_status()
+            elif c == "0":
+                break
+
+    def interactive_menu(self):
+        while True:
+            print(f"\n{'='*50}")
             print("麻将机械臂调试工具")
-            print(f"{'='*60}")
+            print(f"{'='*50}")
             print("1. 测试单个关节运动")
             print("2. 测试定位精度")
-            print("3. 测试碰撞检测")
-            print("4. 记录运动轨迹")
-            print("5. 回放运动轨迹")
-            print("6. 测试完整出牌序列")
-            print("7. 查看测试报告")
+            print("3. 测试完整出牌序列")
+            print("4. PTP 点到点运动")
+            print("5. 直线插补运动")
+            print("6. 工作空间测试")
+            print("7. 交互式笛卡尔控制")
+            print("D. 底层串口调试")
+            print("H. 一键复位 Home")
+            print("E. 紧急停止")
             print("0. 退出")
-            
-            choice = input("\n选择: ").strip()
-            
-            if choice == "1":
-                joint = input("输入关节名称 (base/shoulder/elbow/wrist_flex/wrist_roll/gripper): ")
-                angles_str = input("输入测试角度 (逗号分隔，如: 0,30,60): ")
-                try:
-                    angles = [float(a.strip()) for a in angles_str.split(",")]
-                    self.test_joint_movement(joint, angles)
-                except ValueError:
-                    print("输入无效")
-                    
-            elif choice == "2":
-                print("输入测试位置 (每行一个，格式: x,y,z，空行结束):")
-                positions = []
-                while True:
-                    line = input().strip()
-                    if not line:
-                        break
-                    try:
-                        x, y, z = map(float, line.split(","))
-                        positions.append((x, y, z))
-                    except ValueError:
-                        print("格式错误")
-                
-                if positions:
-                    self.test_position_accuracy(positions)
-                    
-            elif choice == "3":
-                self.test_collision_detection()
-                
-            elif choice == "4":
-                duration = float(input("记录时长 (秒): ") or "10")
-                trajectory = self.record_motion(duration)
-                
-                save = input("是否保存轨迹? (y/n): ")
-                if save.lower() == "y":
-                    filename = input("文件名: ") or "trajectory.json"
-                    with open(filename, "w") as f:
-                        json.dump(trajectory, f, indent=2)
-                    print(f"已保存到 {filename}")
-                    
-            elif choice == "5":
-                filename = input("轨迹文件名: ")
-                try:
-                    with open(filename, "r") as f:
-                        trajectory = json.load(f)
-                    speed = float(input("回放速度倍率 (默认1.0): ") or "1.0")
-                    self.playback_motion(trajectory, speed)
-                except FileNotFoundError:
-                    print(f"文件不存在: {filename}")
-                except json.JSONDecodeError:
-                    print("文件格式错误")
-                    
-            elif choice == "6":
+            c = input("选择: ").strip().lower()
+
+            if c == "1":
+                self.test_joint_movement()
+            elif c == "2":
+                self.test_position_accuracy()
+            elif c == "3":
                 self.test_complete_sequence()
-                
-            elif choice == "7":
-                self.print_report()
-                
-            elif choice == "0":
+            elif c == "4":
+                self.test_ptp_motion()
+            elif c == "5":
+                self.test_linear_interpolation()
+            elif c == "6":
+                ws = self.kinematics.get_workspace()
+                print(f"\n工作空间: r={ws['r_min']:.0f}~{ws['r_max']:.0f}mm, z={ws['z_min']:.0f}~{ws['z_max']:.0f}mm")
+                r_vals = np.linspace(ws["r_min"] + 10, ws["r_max"] - 10, 5)
+                z_vals = np.linspace(max(0, ws["z_min"]), ws["z_max"] - 20, 5)
+                ok_cnt = 0
+                for r in r_vals:
+                    for z in z_vals:
+                        reachable = self.kinematics.is_reachable(r, 0, z)
+                        ok_cnt += reachable
+                        print(f"  ({r:>6.0f}, 0, {z:>6.0f}): {'✓' if reachable else '✗'}")
+                print(f"可达: {ok_cnt}/25")
+            elif c == "7":
+                self.interactive_cartesian_mode()
+            elif c == "d":
+                self.interactive_low_level_menu()
+            elif c == "h":
+                speed = int(input("速度 (默认600): ") or "600")
+                self.go_home(speed)
+            elif c == "e":
+                if input("确认紧急停止? (yes/no): ").lower() == "yes":
+                    self.arm_client.emergency_stop()
+                    print("✓ 已执行")
+            elif c == "0":
                 break
-                
             else:
                 print("无效选择")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="麻将机械臂调试工具",
+        description="麻将机械臂调试工具（高层ZMQ + 底层串口）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 交互模式
-  python tools/arm_debug_tool.py
-  
-  # 指定机械臂地址
-  python tools/arm_debug_tool.py --arm tcp://192.168.1.100:5557
+快捷命令（底层串口模式，无需启动 ArmService）:
+  python tools/arm_debug_tool.py --disable
+  python tools/arm_debug_tool.py --reset
+  python tools/arm_debug_tool.py --status
+  python tools/arm_debug_tool.py --port COM4 --reset
+
+交互模式（需启动 ArmService）:
+  python tools/arm_debug_tool.py --arm tcp://localhost:5557
         """
     )
-    
-    parser.add_argument("--arm", "-a", type=str, default="tcp://localhost:5557",
-                        help="机械臂服务地址 (默认: tcp://localhost:5557)")
-    
+    parser.add_argument("--arm", default="tcp://localhost:5557", help="机械臂服务地址")
+    parser.add_argument("--port", default=None, help="串口设备（底层模式使用）")
+    parser.add_argument("--disable", action="store_true", help="一键失能扭矩（底层）")
+    parser.add_argument("--reset", action="store_true", help="一键复位（底层）")
+    parser.add_argument("--status", action="store_true", help="查看当前状态（底层）")
+    parser.add_argument("--speed", type=int, default=800, help="复位速度（底层）")
+    parser.add_argument("--acc", type=int, default=50, help="复位加速度（底层）")
     args = parser.parse_args()
-    
-    print("=" * 60)
-    print("麻将机械臂调试工具")
-    print("=" * 60)
-    
-    tool = ArmDebugTool(args.arm)
-    
-    print("\n连接机械臂...")
-    if not tool.connect():
-        print("连接失败，请检查:")
-        print("  1. ArmService 是否已启动")
-        print("  2. 地址是否正确")
-        print("  3. 网络连接是否正常")
+
+    tool = ArmDebugTool(arm_addr=args.arm, port=args.port)
+
+    # 底层快捷模式
+    if args.disable or args.reset or args.status:
+        try:
+            if args.disable:
+                tool.disable_all_torque()
+            elif args.reset:
+                tool.reset_all_joints(speed=args.speed, acc=args.acc)
+            elif args.status:
+                tool.show_bus_status()
+        finally:
+            tool.disconnect_bus()
         return
-    
+
+    # 交互模式
+    print("=" * 50)
+    print("麻将机械臂调试工具")
+    print("=" * 50)
+    print("\n连接机械臂服务...")
+    if not tool.connect_zmq():
+        print("连接失败，请检查 ArmService 是否已启动")
+        print("提示: 若只需底层调试，请使用 --disable / --reset / --status")
+        return
+
     try:
         tool.interactive_menu()
     finally:
-        tool.disconnect()
-        print("\n已断开连接")
+        tool.disconnect_zmq()
+        tool.disconnect_bus()
+        print("\n已退出")
 
 
 if __name__ == "__main__":

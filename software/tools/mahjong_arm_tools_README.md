@@ -40,10 +40,10 @@ python tools/calibration_tool.py
 - `--load`: 加载已有标定文件
 - `--test`: 测试模式
 
-### 3. arm_debug_tool.py - 调试工具
-综合调试工具，用于测试关节运动、定位精度和记录回放。
+### 3. arm_debug_tool.py - 综合调试工具
+整合了原高层 ZMQ 调试与底层串口控制功能，支持通过机械臂服务或直连串口两种方式操作。
 
-**使用方法：**
+**交互模式（需启动 ArmService）：**
 ```bash
 cd software
 python tools/arm_debug_tool.py
@@ -52,11 +52,27 @@ python tools/arm_debug_tool.py
 **功能菜单：**
 1. **测试单个关节运动** - 测试特定关节的运动范围和精度
 2. **测试定位精度** - 验证末端定位准确性
-3. **测试碰撞检测** - 监测电流异常（需配合硬件）
-4. **记录运动轨迹** - 记录手动运动轨迹
-5. **回放运动轨迹** - 自动回放记录的动作
-6. **测试完整出牌序列** - 执行抓取-移动-出牌全流程
-7. **查看测试报告** - 显示所有测试结果
+3. **测试完整出牌序列** - 执行抓取-移动-出牌全流程
+4. **PTP 点到点运动** - 快速笛卡尔空间定位
+5. **直线插补运动** - 笛卡尔空间直线轨迹
+6. **工作空间测试** - 测试可达空间网格
+7. **交互式笛卡尔控制** - 直接输入坐标控制
+8. **底层串口调试** - 直连舵机总线（扭矩使能/失能、复位、读状态）
+
+**底层快捷模式（无需启动 ArmService，直连串口）：**
+```bash
+# 一键失能扭矩
+python tools/arm_debug_tool.py --disable
+
+# 一键复位
+python tools/arm_debug_tool.py --reset
+
+# 查看当前状态
+python tools/arm_debug_tool.py --status
+
+# 指定串口
+python tools/arm_debug_tool.py --port COM4 --reset
+```
 
 ## 快速开始
 
@@ -76,12 +92,12 @@ python tools/calibration_tool.py
 
 ### 第三步：调试机械臂
 ```bash
+# 高层功能（ZMQ）
 python tools/arm_debug_tool.py
 
-# 选择菜单项:
-# 1. 测试各关节运动
-# 2. 测试指定位置的定位精度
-# 6. 执行完整出牌动作测试
+# 底层功能（串口）
+python tools/arm_debug_tool.py --reset
+python tools/arm_debug_tool.py --status
 ```
 
 ## 坐标系说明

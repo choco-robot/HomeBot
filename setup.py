@@ -15,6 +15,8 @@ setup(
         "ultralytics>=8.3.0",
         "numpy>=1.24.0",
         "filterpy>=1.4.5",
+        "paho-mqtt>=1.6.0",
+        "ikpy>=3.4.2",
         "sherpa-onnx>=1.9.0",
         "sounddevice>=0.4.6",
         "openai>=1.0.0",

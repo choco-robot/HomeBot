@@ -279,7 +279,7 @@ class ArmKinematics:
 
 class Arm3DKinematics:
     """
-    3DOF机械臂运动学 - base + shoulder + elbow
+    3D机械臂运动学 - 基于ikpy和SO-101 URDF的5DOF运动学
     
     坐标系定义:
         - 原点: 机械臂基座中心
@@ -289,43 +289,88 @@ class Arm3DKinematics:
     
     关节定义:
         - base: 基座旋转角度（绕z轴），0度时朝向x轴正方向
-        - shoulder: 肩关节角度（相对水平面）
-        - elbow: 肘关节角度（相对大臂）
-    
-    简化假设:
-        - shoulder和elbow构成平面2连杆机构，在垂直于base的平面内运动
-        - wrist_flex用于保持末端方向（如水平）
+        - shoulder: 肩关节角度
+        - elbow: 肘关节角度
+        - wrist_flex: 腕关节屈伸
+        - wrist_roll: 腕关节旋转
     """
     
     # 默认关节限制（度）
     DEFAULT_JOINT_LIMITS = {
         'base': (-180, 180),
-        'shoulder': (0, 180),
-        'elbow': (0, 180),
+        'shoulder': (-90, 180),
+        'elbow': (-160, 0),
         'wrist_flex': (-90, 90),
-        'wrist_roll': (-180, 180),
+        'wrist_roll': (-90, 90),
         'gripper': (0, 90),
     }
     
-    def __init__(self, L1: float = 215.0, L2: float = 230.0, joint_limits: dict = None):
+    def __init__(self, L1: float = 215.0, L2: float = 230.0,
+                 joint_limits: dict = None,
+                 base_shoulder_offset: float = 35.0,
+                 urdf_path: str = None):
         """
-        初始化3D运动学
+        初始化3D运动学（基于ikpy + SO-101 URDF）
         
         Args:
-            L1: 大臂长度（上臂），单位 mm
-            L2: 小臂长度（前臂），单位 mm
-            joint_limits: 关节角度限制字典，如 {'base': (-180, 180), ...}
-                         如果为None，则尝试从config读取，否则使用默认值
+            L1: 大臂长度（上臂），单位 mm，保留用于兼容和降级
+            L2: 小臂长度（前臂），单位 mm，保留用于兼容和降级
+            joint_limits: 关节角度限制字典
+            base_shoulder_offset: 保留参数用于兼容
+            urdf_path: URDF文件路径，None则自动查找
         """
         self.L1 = L1
         self.L2 = L2
+        self.base_shoulder_offset = base_shoulder_offset
+        
+        # 尝试加载 ikpy 和 URDF
+        self._ikpy_available = False
+        self.chain = None
+        self.active_links_mask = None
+        
+        try:
+            from ikpy.chain import Chain
+            import numpy as np
+            import os
+            import warnings
+            
+            # 忽略 IKPy 关于 fixed 链接的警告
+            warnings.filterwarnings("ignore", message=".*fixed.*active_links_mask.*", category=UserWarning)
+            warnings.filterwarnings("ignore", message=".*fixed.*axis.*", category=UserWarning)
+            
+            if urdf_path is None:
+                urdf_path = self._find_urdf_path()
+            
+            self.urdf_path = urdf_path
+            
+            if urdf_path and os.path.exists(urdf_path):
+                self.chain = Chain.from_urdf_file(urdf_path)
+                n_links = len(self.chain.links)
+                
+                # SO-101: 7 links, 5 active joints
+                # [base(fixed), shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper_frame(fixed)]
+                self.active_links_mask = [False] + [True] * 5 + [False]
+                if n_links != 7:
+                    self.active_links_mask = [getattr(link, 'joint_type', 'fixed') != 'fixed' for link in self.chain.links]
+                    if len(self.active_links_mask) >= 2:
+                        self.active_links_mask[0] = False
+                        self.active_links_mask[-1] = False
+                
+                self.chain.active_links_mask = self.active_links_mask
+                self._ikpy_available = True
+                self._np = np
+            else:
+                print(f"[Arm3DKinematics] URDF未找到: {urdf_path}")
+        except Exception as e:
+            print(f"[Arm3DKinematics] ikpy加载失败: {e}")
+        
+        # 如果 ikpy 不可用，保留几何回退
         self.planar_kin = ArmKinematics(L1, L2)
         
         # 加载关节限制
         if joint_limits is not None:
             self.joint_limits = joint_limits
         else:
-            # 尝试从config读取
             try:
                 from configs.config import get_config
                 config = get_config()
@@ -335,17 +380,39 @@ class Arm3DKinematics:
                     self.joint_limits = self.DEFAULT_JOINT_LIMITS.copy()
             except:
                 self.joint_limits = self.DEFAULT_JOINT_LIMITS.copy()
-        
+    
+    def _find_urdf_path(self) -> Optional[str]:
+        """自动查找默认URDF路径"""
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            # 从 software/src/hal/arm 向上回溯到项目根目录，再进入 hardware/structure/URDF/SO101
+            os.path.join(current_dir, "..", "..", "..", "..", "..", "hardware", "structure", "URDF", "SO101", "so101_plus.urdf"),
+            # 备用：从 software/src 回溯
+            os.path.join(current_dir, "..", "..", "..", "..", "hardware", "structure", "URDF", "SO101", "so101_plus.urdf"),
+        ]
+        for p in candidates:
+            p = os.path.abspath(p)
+            if os.path.exists(p):
+                return p
+        return None
+    
+    def _build_full_joints(self, angles_deg: List[float]) -> List[float]:
+        """将度数的关节角度转换为ikpy所需的完整关节数组（弧度）"""
+        full = [0.0] * len(self.chain.links)
+        active_idx = 0
+        for i, is_active in enumerate(self.active_links_mask):
+            if is_active and active_idx < len(angles_deg):
+                full[i] = math.radians(angles_deg[active_idx])
+                active_idx += 1
+        return full
+    
+    def _extract_angles(self, full_joints_rad: List[float]) -> List[float]:
+        """从ikpy完整关节数组中提取活动关节角度（弧度）"""
+        return [full_joints_rad[i] for i, active in enumerate(self.active_links_mask) if active]
+    
     def _check_joint_limits(self, joints: Dict[str, float]) -> bool:
-        """
-        检查关节角度是否在限制范围内
-        
-        Args:
-            joints: 关节角度字典，如 {'base': 10, 'shoulder': 45, ...}
-        
-        Returns:
-            True 如果所有关节都在限制范围内
-        """
+        """检查关节角度是否在限制范围内"""
         for joint_name, angle in joints.items():
             if joint_name in self.joint_limits:
                 min_val, max_val = self.joint_limits[joint_name]
@@ -354,174 +421,175 @@ class Arm3DKinematics:
         return True
     
     def _normalize_angle(self, angle: float) -> float:
-        """
-        将角度规范化到 [-180, 180]
-        
-        Args:
-            angle: 输入角度，度
-        
-        Returns:
-            规范化后的角度，度
-        """
+        """将角度规范化到 [-180, 180]"""
         return (angle + 180) % 360 - 180
     
-    def forward_kinematics(self, base: float, shoulder: float, elbow: float) -> Tuple[float, float, float]:
+    def forward_kinematics(self, *args) -> Tuple[float, float, float]:
         """
         正运动学：关节角度 -> 3D末端位置
         
-        Args:
-            base: 基座旋转角度，度，0度朝向x轴正方向
-            shoulder: 肩关节角度，度，相对水平面
-            elbow: 肘关节角度，度，相对大臂
+        支持两种调用方式:
+            forward_kinematics(base, shoulder, elbow)  # 兼容旧接口
+            forward_kinematics([base, shoulder, elbow, wrist_flex, wrist_roll])  # 新接口
         
         Returns:
             (x, y, z) 末端位置，单位 mm
-            x: 向前距离
-            y: 向左距离  
-            z: 向上高度
         """
-        # 1. 计算平面运动学得到 (r, z)
-        # r: 水平面内距离原点的距离
-        # z: 垂直高度
-        r, z = self.planar_kin.forward_kinematics(shoulder, elbow)
+        if len(args) == 3:
+            angles = list(args) + [0.0, 0.0]
+        elif len(args) == 1 and hasattr(args[0], '__len__'):
+            angles = list(args[0])
+            if len(angles) < 5:
+                angles = angles + [0.0] * (5 - len(angles))
+        else:
+            raise ValueError("forward_kinematics 参数错误，期望 (base, shoulder, elbow) 或 [joints...]")
         
-        # 2. base旋转将 r 映射到 x-y 平面
+        if self._ikpy_available:
+            joints = self._build_full_joints(angles)
+            transform = self.chain.forward_kinematics(joints)
+            x, y, z = transform[:3, 3] * 1000.0  # m -> mm
+            return float(x), float(y), float(z)
+        else:
+            return self._fallback_forward(*angles[:3])
+    
+    def _fallback_forward(self, base: float, shoulder: float, elbow: float) -> Tuple[float, float, float]:
+        """回退：简化几何正运动学"""
+        r_arm, z = self.planar_kin.forward_kinematics(shoulder, elbow)
         base_rad = math.radians(base)
-        x = r * math.cos(base_rad)
-        y = r * math.sin(base_rad)
-        
+        x = self.base_shoulder_offset + r_arm * math.cos(base_rad)
+        y = r_arm * math.sin(base_rad)
         return x, y, z
     
-    def inverse_kinematics(self, x: float, y: float, z: float, 
+    def inverse_kinematics(self, x: float, y: float, z: float,
                           elbow_up: bool = True) -> Optional[Tuple[float, float, float]]:
         """
-        逆运动学：3D目标位置 -> 关节角度
+        逆运动学：3D目标位置 -> 关节角度 (base, shoulder, elbow)
         
         Args:
-            x: 目标x坐标（向前），单位 mm
-            y: 目标y坐标（向左），单位 mm
-            z: 目标z坐标（向上），单位 mm
-            elbow_up: True为肘部向上构型，False为肘部向下
+            x, y, z: 目标位置，单位 mm
+            elbow_up: True为肘部向上构型
         
         Returns:
             (base, shoulder, elbow) 单位度，无解时返回 None
         """
-        # 1. 计算水平距离 r
-        r = math.sqrt(x**2 + y**2)
+        if self._ikpy_available:
+            target_pos = [x / 1000.0, y / 1000.0, z / 1000.0]
+            
+            # 使用不同的初始猜测来引导到不同构型
+            if elbow_up:
+                initial = [0, 0, math.radians(45), math.radians(-45), 0, 0, 0]
+            else:
+                initial = [0, 0, math.radians(-45), math.radians(45), 0, 0, 0]
+            
+            try:
+                ik = self.chain.inverse_kinematics(
+                    target_position=target_pos,
+                    initial_position=initial
+                )
+                angles = self._extract_angles(ik)
+                base_deg = math.degrees(angles[0])
+                shoulder_deg = math.degrees(angles[1])
+                elbow_deg = math.degrees(angles[2])
+                
+                # 根据 elbow_up 筛选，如果不符合则尝试另一组初始猜测
+                is_up = elbow_deg > -5
+                if is_up != elbow_up:
+                    initial_alt = [0, 0, math.radians(-45), math.radians(45), 0, 0, 0] if elbow_up else [0, 0, math.radians(45), math.radians(-45), 0, 0, 0]
+                    ik = self.chain.inverse_kinematics(
+                        target_position=target_pos,
+                        initial_position=initial_alt
+                    )
+                    angles = self._extract_angles(ik)
+                    base_deg = math.degrees(angles[0])
+                    shoulder_deg = math.degrees(angles[1])
+                    elbow_deg = math.degrees(angles[2])
+                
+                return (
+                    self._normalize_angle(base_deg),
+                    self._normalize_angle(shoulder_deg),
+                    self._normalize_angle(elbow_deg)
+                )
+            except Exception as e:
+                print(f"[Arm3DKinematics] IK求解失败: {e}")
         
-        # 2. 计算base角度
-        # 注意：当r=0时，base可以是任意值，此时选择0
-        if r < 0.1:  # 避免数值问题
-            base_deg = 0.0
+        return self._fallback_inverse(x, y, z, elbow_up)
+    
+    def _fallback_inverse(self, x: float, y: float, z: float,
+                         elbow_up: bool = True) -> Optional[Tuple[float, float, float]]:
+        """回退：简化几何逆运动学"""
+        shoulder_x = self.base_shoulder_offset
+        dx = x - shoulder_x
+        dy = y
+        r_arm = math.sqrt(dx**2 + dy**2)
+        if r_arm < 0.1:
+            target_angle = 0.0
         else:
-            base_deg = math.degrees(math.atan2(y, x))
+            target_angle = math.atan2(dy, dx)
         
-        # 3. 使用2D逆运动学求解 shoulder 和 elbow
-        result = self.planar_kin.inverse_kinematics(-r, z, elbow_up)
+        r_for_planar = -r_arm if not elbow_up else r_arm
+        result = self.planar_kin.inverse_kinematics(r_for_planar, z, elbow_up)
         if result is None:
             return None
         
         shoulder_deg, elbow_deg = result
-        return base_deg, shoulder_deg, elbow_deg
+        if not elbow_up:
+            base_deg = math.degrees(target_angle + math.pi)
+        else:
+            base_deg = math.degrees(target_angle)
+        
+        return self._normalize_angle(base_deg), shoulder_deg, elbow_deg
     
     def inverse_kinematics_all(self, x: float, y: float, z: float) -> List[Tuple[float, float, float]]:
         """
-        返回所有可行解（最多4组：2个平面解 × 2个base方向），并检查关节限制
+        返回所有可行解，并检查关节限制
         
         Args:
             x, y, z: 目标位置，单位 mm
         
         Returns:
-            [(base1, shoulder1, elbow1), ...] 或空列表
-            只返回符合关节限制的解
+            [(base, shoulder, elbow), ...] 或空列表
         """
-        # 1. 计算水平距离和base角度
-        r = math.sqrt(x**2 + y**2)
-        
-        if r < 0.1:
-            # r接近0时，base可以是任意值，尝试限制范围内的值
-            base_candidates = [0.0]
-            base_min, base_max = self.joint_limits.get('base', (-180, 180))
-            if base_min <= 0 <= base_max:
-                base_candidates = [0.0]
-            else:
-                base_candidates = [(base_min + base_max) / 2]
-        else:
-            base_base = math.degrees(math.atan2(y, x))
-            base_candidates = [
-                self._normalize_angle(base_base),
-                self._normalize_angle(base_base + 180)
-            ]
-        
-        # 2. 获取平面运动学的所有解（肘部向上/向下）
-        planar_solutions = self.planar_kin.inverse_kinematics_all(-r, z)
-        
-        # 3. 组合成3D解并检查关节限制
         solutions = []
-        for shoulder_deg, elbow_deg in planar_solutions:
-            # 规范化角度
-            shoulder_deg = self._normalize_angle(shoulder_deg)
-            elbow_deg = self._normalize_angle(elbow_deg)
-            
-            # 尝试不同的base角度
-            for base_deg in base_candidates:
-                joints = {'base': base_deg, 'shoulder': shoulder_deg, 'elbow': elbow_deg}
+        
+        for elbow_up in [True, False]:
+            result = self.inverse_kinematics(x, y, z, elbow_up=elbow_up)
+            if result is not None:
+                base, shoulder, elbow = result
+                joints = {'base': base, 'shoulder': shoulder, 'elbow': elbow}
                 if self._check_joint_limits(joints):
-                    # 避免重复解
-                    sol = (base_deg, shoulder_deg, elbow_deg)
+                    sol = (base, shoulder, elbow)
                     if sol not in solutions:
                         solutions.append(sol)
         
         return solutions
     
-    def compute_wrist_flex(self, shoulder: float, elbow: float, 
+    def compute_wrist_flex(self, shoulder: float, elbow: float,
                           target_orientation: float = 0.0) -> float:
         """
         计算腕关节角度，使末端保持指定方向
         
-        原理: wrist_flex = target_orientation - shoulder - elbow
-        当target_orientation=0时，末端保持水平
-        
-        Args:
-            shoulder: 肩关节角度，度
-            elbow: 肘关节角度，度
-            target_orientation: 目标末端方向，0表示水平（默认）
-        
-        Returns:
-            wrist_flex角度，度
+        原理: wrist_flex = target_orientation + 180 - shoulder - elbow
         """
-        wrist_flex = target_orientation - shoulder - elbow
-        # 规范化到 [-180, 180]
+        wrist_flex = target_orientation + 180.0 - shoulder - elbow
         wrist_flex = (wrist_flex + 180) % 360 - 180
         return wrist_flex
     
     def compute_wrist_roll(self, base: float, target_yaw: float = 0.0) -> float:
         """
         计算腕旋转角度，使夹爪保持指定朝向
-        
-        原理: 当base旋转时，如果不调整wrist_roll，夹爪会跟着旋转。
-        通过 wrist_roll = target_yaw - base 可以保持夹爪绝对朝向不变。
-        
-        Args:
-            base: 基座旋转角度，度
-            target_yaw: 目标夹爪朝向（相对世界坐标系），0表示朝x轴正方向
-        
-        Returns:
-            wrist_roll角度，度
         """
         wrist_roll = target_yaw - base
-        # 规范化到 [-180, 180]
         wrist_roll = (wrist_roll + 180) % 360 - 180
         return wrist_roll
     
     def solve_for_position(self, x: float, y: float, z: float,
                           target_orientation: float = 0.0,
                           target_yaw: float = 0.0,
-                          elbow_up: bool = True) -> Optional[Dict[str, float]]:
+                          elbow_up: bool = False) -> Optional[Dict[str, float]]:
         """
         完整求解：目标位置 + 末端方向 -> 所有关节角度
         
-        会尝试所有可行解，返回第一个符合关节限制的解
+        优先使用 ikpy 的带姿态控制逆运动学，失败时回退到几何法。
         
         Args:
             x, y, z: 目标位置，单位 mm
@@ -538,66 +606,92 @@ class Arm3DKinematics:
                 'wrist_roll': wrist_roll角度
             } 或 None（无解时）
         """
-        # 获取所有可行解（已经过滤了不符合base/shoulder/elbow限制的）
-        solutions = self.inverse_kinematics_all(x, y, z)
+        # 主路径：ikpy 带姿态 IK
+        if self._ikpy_available:
+            target_pos = [x / 1000.0, y / 1000.0, z / 1000.0]
+            
+            # 根据 iktest.py 的映射：
+            # 水平姿态 (target_orientation=0) 对应 orientation_mode='Y' 且 R[1] = pi/2
+            # target_orientation 是相对水平的俯仰角
+            # 0°水平 -> Y轴旋转 pi/2
+            # 90°垂直向下 -> Y轴旋转 0
+            # -90°垂直向上 -> Y轴旋转 pi
+            orient_y = math.radians(target_orientation)
+            target_orient = [0, orient_y, math.radians(target_yaw)]
+            
+
+            try:
+                ik = self.chain.inverse_kinematics(
+                    target_position=target_pos,
+                    target_orientation=target_orient,
+                    orientation_mode='Y',
+                )
+                angles = self._extract_angles(ik)
+                joints = {
+                    'base': self._normalize_angle(math.degrees(angles[0])),
+                    'shoulder': self._normalize_angle(math.degrees(angles[1])),
+                    'elbow': self._normalize_angle(math.degrees(angles[2])),
+                    'wrist_flex': self._normalize_angle(math.degrees(angles[3])),
+                    'wrist_roll': self._normalize_angle(math.degrees(angles[4]))
+                }
+                
+                if self._check_joint_limits(joints):
+                    return joints
+            except Exception:
+                print(f"[Arm3DKinematics] 带姿态IK求解失败，尝试纯位置IK + 几何wrist")
+            
+            # 带姿态求解失败，尝试纯位置 IK + 几何 wrist
+            result = self.inverse_kinematics(x, y, z, elbow_up=elbow_up)
+            if result is not None:
+                base, shoulder, elbow = result
+                wrist_flex = self.compute_wrist_flex(shoulder, elbow, target_orientation)
+                wrist_roll = self.compute_wrist_roll(base, target_yaw)
+                joints = {
+                    'base': base,
+                    'shoulder': shoulder,
+                    'elbow': elbow,
+                    'wrist_flex': self._normalize_angle(wrist_flex),
+                    'wrist_roll': self._normalize_angle(wrist_roll)
+                }
+                if self._check_joint_limits(joints):
+                    return joints
         
+        # 回退路径：纯几何法
+        solutions = self.inverse_kinematics_all(x, y, z)
         for base, shoulder, elbow in solutions:
-            # 计算腕关节补偿
+            if elbow_up:
+                if elbow < -5:
+                    continue
+            else:
+                if elbow > 5:
+                    continue
+            
             wrist_flex = self.compute_wrist_flex(shoulder, elbow, target_orientation)
             wrist_roll = self.compute_wrist_roll(base, target_yaw)
-            
-            # 规范化
-            wrist_flex = self._normalize_angle(wrist_flex)
-            wrist_roll = self._normalize_angle(wrist_roll)
-            
-            # 检查所有关节限制
             joints = {
                 'base': base,
                 'shoulder': shoulder,
                 'elbow': elbow,
-                'wrist_flex': wrist_flex,
-                'wrist_roll': wrist_roll
+                'wrist_flex': self._normalize_angle(wrist_flex),
+                'wrist_roll': self._normalize_angle(wrist_roll)
             }
-            
             if self._check_joint_limits(joints):
                 return joints
         
-        # 如果没有找到符合所有限制的解，返回None
         return None
     
     def is_reachable(self, x: float, y: float, z: float) -> bool:
-        """
-        检查目标位置是否可达
-        
-        Args:
-            x, y, z: 目标位置，单位 mm
-        
-        Returns:
-            True 如果位置可达
-        """
-        r = math.sqrt(x**2 + y**2)
-        return self.planar_kin.is_reachable(r, z)
+        """检查目标位置是否可达"""
+        dx = x - self.base_shoulder_offset
+        dy = y
+        r_arm = math.sqrt(dx**2 + dy**2)
+        return self.planar_kin.is_reachable(r_arm, z)
     
     def get_workspace(self) -> Dict[str, float]:
-        """
-        获取工作空间范围
-        
-        Returns:
-            {
-                'r_min': 最小水平距离,
-                'r_max': 最大水平距离,
-                'z_min': 最小高度（近似）,
-                'z_max': 最大高度（近似）
-            }
-        """
+        """获取工作空间范围"""
         r_min, r_max = self.planar_kin.get_workspace_radius()
-        
-        # 高度范围近似估计
-        # 最大高度：当shoulder=90°（垂直向上）时，z = L1 + L2
         z_max = self.L1 + self.L2
-        # 最小高度：当shoulder=-90°（垂直向下）时，z = -(L1 + L2)
-        # 但实际中机械臂不能穿过地面，所以通常是0或某个最小值
-        z_min = max(0, abs(self.L1 - self.L2) - 50)  # 保守估计
+        z_min = max(0, abs(self.L1 - self.L2) - 50)
         
         return {
             'r_min': r_min,
@@ -609,51 +703,5 @@ class Arm3DKinematics:
 
 # ========== 验证测试 ==========
 if __name__ == "__main__":
-    L1, L2 = 100.0, 80.0
+    kin=Arm3DKinematics()
     
-    # 测试1: 正逆运动学一致性验证
-    alpha_test, beta_test = 30.0, 45.0
-    x, y = kinematics(L1, L2, alpha_test, beta_test)
-    print(f"测试角度: α={alpha_test}°, β={beta_test}°")
-    print(f"正运动学: x={x:.2f}, y={y:.2f}")
-    
-    # 逆解
-    sol = inverse_kinematics_all(L1, L2, (x, y))
-    print(f"逆运动学解: {sol}")
-    
-    # 验证反推
-    for i, (a, b) in enumerate(sol):
-        x_check, y_check = kinematics(L1, L2, a, b)
-        print(f"  解{i+1}: α={a:.1f}°, β={b:.1f}° -> x={x_check:.2f}, y={y_check:.2f}")
-    
-    # 测试2: 特殊位置（第二象限）
-    print("\n测试目标点(-50, 120):")
-    sol = inverse_kinematics_all(L1, L2, (-50, 120))
-    print(f"可行解: {sol}")
-    
-    # 测试3: ArmKinematics 类
-    print("\n" + "="*50)
-    print("ArmKinematics 类测试")
-    print("="*50)
-    
-    kin = ArmKinematics(L1=120.0, L2=100.0)
-    
-    # 正运动学测试
-    shoulder, elbow = 30.0, 45.0
-    r, z = kin.forward_kinematics(shoulder, elbow)
-    print(f"\n正运动学: shoulder={shoulder}°, elbow={elbow}°")
-    print(f"末端位置: r={r:.1f}mm, z={z:.1f}mm")
-    
-    # 逆运动学测试
-    ik_result = kin.inverse_kinematics(r, z)
-    print(f"\n逆运动学: r={r:.1f}mm, z={z:.1f}mm")
-    print(f"解: shoulder={ik_result[0]:.1f}°, elbow={ik_result[1]:.1f}°")
-    
-    # 手腕角度计算
-    wrist = kin.compute_wrist_flex(ik_result[0], ik_result[1], target_orientation=0.0)
-    print(f"手腕角度(保持水平): {wrist:.1f}°")
-    
-    # 可达性测试
-    print(f"\n工作空间半径: {kin.get_workspace_radius()}")
-    print(f"位置 (150, 100) 是否可达: {kin.is_reachable(150, 100)}")
-    print(f"位置 (300, 300) 是否可达: {kin.is_reachable(300, 300)}")

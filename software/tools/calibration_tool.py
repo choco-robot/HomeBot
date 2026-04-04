@@ -63,6 +63,9 @@ class InteractiveCalibration:
             "左上", "右上", "右下", "左下"
         ]
         
+        # 测试模式鼠标位置跟踪
+        self.test_mouse_pos: Tuple[int, int] = (0, 0)
+        
     def init_camera(self) -> bool:
         """初始化摄像头"""
         logger.info(f"初始化摄像头设备 {self.camera_device}...")
@@ -221,7 +224,7 @@ class InteractiveCalibration:
                         table_x=table_pos[0],
                         table_y=table_pos[1]
                     )
-                    self.calibration.add_point(point)
+                    self.calibration.add_point(point.image_x, point.image_y, point.table_x, point.table_y)
                     self.step += 1
                 
                 self.pending_image_point = None
@@ -266,6 +269,11 @@ class InteractiveCalibration:
         print(f"  - {output_file}")
         print(f"  - 配置已更新 (mahjong.homography_matrix)")
     
+    def test_mouse_callback(self, event, x, y, flags, param):
+        """测试模式鼠标移动回调"""
+        if event == cv2.EVENT_MOUSEMOVE:
+            self.test_mouse_pos = (x, y)
+    
     def test_calibration(self):
         """测试标定结果"""
         print("\n" + "=" * 60)
@@ -280,16 +288,22 @@ class InteractiveCalibration:
         print("按 'q' 退出")
         
         cv2.namedWindow("Test Calibration")
+        cv2.setMouseCallback("Test Calibration", self.test_mouse_callback)
         
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 continue
             
-            # 获取鼠标位置（简化：使用窗口中心）
-            # 实际应该使用鼠标回调
+            # 获取当前鼠标位置
+            test_x, test_y = self.test_mouse_pos
+            
+            # 绘制十字准星
             h, w = frame.shape[:2]
-            test_x, test_y = w // 2, h // 2
+            color = (0, 255, 0)  # 绿色
+            cv2.line(frame, (test_x, 0), (test_x, h), color, 1)
+            cv2.line(frame, (0, test_y), (w, test_y), color, 1)
+            cv2.circle(frame, (test_x, test_y), 5, color, -1)
             
             # 转换坐标
             arm_pos = self.transformer.image_to_arm(test_x, test_y, 30.0)
@@ -299,6 +313,14 @@ class InteractiveCalibration:
                 text = f"Image: ({test_x}, {test_y}) -> Arm: ({arm_x:.1f}, {arm_y:.1f}, {arm_z:.1f})"
                 cv2.putText(frame, text, (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # 显示当前 offset
+                offset_text = f"Offset: ({self.transformer.arm_offset_x:.1f}, {self.transformer.arm_offset_y:.1f})"
+                cv2.putText(frame, offset_text, (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            else:
+                text = f"Image: ({test_x}, {test_y}) -> 未标定"
+                cv2.putText(frame, text, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             
             cv2.imshow("Test Calibration", frame)
             
@@ -307,6 +329,127 @@ class InteractiveCalibration:
         
         self.cap.release()
         cv2.destroyAllWindows()
+    
+    def calibrate_offset(self):
+        """
+        Offset 校准模式
+        
+        用于修正标定后机械臂坐标与实际位置的偏移。
+        操作流程：
+        1. 点击图像中的一个点
+        2. 输入该点实际对应的机械臂坐标（通过示教获取）
+        3. 系统自动计算 offset 修正值
+        """
+        print("\n" + "=" * 60)
+        print("Offset 校准模式")
+        print("=" * 60)
+        print("\n操作说明:")
+        print("1. 在图像中点击一个参考点")
+        print("2. 将机械臂末端移动到该点，记录实际坐标")
+        print("3. 输入期望坐标与实际坐标的差值，或输入实际坐标自动计算")
+        print("\n当前 Offset: X={:.1f}mm, Y={:.1f}mm".format(
+            self.transformer.arm_offset_x, self.transformer.arm_offset_y))
+        
+        if not self.init_camera():
+            return False
+        
+        cv2.namedWindow("Offset Calibration")
+        
+        pending_point = None
+        
+        def offset_mouse_callback(event, x, y, flags, param):
+            nonlocal pending_point
+            if event == cv2.EVENT_LBUTTONDOWN:
+                pending_point = (x, y)
+                print(f"点击位置: ({x}, {y})")
+        
+        cv2.setMouseCallback("Offset Calibration", offset_mouse_callback)
+        
+        print("\n在图像中点击一个参考点，然后输入修正值...")
+        print("按 'q' 退出，按 's' 保存 offset 到配置")
+        
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            
+            # 显示当前 offset
+            current_offset = f"Offset: X={self.transformer.arm_offset_x:.1f}, Y={self.transformer.arm_offset_y:.1f}"
+            cv2.putText(frame, current_offset, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # 显示待处理的点
+            if pending_point:
+                ix, iy = pending_point
+                cv2.circle(frame, (ix, iy), 8, (0, 165, 255), -1)
+                # 显示该点对应的机械臂坐标
+                arm_pos = self.transformer.image_to_arm(ix, iy, 30.0)
+                if arm_pos:
+                    text = f"Current: ({arm_pos[0]:.1f}, {arm_pos[1]:.1f})"
+                    cv2.putText(frame, text, (ix + 10, iy - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+            
+            cv2.imshow("Offset Calibration", frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('s'):
+                # 保存 offset 到配置
+                config = get_config()
+                config.mahjong.arm_offset_x = self.transformer.arm_offset_x
+                config.mahjong.arm_offset_y = self.transformer.arm_offset_y
+                print(f"\nOffset 已保存: X={self.transformer.arm_offset_x:.1f}, Y={self.transformer.arm_offset_y:.1f}")
+                print("注意：此修改仅保存在内存中，重启后恢复默认值")
+                print("如需永久修改，请编辑 configs/config.py 中的 MahjongConfig")
+            
+            # 处理待输入的点
+            if pending_point:
+                ix, iy = pending_point
+                arm_pos = self.transformer.image_to_arm(ix, iy, 30.0)
+                
+                print(f"\n图像坐标: ({ix}, {iy})")
+                if arm_pos:
+                    print(f"当前计算的机械臂坐标: ({arm_pos[0]:.1f}, {arm_pos[1]:.1f})")
+                
+                print("\n输入修正方式:")
+                print("  1. 直接输入 offset 值 (dx,dy)")
+                print("  2. 输入实际机械臂坐标 (x,y)，自动计算 offset")
+                choice = input("选择 [1/2]: ").strip()
+                
+                if choice == "1":
+                    try:
+                        offset_input = input("输入 offset (dx,dy) 单位mm: ").strip()
+                        dx, dy = map(float, offset_input.split(','))
+                        self.transformer.arm_offset_x += dx
+                        self.transformer.arm_offset_y += dy
+                        print(f"Offset 更新: X={self.transformer.arm_offset_x:.1f}, Y={self.transformer.arm_offset_y:.1f}")
+                    except ValueError:
+                        print("输入格式错误，请使用: 10.5,-5.2")
+                
+                elif choice == "2":
+                    try:
+                        actual_input = input("输入实际机械臂坐标 (x,y): ").strip()
+                        actual_x, actual_y = map(float, actual_input.split(','))
+                        if arm_pos:
+                            # 计算新的 offset
+                            # 当前: arm_x = table_x - offset_x
+                            # 期望: actual_x = table_x - new_offset_x
+                            # 所以: new_offset_x = table_x - actual_x
+                            table_x, table_y = self.transformer.image_to_table(ix, iy)
+                            new_offset_x = table_x - actual_x
+                            new_offset_y = table_y - actual_y
+                            self.transformer.arm_offset_x = new_offset_x
+                            self.transformer.arm_offset_y = new_offset_y
+                            print(f"Offset 已计算: X={new_offset_x:.1f}, Y={new_offset_y:.1f}")
+                    except ValueError:
+                        print("输入格式错误，请使用: 150.0,200.0")
+                
+                pending_point = None
+        
+        self.cap.release()
+        cv2.destroyAllWindows()
+        return True
 
 
 def main():
@@ -323,6 +466,9 @@ def main():
   
   # 加载已有标定并测试
   python tools/calibration_tool.py --load calibration_result.json --test
+  
+  # Offset 校准（修正坐标偏移）
+  python tools/calibration_tool.py --camera 1 --load calibration_result.json --calibrate-offset
         """
     )
     
@@ -334,6 +480,8 @@ def main():
                         help="加载已有标定文件")
     parser.add_argument("--test", "-t", action="store_true",
                         help="测试模式（不执行标定，只测试）")
+    parser.add_argument("--calibrate-offset", "-o", action="store_true",
+                        help="Offset 校准模式（修正机械臂坐标偏移）")
     
     args = parser.parse_args()
     
@@ -344,8 +492,11 @@ def main():
         print(f"加载标定文件: {args.load}")
         tool.calibration.load_calibration(args.load)
     
+    # Offset 校准模式
+    if args.calibrate_offset:
+        tool.calibrate_offset()
     # 测试模式
-    if args.test:
+    elif args.test:
         tool.test_calibration()
     else:
         # 运行标定

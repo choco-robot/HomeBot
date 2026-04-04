@@ -88,10 +88,10 @@ class ArmConfig:
     # 关节角度限制 (度) 人工设置，AI勿动
     joint_limits: dict = field(default_factory=lambda: {
         "base": (-90, 90),
-        "shoulder": (0, 180),
-        "elbow": (0, 180),
-        "wrist_flex": (-90, 90),
-        "wrist_roll": (-180, 180),
+        "shoulder": (-100, 100),  # 允许负值以到达某些位置
+        "elbow": (-100, 90),      # elbow_down 构型，elbow为负
+        "wrist_flex": (-90, 90),  # 扩展范围以支持竖直向下抓取
+        "wrist_roll": (-90, 90),
         "gripper": (0, 90),
     })
     # 默认速度/加速度
@@ -99,10 +99,10 @@ class ArmConfig:
     default_acc: int = 50
     # 休息位置/待机位置 (度) - 服务启动时自动恢复到此位置 人工设置，AI勿动
     rest_position: dict = field(default_factory=lambda: {
-        "base": -90,         # J1: 基座旋转
-        "shoulder": 0,   # J2: 肩关节（自然下垂）
-        "elbow": 150,       # J3: 肘关节
-        "wrist_flex": 30,   # J4: 腕关节屈伸
+        "base": 0,         # J1: 基座旋转
+        "shoulder": 180,   # J2: 肩关节（自然下垂）
+        "elbow": -150,       # J3: 肘关节
+        "wrist_flex": -30,   # J4: 腕关节屈伸
         "wrist_roll": 0,   # J5: 腕关节旋转
         "gripper": 45,     # J6: 夹爪（半开）
     })
@@ -409,18 +409,22 @@ class MahjongConfig:
         0.0, 0.0, 1.0
     ])
     
+    # 标定文件路径（JSON 格式，包含 homography_matrix 和标定点）
+    # 如果文件存在，将覆盖 homography_matrix 配置
+    calibration_file: str = "data/calibration.json"
+    
     # 牌桌物理尺寸 (mm)
     table_width_mm: float = 600.0
     table_height_mm: float = 400.0
     
     # 机械臂底座相对于牌桌的偏移 (mm)
     arm_offset_x: float = 0.0
-    arm_offset_y: float = -200.0
+    arm_offset_y: float = 150.0
     
     # 出牌槽位置 (机械臂坐标系 mm)
-    discard_slot_x: float = 150.0
+    discard_slot_x: float = 250.0
     discard_slot_y: float = 0.0
-    discard_slot_z: float = 30.0
+    discard_slot_z: float = 100.0
     
     # 牌河区域裁剪配置 (从 1920x1080 画面中提取中间长条区域)
     river_crop_x: int = 0              # 裁剪起始 X 坐标
