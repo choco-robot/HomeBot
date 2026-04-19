@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CameraConfig:
     """摄像头配置"""
-    device_id: int = 1
+    device_id: int = 0
     width: int = 1920     # 摄像头原始分辨率
     height: int = 1080
     fps: int = 30
@@ -102,8 +102,12 @@ class ChassisConfig:
 class ZMQConfig:
     """ZeroMQ网络配置"""
     chassis_service_addr: str = "tcp://*:5556"
+    chassis_state_pub_addr: str = "tcp://*:5558"  # 底盘状态 PUB 地址
     arm_service_addr: str = "tcp://*:5557"      # 机械臂服务地址
     vision_pub_addr: str = "tcp://*:5560"
+    depth_pub_addr: str = "tcp://*:5561"        # 深度图 PUB 地址
+    obstacle_pub_addr: str = "tcp://*:5562"     # 障碍物信息 PUB 地址
+    odom_pub_addr: str = "tcp://*:5559"          # 里程计 PUB 地址
     speech_service_addr: str = "tcp://*:5570"   # 语音服务地址（备用）
     wakeup_pub_addr: str = "tcp://*:5571"       # 唤醒+ASR PUB地址
 
