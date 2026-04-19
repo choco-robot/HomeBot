@@ -80,9 +80,11 @@ class ChassisService:
     底盘服务 - 合并仲裁器和执行端
     从 configs/config.py 读取硬件配置
     集成电池状态监测和发布
+    新增底盘状态发布（速度、控制源）供 OdomService 订阅
     """
     
     TIMEOUT_MS = 1000
+    STATE_PUBLISH_INTERVAL = 0.05  # 50Hz 状态发布频率
     
     def __init__(self, 
                  rep_addr: Optional[str] = None, 
@@ -142,10 +144,15 @@ class ChassisService:
         self._last_battery_publish_time: float = 0.0
         self._last_battery_state = None
         
+        # 底盘状态发布
+        self._state_pub_addr = getattr(get_config().zmq, 'chassis_state_pub_addr', 'tcp://*:5558')
+        self._last_state_publish_time: float = 0.0
+        
         self._lock = Lock()
         self._context: Optional[zmq.Context] = None
         self._rep_socket: Optional[zmq.Socket] = None
         self._pub_socket: Optional[zmq.Socket] = None
+        self._state_pub_socket: Optional[zmq.Socket] = None
         self._running = False
         
     def _check_timeout(self) -> None:
@@ -213,6 +220,30 @@ class ChassisService:
         # 低电量警告
         if battery_state.is_valid and self.battery.is_critical_battery():
             print(f"[CHASSIS_SVC] [WARNING] 电池电量严重不足！请立即充电！")
+    
+    def _publish_chassis_state(self, force: bool = False) -> None:
+        """发布底盘状态（速度、控制源）供 OdomService 订阅"""
+        current_time = time.time()
+        if not force and (current_time - self._last_state_publish_time) < self.STATE_PUBLISH_INTERVAL:
+            return
+        
+        if self._state_pub_socket:
+            state = {
+                "vx": float(self._last_vx),
+                "vy": float(self._last_vy),
+                "vz": float(self._last_vz),
+                "source": self._current_owner or "none",
+                "priority": int(self._current_priority),
+                "timestamp": current_time,
+                "emergency_locked": self._emergency_locked,
+            }
+            try:
+                self._state_pub_socket.send_json(state, flags=zmq.NOBLOCK)
+                self._last_state_publish_time = current_time
+            except zmq.Again:
+                pass
+            except Exception as e:
+                print(f"[CHASSIS_SVC] 底盘状态发布失败: {e}")
     
     def _arbitrate(self, cmd: ControlCommand) -> ArbiterResponse:
         """仲裁核心逻辑"""
@@ -365,6 +396,12 @@ class ChassisService:
         self._pub_socket.setsockopt(zmq.LINGER, 0)
         self._pub_socket.bind(self.pub_addr)
         
+        # PUB socket用于发布底盘状态（速度、控制源）
+        self._state_pub_socket = self._context.socket(zmq.PUB)
+        self._state_pub_socket.setsockopt(zmq.LINGER, 0)
+        self._state_pub_socket.bind(self._state_pub_addr)
+        print(f"[CHASSIS_SVC] 底盘状态发布地址: {self._state_pub_addr}")
+        
         self._running = True
         print("[CHASSIS_SVC] 底盘服务已启动，等待控制源连接...")
         print("=" * 60)
@@ -393,6 +430,7 @@ class ChassisService:
                     with self._lock:
                         self._check_timeout()
                         self._publish_battery_state()
+                        self._publish_chassis_state()
                     time.sleep(0.001)
                     continue
                     
@@ -414,6 +452,9 @@ class ChassisService:
             if self._pub_socket:
                 self._pub_socket.close()
                 self._pub_socket = None
+            if self._state_pub_socket:
+                self._state_pub_socket.close()
+                self._state_pub_socket = None
             if self._context:
                 self._context.term()
                 self._context = None

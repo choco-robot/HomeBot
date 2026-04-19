@@ -60,6 +60,9 @@ class RobotController {
         this.lastVideoLoadTime = 0;  // 初始化为0，表示尚未收到数据
         this.isVideoActive = false;
         
+        // 视图切换：camera / depth
+        this.currentView = 'camera';
+        
         // 初始化
         this.init();
     }
@@ -402,6 +405,14 @@ class RobotController {
     
     // ========== 按钮事件 ==========
     initButtons() {
+        // 视图切换按钮
+        document.getElementById('btnViewCamera').addEventListener('click', () => {
+            this.switchView('camera');
+        });
+        document.getElementById('btnViewDepth').addEventListener('click', () => {
+            this.switchView('depth');
+        });
+        
         // 紧急停止按钮
         document.getElementById('btnEmergency').addEventListener('click', () => {
             this.emergencyStop();
@@ -441,6 +452,32 @@ class RobotController {
             btnArmBackward.addEventListener('touchstart', (e) => { e.preventDefault(); this.startArmReach(-1); });
             btnArmBackward.addEventListener('touchend', (e) => { e.preventDefault(); this.stopArmReach(); });
         }
+    }
+    
+    // ========== 视图切换 ==========
+    switchView(view) {
+        if (this.currentView === view) return;
+        this.currentView = view;
+        
+        const feed = document.getElementById('videoFeed');
+        const btnCamera = document.getElementById('btnViewCamera');
+        const btnDepth = document.getElementById('btnViewDepth');
+        
+        if (view === 'depth') {
+            feed.src = '/depth_feed';
+            btnCamera.classList.remove('active');
+            btnDepth.classList.add('active');
+        } else {
+            feed.src = '/video_feed';
+            btnCamera.classList.add('active');
+            btnDepth.classList.remove('active');
+        }
+        
+        // 重置加载状态，让 checkVideoStatus 重新检测
+        this.lastVideoLoadTime = 0;
+        this.isVideoActive = false;
+        this.updateVideoStatus(false);
+        console.log(`[Video] Switched to ${view} view`);
     }
     
     // ========== 机械臂前后移动控制 ==========

@@ -27,6 +27,7 @@ from configs import get_config
 
 DEFAULT_ARBITER_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_VISION_ADDR = "tcp://127.0.0.1:5560"
+DEFAULT_DEPTH_ADDR = "tcp://127.0.0.1:5561"
 DEFAULT_ARM_ADDR = "tcp://127.0.0.1:5557"
 
 
@@ -527,13 +528,12 @@ class ArmClient:
             }
 
 
-class VideoStreamClient:
-    """
-    视频流客户端 - 订阅VisionService的图像流并转换为MJPEG格式
-    """
+class BaseStreamClient:
+    """MJPEG 流客户端基类"""
     
-    def __init__(self, vision_addr: str = DEFAULT_VISION_ADDR):
-        self.vision_addr = vision_addr
+    def __init__(self, addr: str, name: str = "Stream"):
+        self.addr = addr
+        self.name = name
         self._context: Optional[zmq.Context] = None
         self._socket: Optional[zmq.Socket] = None
         self._connected = False
@@ -541,35 +541,32 @@ class VideoStreamClient:
         self._thread: Optional[Thread] = None
         self._latest_frame: Optional[bytes] = None
         self._frame_lock = Lock()
-        
+    
     def connect(self) -> bool:
-        """连接到VisionService"""
         try:
             self._context = zmq.Context()
             self._socket = self._context.socket(zmq.SUB)
             self._socket.setsockopt(zmq.RCVTIMEO, 1000)
             self._socket.setsockopt(zmq.SUBSCRIBE, b"")
-            self._socket.connect(self.vision_addr)
+            self._socket.connect(self.addr)
             self._connected = True
-            print(f"[Video] 已连接到视觉服务: {self.vision_addr}")
+            print(f"[{self.name}] 已连接到: {self.addr}")
             return True
         except Exception as e:
-            print(f"[Video] 连接失败: {e}")
+            print(f"[{self.name}] 连接失败: {e}")
             return False
     
     def start(self) -> bool:
-        """启动视频流接收线程"""
         if not self._connected:
             if not self.connect():
                 return False
         self._running = True
         self._thread = Thread(target=self._receive_loop, daemon=True)
         self._thread.start()
-        print("[Video] 视频流接收已启动")
+        print(f"[{self.name}] 接收已启动")
         return True
     
     def stop(self):
-        """停止视频流接收"""
         self._running = False
         if self._thread:
             self._thread.join(timeout=1.0)
@@ -578,10 +575,9 @@ class VideoStreamClient:
         if self._context:
             self._context.term()
         self._connected = False
-        print("[Video] 视频流接收已停止")
+        print(f"[{self.name}] 接收已停止")
     
     def _receive_loop(self):
-        """后台线程接收视频帧"""
         import cv2
         import numpy as np
         
@@ -590,25 +586,24 @@ class VideoStreamClient:
         frame_count = 0
         last_log = time.time()
         
-        print(f"[Video] Receive loop started, connecting to {self.vision_addr}")
+        print(f"[{self.name}] Receive loop started, connecting to {self.addr}")
         
         while self._running:
             try:
                 if not self._connected:
                     if retry_count < max_retries:
                         retry_count += 1
-                        print(f"[Video] Reconnecting... ({retry_count}/{max_retries})")
+                        print(f"[{self.name}] Reconnecting... ({retry_count}/{max_retries})")
                         if self.connect():
                             retry_count = 0
-                            print("[Video] Connected successfully")
+                            print(f"[{self.name}] Connected successfully")
                         else:
                             time.sleep(2)
                         continue
                     else:
-                        print("[Video] Max retries exceeded, stopping receiver")
+                        print(f"[{self.name}] Max retries exceeded, stopping receiver")
                         break
                 
-                # 接收 multipart 消息 [frame_id, jpeg_bytes]
                 parts = self._socket.recv_multipart()
                 if len(parts) >= 2:
                     jpeg_bytes = parts[1]
@@ -616,37 +611,32 @@ class VideoStreamClient:
                         self._latest_frame = jpeg_bytes
                     frame_count += 1
                     
-                    # 每5秒打印一次统计
                     if time.time() - last_log > 5:
                         fps = frame_count / 5
-                        print(f"[Video] Receiving {fps:.1f} fps, {len(jpeg_bytes)} bytes/frame")
+                        print(f"[{self.name}] Receiving {fps:.1f} fps, {len(jpeg_bytes)} bytes/frame")
                         frame_count = 0
                         last_log = time.time()
                 
             except zmq.error.Again:
-                # 超时，继续
                 continue
             except Exception as e:
-                print(f"[Video] Receive error: {e}")
+                print(f"[{self.name}] Receive error: {e}")
                 self._connected = False
                 time.sleep(1)
     
     def get_frame(self) -> Optional[bytes]:
-        """获取最新的JPEG帧数据"""
         with self._frame_lock:
             return self._latest_frame
     
-    def generate_mjpeg(self) -> Generator[bytes, None, None]:
-        """生成MJPEG流用于HTTP响应"""
+    def generate_mjpeg(self, placeholder_text: str = "No Signal") -> Generator[bytes, None, None]:
         import cv2
         import numpy as np
         
-        # 等待第一帧
         timeout = 5.0
         start = time.time()
         while self._running and not self.get_frame():
             if time.time() - start > timeout:
-                print("[Video] Timeout waiting for first frame")
+                print(f"[{self.name}] Timeout waiting for first frame")
                 break
             time.sleep(0.1)
         
@@ -658,19 +648,17 @@ class VideoStreamClient:
             if frame:
                 frame_count += 1
                 if time.time() - last_log > 5:
-                    print(f"[Video] Streaming {frame_count} frames")
+                    print(f"[{self.name}] Streaming {frame_count} frames")
                     frame_count = 0
                     last_log = time.time()
                 
-                # 正确的 MJPEG multipart 格式
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n'
                        b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
                        b'\r\n' + frame + b'\r\n')
             else:
-                # 没有帧时发送占位图片
                 img = np.zeros((240, 320, 3), dtype=np.uint8)
-                cv2.putText(img, "No Signal", (80, 120), 
+                cv2.putText(img, placeholder_text, (40, 120), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 ret, buf = cv2.imencode('.jpg', img)
                 if ret:
@@ -679,6 +667,26 @@ class VideoStreamClient:
                            b'Content-Length: ' + str(len(buf)).encode() + b'\r\n'
                            b'\r\n' + buf.tobytes() + b'\r\n')
                 time.sleep(0.5)
+
+
+class VideoStreamClient(BaseStreamClient):
+    """视频流客户端 - 订阅VisionService的图像流"""
+    
+    def __init__(self, vision_addr: str = DEFAULT_VISION_ADDR):
+        super().__init__(vision_addr, name="Video")
+    
+    def generate_mjpeg(self) -> Generator[bytes, None, None]:
+        return super().generate_mjpeg(placeholder_text="Camera Offline - Check Vision Service")
+
+
+class DepthStreamClient(BaseStreamClient):
+    """深度图流客户端 - 订阅DepthService的深度图流"""
+    
+    def __init__(self, depth_addr: str = DEFAULT_DEPTH_ADDR):
+        super().__init__(depth_addr, name="Depth")
+    
+    def generate_mjpeg(self) -> Generator[bytes, None, None]:
+        return super().generate_mjpeg(placeholder_text="Depth Offline - Check Depth Service")
 
 
 class ZMQBridge:
@@ -922,6 +930,7 @@ app.config['SECRET_KEY'] = 'homebot-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 zmq_bridge: Optional[ZMQBridge] = None
 video_client: Optional[VideoStreamClient] = None
+depth_client: Optional[DepthStreamClient] = None
 
 # 人体跟随进程
 human_follow_process: Optional[subprocess.Popen] = None
@@ -981,6 +990,56 @@ def video_feed():
     
     print("[HTTP] Starting MJPEG stream")
     return Response(video_client.generate_mjpeg(),
+                   mimetype='multipart/x-mixed-replace; boundary=frame',
+                   headers={
+                       'Cache-Control': 'no-cache, no-store, must-revalidate',
+                       'Pragma': 'no-cache',
+                       'Expires': '0'
+                   })
+
+
+@app.route('/depth_feed')
+def depth_feed():
+    """深度图流路由 - 提供MJPEG格式的伪彩色深度图"""
+    global depth_client
+    
+    print(f"[HTTP] Depth feed request from {request.remote_addr}")
+    
+    has_depth = (depth_client is not None and 
+                 depth_client._connected and 
+                 depth_client.get_frame() is not None)
+    
+    if not has_depth:
+        def empty_stream():
+            import cv2
+            import numpy as np
+            frame_count = 0
+            while True:
+                img = np.zeros((240, 320, 3), dtype=np.uint8)
+                status_text = "Depth Offline - Check Depth Service"
+                cv2.putText(img, status_text, (10, 100), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(img, f"Frame: {frame_count}", (10, 140), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+                ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(buf)).encode() + b'\r\n'
+                           b'\r\n' + buf.tobytes() + b'\r\n')
+                frame_count += 1
+                time.sleep(0.5)
+        
+        return Response(empty_stream(),
+                       mimetype='multipart/x-mixed-replace; boundary=frame',
+                       headers={
+                           'Cache-Control': 'no-cache, no-store, must-revalidate',
+                           'Pragma': 'no-cache',
+                           'Expires': '0'
+                       })
+    
+    print("[HTTP] Starting depth MJPEG stream")
+    return Response(depth_client.generate_mjpeg(),
                    mimetype='multipart/x-mixed-replace; boundary=frame',
                    headers={
                        'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -1287,8 +1346,9 @@ def handle_toggle_human_follow(data):
 def run_server(host: str = '0.0.0.0', port: int = 5000,
                arbiter_addr: Optional[str] = None,
                vision_addr: Optional[str] = None,
+               depth_addr: Optional[str] = None,
                arm_addr: Optional[str] = None, debug: bool = False):
-    global zmq_bridge, video_client
+    global zmq_bridge, video_client, depth_client
     
     print("=" * 60)
     print("HomeBot 网页控制端")
@@ -1308,15 +1368,28 @@ def run_server(host: str = '0.0.0.0', port: int = 5000,
         print("[警告] 无法连接到视觉服务，视频流不可用")
         print("[提示] 请确保 VisionService 已启动:")
         print(f"       python -m services.vision_service")
-        print(f"       或检查地址是否正确: {video_client.vision_addr}")
+        print(f"       或检查地址是否正确: {video_client.addr}")
     else:
         print("[OK] 视觉服务连接成功")
     
+    # 初始化深度图流客户端
+    depth_client = DepthStreamClient(depth_addr=depth_addr or DEFAULT_DEPTH_ADDR)
+    depth_ok = depth_client.start()
+    if not depth_ok:
+        print("[警告] 无法连接到深度服务，深度图流不可用")
+        print("[提示] 请确保 DepthService 已启动:")
+        print(f"       python -m navigation.services.depth_service")
+        print(f"       或检查地址是否正确: {depth_client.addr}")
+    else:
+        print("[OK] 深度服务连接成功")
+    
     print(f"[配置] 底盘服务: {zmq_bridge.arbiter_addr}")
     print(f"[配置] 机械臂服务: {zmq_bridge.arm_addr}")
-    print(f"[配置] 视觉服务: {video_client.vision_addr}")
+    print(f"[配置] 视觉服务: {video_client.addr}")
+    print(f"[配置] 深度服务: {depth_client.addr}")
     print(f"[网络] Web服务器: http://{host}:{port}")
     print(f"[视频] 视频流地址: http://{host}:{port}/video_feed")
+    print(f"[深度] 深度图流地址: http://{host}:{port}/depth_feed")
     
     # 获取本机IP
     try:
@@ -1357,6 +1430,8 @@ def run_server(host: str = '0.0.0.0', port: int = 5000,
         
         zmq_bridge.stop()
         video_client.stop()
+        if depth_client:
+            depth_client.stop()
 
 
 def main():
@@ -1369,6 +1444,8 @@ def main():
                        help='底盘服务地址 (默认: tcp://127.0.0.1:5556)')
     parser.add_argument('--vision', dest='vision_addr', default=None,
                        help='视觉服务地址 (默认: tcp://127.0.0.1:5560)')
+    parser.add_argument('--depth', dest='depth_addr', default=None,
+                       help='深度服务地址 (默认: tcp://127.0.0.1:5561)')
     parser.add_argument('--arm', dest='arm_addr', default=None,
                        help='机械臂服务地址 (默认: tcp://127.0.0.1:5557)')
     parser.add_argument('--debug', action='store_true')
