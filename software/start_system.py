@@ -49,6 +49,12 @@ SERVICES = [
         "module": "applications.remote_control",
         "port": 5000,
         "desc": "Web Server"
+    },
+    {
+        "name": "Viser SLAM Visualizer",
+        "module": "navigation.visualization",
+        "port": 8080,
+        "desc": "Viser 3D SLAM Visualization (RViz alternative)"
     }
 ]
 

@@ -64,6 +64,15 @@ homebot/
 │   │   │   ├── arm/           # 机械臂驱动
 │   │   │   ├── audio/         # 音频驱动
 │   │   │   └── ftservo_driver.py  # 飞特舵机底层驱动
+│   │   ├── navigation/        # 导航与 SLAM
+│   │   │   ├── hal/           # 激光雷达驱动
+│   │   │   ├── perception/    # 感知 (AprilTag, 深度估计)
+│   │   │   ├── core/          # SLAM 核心算法
+│   │   │   ├── planning/      # 路径规划
+│   │   │   ├── services/      # 导航服务 (Odom, SLAM)
+│   │   │   ├── applications/  # 导航应用 (目标点跟随)
+│   │   │   ├── simulation/    # Matplotlib 导航模拟器
+│   │   │   └── visualization/ # Viser 3D SLAM 可视化
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
 │   ├── tools/                 # 辅助脚本（模型下载等）
@@ -217,7 +226,14 @@ PRIORITIES = {
   python -m applications.arm_teleop --gui
   ```
 
-**语音交互** (`applications/speech_interaction`):
+**Viser SLAM 可视化** (`navigation/visualization/`):
+- **ViserSLAMVisualizer** (`viser_slam_visualizer.py`): 基于 Viser 的实时 3D SLAM 可视化（RViz 替代）
+- 订阅话题：odom (5559)、slam_pose (5563)、slam_map (5564)、lidar_scan (5565)、vision (5560)
+- 可视化内容：坐标系树、机器人模型、激光点云、栅格地图、摄像头视锥、双轨迹
+- GUI 面板：状态显示、图层控制、视角切换（跟随/自由/顶视）
+- 启动：`python -m navigation.visualization`
+
+**语音交互** (`applications/speech_interaction/`):
 - **Speech App** (`speech_app.py`): SUB模式订阅WakeupASR服务
 - **Dialogue Manager** (`dialogue_manager.py`): LLM对话管理，支持工具调用
 - **MCP Server** (`mcp_server.py`): 机器人控制工具集
@@ -382,7 +398,21 @@ cd software/src
 # 或指定手柄：..\..\venv\Scripts\python.exe -m applications.gamepad_control --controller 0
 ```
 
-终端 6 - 语音交互服务（可选）：
+终端 6 - SLAM 与导航服务（可选）：
+```bash
+cd software/src
+# 启动里程计服务
+python -m navigation.services.odom_service
+
+# 启动 SLAM 融合定位服务（新终端）
+python -m navigation.services.slam_service --mock-lidar --mock-tag
+
+# 启动 Viser 3D 可视化（新终端）
+python -m navigation.visualization
+# 或指定端口：python -m navigation.visualization --port 8080
+```
+
+终端 7 - 语音交互服务（可选）：
 ```bash
 cd software/src
 # 先启动 Wakeup+ASR 服务（PUB模式）
@@ -428,13 +458,21 @@ cd software
 
 ### 访问控制界面
 
-浏览器访问：`http://<robot-ip>:5000`
+浏览器访问 Web 控制界面：`http://<robot-ip>:5000`
 
 界面功能：
 - 实时视频流（摄像头画面）
 - 虚拟摇杆（左侧控制底盘移动）
 - 紧急停止按钮（红色，触发后锁定底盘）
 - 归位按钮（蓝色，解锁紧急停止）
+
+浏览器访问 Viser SLAM 可视化：`http://<robot-ip>:8080`
+
+界面功能：
+- 3D 场景：坐标系树、机器人模型、激光点云、栅格地图
+- 双轨迹对比：里程计轨迹(黄色) vs SLAM 轨迹(青色)
+- 摄像头视锥：带实时图像的相机可视化
+- GUI 面板：位姿状态、图层开关、视角控制
 
 ## 开发规范
 
@@ -457,6 +495,30 @@ cd software
     "priority": 1           # 优先级: 1=web, 2=voice, 3=auto, 4=emergency
 }
 ```
+
+### ZeroMQ 数据订阅规范
+
+**应用层订阅者必须使用后台线程持续接收，禁止单独使用 `zmq.CONFLATE`。**
+
+原因：`zmq.CONFLATE` 在 SUB socket 上只保留队列中最新消息，但若配合 `NOBLOCK` 低频读取（如 10Hz 控制循环），在某些边界情况下会导致消息解析异常或数据 stale。服务层内部消费（如 OdomService 50Hz 主循环）可使用 `CONFLATE`，因其本身就是持续 `recv`。
+
+**正确模式（应用层）：**
+```python
+from common.zmq_subscriber import ZMQJsonSubscriber
+
+sub = ZMQJsonSubscriber("tcp://localhost:5559", required_keys=("x", "y", "yaw"))
+data = sub.read()   # 非阻塞，从内存直接读取
+sub.close()
+```
+
+提供的统一模板（`common.zmq_subscriber`）：
+| 类 | 适用场景 |
+|----|---------|
+| `ZMQJsonSubscriber` | 订阅 JSON 单帧消息（如 OdomService） |
+| `ZMQMultipartJsonSubscriber` | 订阅 multipart 消息，第 N 个 frame 为 JSON（如 DepthService 障碍物） |
+| `ZMQMultipartImageSubscriber` | 订阅 multipart 图像帧（如 VisionService） |
+
+**不要重复造轮子**：同一数据话题的订阅逻辑不要每个应用单独实现，优先继承上述基类或直接使用现有订阅者（如 `VisionSubscriber`）。
 
 ### 服务启动模式
 

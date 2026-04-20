@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -21,6 +22,8 @@ import numpy as np
 import zmq
 
 from common.logging import get_logger
+from common.transform import world_to_robot2
+from common.zmq_subscriber import ZMQJsonSubscriber, ZMQMultipartJsonSubscriber
 from common.zmq_helper import create_socket
 from navigation.perception.obstacle_detector import DepthObstacle
 from navigation.planning.local_planner import LocalPlannerConfig, VFHLocalPlanner
@@ -32,57 +35,59 @@ DEFAULT_OBSTACLE_ADDR = "tcp://localhost:5562"
 DEFAULT_CHASSIS_ADDR = "tcp://127.0.0.1:5556"
 
 
-class OdomSubscriber:
-    """里程计订阅者 - 后台线程保持最新位姿"""
+class OdomSubscriber(ZMQJsonSubscriber):
+    """里程计订阅者"""
 
     def __init__(self, sub_addr: str = DEFAULT_ODOM_ADDR):
-        self._sub = create_socket(zmq.SUB, bind=False, address=sub_addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, b"")
-        self._sub.setsockopt(zmq.RCVTIMEO, 1000)
-        self._sub.setsockopt(zmq.CONFLATE, 1)
-        self._latest_odom: Optional[dict] = None
-
-    def read(self) -> Optional[dict]:
-        try:
-            odom = self._sub.recv_json(flags=zmq.NOBLOCK)
-            self._latest_odom = odom
-            return odom
-        except zmq.Again:
-            return self._latest_odom
-        except Exception as e:
-            logger.warning(f"读取里程计失败: {e}")
-            return self._latest_odom
-
-    def close(self):
-        self._sub.close()
+        super().__init__(sub_addr, required_keys=("x", "y", "yaw"))
 
 
-class ObstacleSubscriber:
-    """障碍物订阅者 - 后台线程保持最新障碍物"""
+class HistogramSubscriber(ZMQMultipartJsonSubscriber):
+    """障碍物距离直方图订阅者
+
+    订阅 DepthService 发布的 multipart 消息，自动解析 JSON 中的 histogram 数组。
+    """
 
     def __init__(self, sub_addr: str = DEFAULT_OBSTACLE_ADDR):
-        self._sub = create_socket(zmq.SUB, bind=False, address=sub_addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, b"")
-        self._sub.setsockopt(zmq.RCVTIMEO, 1000)
-        self._sub.setsockopt(zmq.CONFLATE, 1)
-        self._latest_obstacles: Optional[list] = None
+        super().__init__(sub_addr, required_keys=("histogram",))
+        self._latest_histogram: Optional[np.ndarray] = None
+        self._hist_lock = threading.Lock()
 
-    def read(self) -> Optional[list]:
-        try:
-            parts = self._sub.recv_multipart(flags=zmq.NOBLOCK)
-            if len(parts) >= 2:
-                data = json.loads(parts[1].decode("utf-8"))
-                obs_list = data.get("obstacles", [])
-                self._latest_obstacles = obs_list
-                return obs_list
-        except zmq.Again:
-            return self._latest_obstacles
-        except Exception as e:
-            logger.warning(f"读取障碍物失败: {e}")
-            return self._latest_obstacles
+    def _receive_loop(self) -> None:
+        """覆盖基类接收循环，增加 histogram 数组解析。"""
+        while self._running:
+            try:
+                parts = self._sub.recv_multipart(flags=zmq.NOBLOCK)
+                if len(parts) > self._json_frame_index:
+                    data = json.loads(parts[self._json_frame_index].decode("utf-8"))
+                    if self._validate(data):
+                        hist_list = data.get("histogram", [])
+                        hist = np.array([
+                            np.inf if v is None else float(v)
+                            for v in hist_list
+                        ], dtype=np.float32)
+                        with self._lock:
+                            self._latest_data = data
+                            self._recv_count += 1
+                        with self._hist_lock:
+                            self._latest_histogram = hist
+                    else:
+                        logger.warning(
+                            f"[{self.__class__.__name__}] 收到不符合要求的数据: {data}"
+                        )
+            except zmq.Again:
+                pass
+            except Exception as e:
+                logger.warning(f"[{self.__class__.__name__}] 接收异常: {e}")
+            time.sleep(0.001)
 
-    def close(self):
-        self._sub.close()
+    def read(self) -> Optional[np.ndarray]:
+        """读取最新直方图数组（线程安全，非阻塞）。"""
+        with self._hist_lock:
+            return self._latest_histogram.copy() if self._latest_histogram is not None else None
+
+    def close(self) -> None:
+        super().close()
 
 
 class GoalFollowApp:
@@ -96,7 +101,7 @@ class GoalFollowApp:
         obstacle_addr: str = DEFAULT_OBSTACLE_ADDR,
         chassis_addr: str = DEFAULT_CHASSIS_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
-        arrival_threshold_m: float = 0.15,
+        arrival_threshold_m: float = 0.05,
         control_rate: float = 10.0,
     ):
         self.goal_x = goal_x
@@ -106,7 +111,7 @@ class GoalFollowApp:
 
         # 数据订阅
         self._odom_sub = OdomSubscriber(odom_addr)
-        self._obstacle_sub = ObstacleSubscriber(obstacle_addr)
+        self._obstacle_sub = HistogramSubscriber(obstacle_addr)
 
         # 底盘客户端
         from services.motion_service.chassis_arbiter import ChassisArbiterClient
@@ -131,31 +136,24 @@ class GoalFollowApp:
             while self._running:
                 t0 = time.perf_counter()
 
-                # 1. 读取最新位姿和障碍物
+                # 1. 读取最新位姿和直方图
                 odom = self._odom_sub.read()
-                obstacles_raw = self._obstacle_sub.read()
+                histogram = self._obstacle_sub.read()
 
                 if odom is None:
                     logger.warning("尚未收到里程计数据，等待中...")
                     time.sleep(0.1)
                     continue
 
-                # 2. 计算相对目标向量（里程计坐标系下目标始终不变，因为我们希望走到相对位置）
-                # 但 odom 积分的是世界坐标，如果从 (0,0,0) 开始，目标就是 (goal_x, goal_y)
+                # 2. 读取当前位姿（世界坐标系）
                 rx = odom.get("x", 0.0)
                 ry = odom.get("y", 0.0)
                 yaw = odom.get("yaw", 0.0)
 
-                # 目标在世界坐标系中就是 (goal_x, goal_y)
-                # 但机器人坐标系下的相对目标方向用于 VFH：
-                dx_world = self.goal_x - rx
-                dy_world = self.goal_y - ry
-
-                # 转换到机器人坐标系
-                dx_robot = dx_world * math.cos(-yaw) - dy_world * math.sin(-yaw)
-                dy_robot = dx_world * math.sin(-yaw) + dy_world * math.cos(-yaw)
-
-                distance = math.hypot(dx_robot, dy_robot)
+                # 将世界坐标系下的目标点转换到机器人坐标系（底盘坐标系）
+                # VFHLocalPlanner 期望 goal_x（前方为正）、goal_y（左侧为正）
+                goal_x, goal_y = world_to_robot2((self.goal_x, self.goal_y), (rx, ry, yaw))
+                distance = math.hypot(goal_x, goal_y)
 
                 # 3. 检查是否到达
                 if distance < self.arrival_threshold:
@@ -164,28 +162,37 @@ class GoalFollowApp:
                         self._reached = True
                     self._send_command(0.0, 0.0)
                     time.sleep(self.control_interval)
+                    # 输入下一个目标点
+                    next_goal = input("请输入下一个目标点 (x y)，或 'exit' 退出: ")
+                    if next_goal.strip().lower() == "exit":
+                        logger.info("用户请求退出，停止应用")
+                        break
+                    try:                        
+                        x_str, y_str = next_goal.strip().split()
+                        x, y = float(x_str), float(y_str)
+                        self.set_goal(x, y)
+                    except Exception as e:
+                        logger.warning(f"无效输入 '{next_goal}'，请重新输入。错误: {e}")
                     continue
                 else:
                     self._reached = False
 
-                # 4. 解析障碍物
-                obstacles = self._parse_obstacles(obstacles_raw or [])
-
-                # 5. 局部规划
+                # 4. 局部规划（直接传入距离直方图）
                 vx, vz = self._planner.plan(
-                    obstacles=obstacles,
-                    goal_x=dx_robot,
-                    goal_y=dy_robot,
+                    obstacles=histogram if histogram is not None else np.array([]),
+                    goal_x=goal_x,
+                    goal_y=goal_y,
                     current_vx=odom.get("vx", 0.0),
                     current_vz=odom.get("vz", 0.0),
                 )
 
-                # 6. 发送底盘命令
+                # 5. 发送底盘命令
                 self._send_command(vx, vz)
+                blocked_count = int(np.sum(histogram < 0.5)) if histogram is not None else 0
                 logger.debug(
                     f"pos=({rx:.2f},{ry:.2f},{yaw:.2f}) "
-                    f"goal_rel=({dx_robot:.2f},{dy_robot:.2f}) "
-                    f"cmd=({vx:.2f},{vz:.2f}) obs={len(obstacles)}"
+                    f"goal_robot=({goal_x:.2f},{goal_y:.2f}) "
+                    f"cmd=({vx:.2f},{vz:.2f}) blocked={blocked_count}"
                 )
 
                 # 7. 帧率控制
@@ -202,23 +209,6 @@ class GoalFollowApp:
             logger.error(traceback.format_exc())
         finally:
             self.stop()
-
-    def _parse_obstacles(self, raw_list: list) -> list:
-        """将原始字典列表解析为 DepthObstacle 对象。"""
-        obstacles = []
-        for item in raw_list:
-            try:
-                obstacles.append(DepthObstacle(
-                    x=float(item.get("x", 0)),
-                    y=float(item.get("y", 0)),
-                    z=float(item.get("z", 0)),
-                    width=float(item.get("width", 0.1)),
-                    height=float(item.get("height", 0.1)),
-                    confidence=float(item.get("confidence", 1)),
-                ))
-            except Exception:
-                continue
-        return obstacles
 
     def _send_command(self, vx: float, vz: float) -> None:
         """通过仲裁器客户端发送速度命令。"""
@@ -249,13 +239,13 @@ class GoalFollowApp:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="HomeBot 目标点跟随应用")
-    parser.add_argument("--goal-x", type=float, default=1.0, help="目标点 X（米，机器人右侧为正）")
-    parser.add_argument("--goal-y", type=float, default=0.0, help="目标点 Y（米，机器人前方为正）")
+    parser.add_argument("--goal-x", type=float, default=1.0, help="目标点 X（米，机器人前方为正）")
+    parser.add_argument("--goal-y", type=float, default=0.0, help="目标点 Y（米，机器人左侧为正）")
     parser.add_argument("--odom", default=DEFAULT_ODOM_ADDR, help="里程计 SUB 地址")
     parser.add_argument("--obstacle", default=DEFAULT_OBSTACLE_ADDR, help="障碍物 SUB 地址")
     parser.add_argument("--chassis", default=DEFAULT_CHASSIS_ADDR, help="底盘服务地址")
     parser.add_argument("--rate", type=float, default=10.0, help="控制频率 Hz")
-    parser.add_argument("--threshold", type=float, default=0.15, help="到达阈值（米）")
+    parser.add_argument("--threshold", type=float, default=0.05, help="到达阈值（米）")
     args = parser.parse_args()
 
     app = GoalFollowApp(

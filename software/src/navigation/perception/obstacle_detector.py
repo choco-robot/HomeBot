@@ -47,12 +47,13 @@ class DepthObstacleDetector:
 
     def __init__(
         self,
-        fov_horizontal: float = math.radians(60.0),
-        fov_vertical: float = math.radians(45.0),
+        fov_horizontal: float = math.radians(66.0),
+        fov_vertical: float = math.radians(37.0),
         min_obstacle_size_m: float = 0.1,
         max_depth: float = 1.0,
-        num_columns: int = 20,
+        num_columns: int = 21,
         ground_threshold_ratio: float = 0.7,
+        edge_threshold: float = -0.15,
     ):
         """
         Args:
@@ -62,6 +63,7 @@ class DepthObstacleDetector:
             max_depth: 最大有效深度（相对深度的上限，用于过滤远景）
             num_columns: 水平分块数量
             ground_threshold_ratio: 地面深度阈值比例（底部区域超过该比例视为地面）
+            edge_threshold: 深度突变检测阈值（一阶差分，负值表示从远到近）
         """
         self.fov_h = fov_horizontal
         self.fov_v = fov_vertical
@@ -69,134 +71,58 @@ class DepthObstacleDetector:
         self.max_depth = max_depth
         self.num_columns = num_columns
         self.ground_threshold = ground_threshold_ratio
+        self.edge_threshold = edge_threshold
 
     def detect(
         self,
         depth: np.ndarray,
         bgr_image: Optional[np.ndarray] = None,
-    ) -> List[DepthObstacle]:
+    ) -> np.ndarray:
         """从深度图中检测障碍物。
 
+        内部已改为基于 detect_histogram 生成伪障碍物列表。
+        """
+        histogram = self.detect_histogram(depth)
+        return histogram
+
+    def detect_histogram(self, disparity: np.ndarray) -> np.ndarray:
+        """将二维视差图压缩为一维距离直方图（带地面锚点标定）。
+
+        输入为原始视差（MiDaS 输出）：值越大表示越近。
+        利用图像底部 10% 区域的 15% 分位数作为深度锚点，对应绝对深度 0.8m，
+        通过视差 ∝ 1/深度 的关系恢复各条带的绝对距离。
+
         Args:
-            depth: 相对深度图 (H, W)，值域 0~1，越大越远
-            bgr_image: 可选的原始彩色图，用于辅助调试（当前未使用）
+            disparity: 原始视差图 (H, W)，越大越近
 
         Returns:
-            障碍物列表
+            distances: np.ndarray, shape (num_columns,)
+                       每个条带方向的最近障碍物距离（米），
+                       无有效障碍物时返回 np.inf
         """
-        h, w = depth.shape
+        h, w = disparity.shape
         col_width = w // self.num_columns
+        distances = np.full(self.num_columns, 0, dtype=np.float32)
 
-        # 1. 简单的地面分割：取下 20% 行作为地面参考
-        ground_rows = int(h * 0.2)
-        ground_depth = np.median(depth[-ground_rows:, :]) if ground_rows > 0 else 0.5
+        # 深度锚点：底部 10% 区域的 75% 分位数视差，对应绝对深度 1.0m
+        anchor_rows = max(1, int(h * 0.1))
+        anchor_disp = float(np.percentile(disparity[-anchor_rows:, :], 75))
+        if anchor_disp < 1e-6:
+            anchor_disp = 1e-6
 
-        obstacles = []
+        # 比例因子：depth = scale / disp
+        scale = 1.0 / anchor_disp
+
         for i in range(self.num_columns):
             x1 = i * col_width
             x2 = (i + 1) * col_width if i < self.num_columns - 1 else w
-            col_depth = depth[:, x1:x2]
+            col_disp = disparity[:, x1:x2]
+            col_median = np.median(col_disp, axis=1)
 
-            # 取中值深度曲线（沿垂直方向）
-            col_median = np.median(col_depth, axis=1)
+            obstacle_disp = float(col_median[int(h*0.4):int(h*0.8)].min())
+            distances[i] = scale * obstacle_disp
 
-            # 忽略过远的区域
-            valid_mask = col_median < self.max_depth
-            if not np.any(valid_mask):
-                continue
-
-            # 检测深度不连续（突然变近）
-            # 使用一阶差分检测突变
-            diff = np.diff(col_median)
-            # 寻找显著的正差分（从远到近）
-            edge_indices = np.where(diff < -0.15)[0]
-            if len(edge_indices) == 0:
-                continue
-
-            # 取第一个显著的近处边缘
-            edge_y = int(edge_indices[0])
-            obstacle_depth = float(col_median[edge_y])
-
-            # 估算实际位置（使用小孔模型近似）
-            cx = (x1 + x2) / 2
-            cy = edge_y
-            x_m, y_m, z_m = self._pixel_to_camera(cx, cy, obstacle_depth, w, h)
-
-            # 估算宽度和高度
-            # 宽度 ≈ 柱子物理宽度
-            col_angle = self.fov_h / self.num_columns
-            width_m = 2 * z_m * math.tan(col_angle / 2)
-            # 高度 ≈ 从边缘到图像顶部的物理高度
-            height_m = max(0.05, -y_m)  # 保守估计
-
-            if width_m < self.min_size or height_m < self.min_size:
-                continue
-
-            # 过滤明显是地面的情况：如果边缘在图像底部且深度与地面接近
-            if edge_y > h * self.ground_threshold and abs(obstacle_depth - ground_depth) < 0.1:
-                continue
-
-            obstacles.append(DepthObstacle(
-                x=x_m,
-                y=y_m,
-                z=z_m,
-                width=width_m,
-                height=height_m,
-                confidence=min(1.0, abs(diff[edge_y]) * 3.0),
-            ))
-
-        # 2. 进一步过滤：按 x 位置去重（合并相邻柱子）
-        merged = self._merge_obstacles(obstacles)
-        return merged
-
-    def _pixel_to_camera(
-        self,
-        px: float,
-        py: float,
-        depth_val: float,
-        img_w: int,
-        img_h: int,
-    ) -> Tuple[float, float, float]:
-        """将像素坐标和相对深度转换为相机坐标系下的近似位置。
-
-        这里 depth_val 是相对深度 0~1，我们将其映射到 0.1m ~ 3.0m 的绝对深度范围
-        用于演示和局部避障。实际使用时需要标定相机内参。
-        """
-        # 将相对深度映射到估算的绝对深度（越远值越大）
-        # depth_val=0 -> 0.1m, depth_val=1 -> 3.0m
-        z_m = 0.1 + depth_val * 2.9
-
-        cx = img_w / 2
-        cy = img_h / 2
-        fx = (img_w / 2) / math.tan(self.fov_h / 2)
-        fy = (img_h / 2) / math.tan(self.fov_v / 2)
-
-        x_m = (px - cx) * z_m / fx
-        y_m = (py - cy) * z_m / fy
-        return x_m, y_m, z_m
-
-    def _merge_obstacles(self, obstacles: List[DepthObstacle]) -> List[DepthObstacle]:
-        """合并相邻的障碍物。"""
-        if not obstacles:
-            return []
-        # 按 x 排序
-        obstacles = sorted(obstacles, key=lambda o: o.x)
-        merged = [obstacles[0]]
-        for obs in obstacles[1:]:
-            last = merged[-1]
-            # 如果水平距离小于平均宽度的一半，合并
-            if abs(obs.x - last.x) < (last.width + obs.width) / 2:
-                # 加权平均
-                total_conf = last.confidence + obs.confidence
-                last.x = (last.x * last.confidence + obs.x * obs.confidence) / total_conf
-                last.y = (last.y * last.confidence + obs.y * obs.confidence) / total_conf
-                last.z = (last.z * last.confidence + obs.z * obs.confidence) / total_conf
-                last.width += obs.width * 0.5
-                last.height = max(last.height, obs.height)
-                last.confidence = min(1.0, total_conf)
-            else:
-                merged.append(obs)
-        return merged
+        return distances
 
     def draw_overlay(
         self,

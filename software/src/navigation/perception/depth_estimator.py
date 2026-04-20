@@ -122,11 +122,11 @@ class DepthEstimator:
         depth = np.squeeze(depth)  # (H, W)
         depth = cv2.resize(depth, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
 
-        # 4. 归一化到 0~1（逆深度通常越远值越大，MiDaS 输出已符合直觉）
+        # 4. 归一化到 0~1（越远值越小）
         depth_min = depth.min()
         depth_max = depth.max()
         if depth_max - depth_min > 1e-6:
-            depth = (depth - depth_min) / (depth_max - depth_min)
+            depth = 1 - (depth - depth_min) / (depth_max - depth_min)
         else:
             depth = np.zeros_like(depth)
 
@@ -143,51 +143,7 @@ class DepthEstimator:
     @staticmethod
     def colorize(depth: np.ndarray, colormap: int = cv2.COLORMAP_JET) -> np.ndarray:
         """将深度图转为伪彩色图（8-bit BGR），用于可视化。"""
-        depth_u8 = (depth * 255).clip(0, 255).astype(np.uint8)
-        colored = cv2.applyColorMap(depth_u8, colormap)
-        return colored
-
-
-class FakeDepthEstimator:
-    """假的深度估计器，用于在没有模型时进行接口测试和演示。
-
-    生成基于图像亮度的合成深度图，或纯渐变深度图。
-    """
-
-    def __init__(self, mode: str = "gradient"):
-        """
-        Args:
-            mode: 'gradient' 生成中心近四周远的径向渐变，
-                  'brightness' 基于图像亮度估算深度（越亮越近）
-        """
-        self.mode = mode
-        self._available = True
-        logger.info(f"FakeDepthEstimator 初始化完成，模式={mode}")
-
-    @property
-    def is_available(self) -> bool:
-        return True
-
-    def estimate(self, bgr_image: np.ndarray) -> np.ndarray:
-        h, w = bgr_image.shape[:2]
-        if self.mode == "brightness":
-            gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-            depth = 1.0 - gray  # 越亮越近
-        else:
-            # 径向渐变：中心近，四周远
-            y, x = np.ogrid[:h, :w]
-            cx, cy = w / 2, h / 2
-            dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-            max_dist = math.hypot(cx, cy)
-            depth = dist / max_dist
-        return depth.astype(np.float32)
-
-    def estimate_safe(self, bgr_image: np.ndarray) -> Optional[np.ndarray]:
-        return self.estimate(bgr_image)
-
-    @staticmethod
-    def colorize(depth: np.ndarray, colormap: int = cv2.COLORMAP_JET) -> np.ndarray:
-        depth_u8 = (depth * 255).clip(0, 255).astype(np.uint8)
+        depth_u8 = 255-(depth * 255).clip(0, 255).astype(np.uint8)
         colored = cv2.applyColorMap(depth_u8, colormap)
         return colored
 
@@ -196,12 +152,9 @@ def create_depth_estimator(
     model_path: Optional[str] = None,
     inference_size: Tuple[int, int] = (256, 256),
     allow_fake: bool = True,
-) -> DepthEstimator | FakeDepthEstimator:
-    """工厂函数：优先创建真实 DepthEstimator，不可用时回退到 FakeDepthEstimator。"""
+) -> DepthEstimator:
+    """工厂函数：创建 DepthEstimator，"""
     real = DepthEstimator(model_path=model_path, inference_size=inference_size)
     if real.is_available:
         return real
-    if allow_fake:
-        logger.warning("真实深度估计器不可用，回退到 FakeDepthEstimator")
-        return FakeDepthEstimator()
-    raise RuntimeError("深度估计器不可用，且不允许使用 fake 回退")
+    raise RuntimeError("深度估计器不可用")

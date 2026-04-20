@@ -306,8 +306,8 @@ class GamepadControlApp:
         # ly: 摇杆上推为负(Y轴向下)，取反使上推为前进
         # 修正：前进为正 vx，后退为负 vx
         vx = ly * self.config.max_linear_speed   # 前进/后退 (修正方向)
-        vy = (rt - lt) * self.config.max_linear_speed  # 左右平移
-        vz = lx * self.config.max_angular_speed   # 旋转
+        vy = (lt - rt) * self.config.max_linear_speed  # 左右平移
+        vz = - lx * self.config.max_angular_speed   # 旋转
         
         # 调试日志：当有任何输入时记录
         if abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vz) > 0.01:

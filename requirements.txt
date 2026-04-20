@@ -5,6 +5,7 @@ flask>=3.0.0
 flask-socketio>=5.3.0
 ultralytics>=8.3.0
 numpy>=1.24.0
+scipy>=1.10.0
 filterpy>=1.4.5
 ikpy>=3.4.2
 
@@ -17,3 +18,10 @@ websockets>=12.0
 
 # 火山引擎LLM依赖
 volcengine-python-sdk
+
+# SLAM + AprilTag 融合定位
+pupil-apriltags
+# breezyslam 需从源码安装: pip install git+https://github.com/simondlevy/BreezySLAM.git#subdirectory=python
+
+# Viser 3D 可视化 (SLAM RViz 替代)
+viser>=0.2.0
