@@ -27,7 +27,7 @@ class CameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM23"  # 与底盘共用串口
+    serial_port: str = "COM4"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -66,7 +66,7 @@ class ArmConfig:
 class ChassisConfig:
     """底盘配置 - 从机器人配置文件读取"""
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM23"
+    serial_port: str = "COM4"
     baudrate: int = 1000000
     
     # 舵机ID映射
@@ -97,6 +97,9 @@ class ZMQConfig:
     depth_pub_addr: str = "tcp://*:5561"        # 深度图 PUB 地址
     obstacle_pub_addr: str = "tcp://*:5562"     # 障碍物信息 PUB 地址
     odom_pub_addr: str = "tcp://*:5559"          # 里程计 PUB 地址
+    slam_pose_pub_addr: str = "tcp://*:5563"    # SLAM 位姿 PUB 地址
+    slam_map_pub_addr: str = "tcp://*:5564"     # SLAM 地图 PUB 地址
+    lidar_scan_pub_addr: str = "tcp://*:5565"   # 激光雷达扫描数据 PUB 地址
     speech_service_addr: str = "tcp://*:5570"   # 语音服务地址（备用）
     wakeup_pub_addr: str = "tcp://*:5571"       # 唤醒+ASR PUB地址
 
@@ -255,6 +258,56 @@ class VisionConfig:
 
 
 @dataclass
+class SLAMConfig:
+    """SLAM 与视觉定位配置"""
+    # 雷达配置
+    lidar_port: str = "COM5"                     # Windows COM 端口
+    lidar_scan_size: int = 360                   # 扫描分辨率（点数）
+    lidar_max_distance_m: float = 12.0           # 最大检测距离
+    
+    # 地图配置
+    map_size_pixels: int = 800                   # 栅格地图像素尺寸
+    map_size_meters: float = 20.0                # 地图物理尺寸（米）
+    
+    # AprilTag 配置
+    tag_family: str = "tag36h11"
+    tag_size_m: float = 0.165                    # 标签边长（米）
+    tag_map: dict = field(default_factory=lambda: {
+        # 示例：标签ID → 世界位姿 (x_m, y_m, theta_rad)
+        # 0: (1.0, 0.0, 0.0),
+        # 1: (3.0, 2.0, 1.5708),
+    })
+    
+    # 相机内参（需根据实际标定结果替换）
+    camera_fx: float = 600.0
+    camera_fy: float = 600.0
+    camera_cx: float = 320.0
+    camera_cy: float = 240.0
+    
+    # 融合参数
+    confidence_threshold: float = 0.8            # 硬校正触发阈值
+    odom_consistency_threshold: float = 9.21     # 里程计一致性卡方阈值
+
+
+@dataclass
+class ViserConfig:
+    """Viser SLAM 可视化配置"""
+    host: str = "0.0.0.0"
+    port: int = 8080
+    # 订阅地址
+    odom_sub_addr: str = "tcp://localhost:5559"
+    slam_pose_sub_addr: str = "tcp://localhost:5563"
+    slam_map_sub_addr: str = "tcp://localhost:5564"
+    lidar_scan_sub_addr: str = "tcp://localhost:5565"
+    vision_sub_addr: str = "tcp://localhost:5560"
+    # 可视化参数
+    max_trajectory_points: int = 5000   # 最大轨迹点数
+    point_size: float = 0.03            # 激光点大小
+    map_update_interval: float = 2.0    # 地图更新间隔（秒）
+    follow_robot: bool = True           # 默认跟随机器人
+
+
+@dataclass
 class GamepadConfig:
     """游戏手柄控制配置 - 同时控制底盘和机械臂"""
     
@@ -353,6 +406,8 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     gamepad: GamepadConfig = field(default_factory=GamepadConfig)
+    slam: SLAMConfig = field(default_factory=SLAMConfig)
+    viser: ViserConfig = field(default_factory=ViserConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""

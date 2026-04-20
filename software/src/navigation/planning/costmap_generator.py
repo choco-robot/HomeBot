@@ -73,26 +73,13 @@ class LocalCostmapGenerator:
         )
 
         for obs in obstacles:
-            # 障碍物坐标系：x=右，y=下（相机坐标系）
-            # 转换为世界坐标系：x=右，y=上
-            # 在栅格地图中，y=下，所以 world_y = -obs.z（前方为正，地图下方为正？）
-            # 等等，需要明确相机坐标系定义：
-            # obstacle_detector 中：
-            # x_m = (px - cx) * z_m / fx  -> 水平右正
-            # y_m = (py - cy) * z_m / fy  -> 垂直下正（因为图像 y 向下）
-            # z_m = 深度，正前方
-            #
-            # 在局部地图中，我们通常使用：
-            # 机器人前方为 Y+，右侧为 X+
-            # 栅格地图中 Y 向下，所以前方（Y+）对应栅格向下
-            # 因此：
-            # world_x = obs.x
-            # world_y = obs.z  （深度即前方距离）
-            #
-            # 但 obstacle_detector 的 y 是垂直高度，不是深度方向。
-            # 对于 2D 局部地图，我们只关心地面投影 (x, z)。
-            wx = obs.x
-            wy = obs.z
+            # 障碍物坐标系（相机坐标系）：x=右，y=下，z=前
+            # 统一为底盘坐标系（机器人坐标系）：x=前，y=左
+            # 对于 2D 局部地图，我们只关心地面投影：
+            #   world_x = obs.z   （深度即前方距离）
+            #   world_y = -obs.x  （右侧取负即为左侧）
+            wx = obs.z
+            wy = -obs.x
 
             # 绘制圆形障碍物
             grid.set_circle_world(wx, wy, max(obs.width, obs.height) / 2, COST_LETHAL)

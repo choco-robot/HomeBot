@@ -68,7 +68,6 @@ class DepthService:
         self._estimator = create_depth_estimator(
             model_path=model_path,
             inference_size=inference_size,
-            allow_fake=True,
         )
         logger.info(f"深度估计器类型: {type(self._estimator).__name__}")
 
@@ -134,10 +133,10 @@ class DepthService:
                     logger.warning("深度估计返回空，跳过此帧")
                     continue
 
-                # 3. 障碍物检测
-                obstacles = []
+                # 3. 障碍物检测 → 简化为距离直方图
+                histogram = np.array([], dtype=np.float32)
                 if self._enable_obstacle and self._detector is not None:
-                    obstacles = self._detector.detect(depth, frame)
+                    histogram = self._detector.detect_histogram(depth)
 
                 # 4. 发布深度图（伪彩色 JPEG）
                 depth_color = self._estimator.colorize(depth)
@@ -148,13 +147,17 @@ class DepthService:
                         jpeg.tobytes(),
                     ])
 
-                # 5. 发布障碍物信息
+                # 5. 发布距离直方图（一维数组，单位：米，inf=无障碍）
                 if self._enable_obstacle:
-                    obs_dicts = [self._obstacle_to_dict(o) for o in obstacles]
+                    # 将 inf 替换为 None 以便 JSON 序列化
+                    hist_list = [
+                        float(v) if not np.isinf(v) else None
+                        for v in histogram.tolist()
+                    ]
                     self._obstacle_pub.send_multipart([
                         str(frame_id).encode(),
                         json.dumps({
-                            "obstacles": obs_dicts,
+                            "histogram": hist_list,
                             "inference_ms": float(round(t_inf, 2)),
                             "estimator_type": type(self._estimator).__name__,
                         }, ensure_ascii=False).encode("utf-8"),

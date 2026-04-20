@@ -118,8 +118,8 @@ class ChassisDriver:
 
         # 限制速度范围
         vx = max(-self.config.max_linear_speed, min(self.config.max_linear_speed, vx))
-        vy = max(-self.config.max_linear_speed, min(self.config.max_linear_speed, vy))
-        omega = max(-self.config.max_angular_speed, min(self.config.max_angular_speed, omega))
+        vy = - max(-self.config.max_linear_speed, min(self.config.max_linear_speed, vy))
+        omega = - max(-self.config.max_angular_speed, min(self.config.max_angular_speed, omega))
 
         # 保存当前速度
         self._current_vx = vx
