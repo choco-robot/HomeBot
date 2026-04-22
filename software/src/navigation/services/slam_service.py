@@ -52,7 +52,7 @@ class SLAMService:
         lidar_port: Optional[str] = None,
         scan_size: int = 360,
         map_size_pixels: int = 800,
-        map_size_meters: float = 20.0,
+        map_size_meters: float = 10.0,
         tag_map: Optional[dict] = None,
         camera_matrix: Optional[np.ndarray] = None,
         tag_size_m: float = 0.165,

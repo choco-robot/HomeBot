@@ -182,7 +182,7 @@ class ViserSLAMVisualizer:
         self._handles["/map"] = s.add_frame("/map", show_axes=True, axes_length=0.3, axes_radius=0.02)
 
         # 地面网格
-        s.add_grid("/map/ground_grid", width=20, height=20, cell_size=1.0)
+        s.add_grid("/map/ground_grid", width=10, height=10, cell_size=1.0)
 
         # 里程计坐标系
         self._handles["/map/odom_frame"] = s.add_frame(
@@ -209,7 +209,7 @@ class ViserSLAMVisualizer:
             radius=0.03,
             height=0.20,
             position=(0.10, 0.0, 0.05),
-            wxyz=yaw_to_wxyz(math.pi / 2),
+            wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
             color=(255, 200, 50),
         )
         # 箭头尖端
@@ -218,15 +218,22 @@ class ViserSLAMVisualizer:
             radius=0.06,
             height=0.08,
             position=(0.22, 0.0, 0.05),
-            wxyz=yaw_to_wxyz(math.pi / 2),
+            wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
             color=(255, 200, 50),
+        )
+
+        # 位姿文字标签（显示在机器人上方）
+        self._handles["/map/base_link/pose_label"] = s.add_label(
+            "/map/base_link/pose_label",
+            text="x: 0.00, y: 0.00, θ: 0°",
+            position=(0.0, 0.0, 0.35),
         )
 
         # 激光雷达坐标系（相对于 base_link）
         self._handles["/map/base_link/laser"] = s.add_frame(
             "/map/base_link/laser", show_axes=True, axes_length=0.15, axes_radius=0.01
         )
-        self._handles["/map/base_link/laser"].position = np.array([0.15, 0.0, 0.10])
+        self._handles["/map/base_link/laser"].position = np.array([0.0, 0.0, 0.10])
 
         # 摄像头坐标系
         self._handles["/map/base_link/camera"] = s.add_frame(
@@ -440,6 +447,13 @@ class ViserSLAMVisualizer:
             h.position = np.array([x, y, 0.0])
             h.wxyz = yaw_to_wxyz(theta)
 
+        # 更新位姿文字标签（跟随机器人，显示在上方）
+        label = self._handles.get("/map/base_link/pose_label")
+        if label is not None:
+            theta_deg = math.degrees(theta)
+            label.text = f"x: {x:.2f}, y: {y:.2f}, θ: {theta_deg:.1f}°"
+            label.position = np.array([x, y, 0.35])
+
         # 跟随机器人模式：更新相机 look_at
         if self._gui_follow_robot.value:
             for client in self._server.get_clients().values():
@@ -601,33 +615,31 @@ class ViserSLAMVisualizer:
         self._draw_trajectory("/map/odom_trajectory", self._odom_traj, COLOR_YELLOW)
 
     def _draw_trajectory(self, name: str, traj: Deque[Tuple[float, float]], color: np.ndarray) -> None:
-        """绘制轨迹线段。"""
+        """使用点云绘制轨迹。"""
         pts = np.array(list(traj), dtype=np.float32)
         if len(pts) < 2:
             return
 
-        # Line segments: (N, 2, 3)
-        n = len(pts) - 1
-        lines = np.zeros((n, 2, 3), dtype=np.float32)
-        lines[:, 0, :2] = pts[:-1]
-        lines[:, 1, :2] = pts[1:]
-        lines[:, :, 2] = 0.05  # 略高于地面，避免被遮挡
+        # 点云: (N, 3)
+        points = np.zeros((len(pts), 3), dtype=np.float32)
+        points[:, :2] = pts
+        points[:, 2] = 0.05  # 略高于地面，避免被遮挡
 
-        # 颜色: (N, 2, 3) — 每段两个端点同颜色
-        colors = np.zeros((n, 2, 3), dtype=np.uint8)
-        colors[:, :, :] = color
+        # 颜色: (N, 3) — 每个点一个颜色
+        colors = np.zeros((len(pts), 3), dtype=np.uint8)
+        colors[:, :] = color
 
         # 使用 handle 直接更新，避免频繁 remove/recreate
         h = self._handles.get(name)
         if h is not None and hasattr(h, "points"):
-            h.points = lines
+            h.points = points
             h.colors = colors
         else:
-            self._handles[name] = self._server.scene.add_line_segments(
+            self._handles[name] = self._server.scene.add_point_cloud(
                 name,
-                points=lines,
+                points=points,
                 colors=colors,
-                line_width=5.0,
+                point_size=self._point_size,
             )
 
     def _update_status_panel(self, slam_pose: dict, odom: Optional[dict]) -> None:

@@ -41,6 +41,9 @@ except Exception as _e:
             self.port = port_handler
             self._sim_positions = {}
 
+        def ping(self, scs_id):
+            return 0, COMM_SUCCESS, 0
+
         def WritePosEx(self, scs_id, position, speed, acc):
             self._sim_positions[scs_id] = position
             return COMM_SUCCESS, 0
@@ -67,6 +70,15 @@ except Exception as _e:
             return COMM_SUCCESS, 0
 
         def RegAction(self):
+            return COMM_SUCCESS, 0
+
+        def SyncReadPos(self, scs_ids):
+            return {sid: self._sim_positions.get(sid, 2048) for sid in scs_ids}
+
+        def SyncWritePosEx(self, positions):
+            return COMM_SUCCESS
+
+        def write1ByteTxRx(self, scs_id, address, value):
             return COMM_SUCCESS, 0
 
         def torque_enable(self, scs_id=-1):

@@ -81,9 +81,9 @@ class ChassisConfig:
     baudrate: int = 1000000
     
     # 舵机ID映射
-    left_front_id: int = 9
-    right_front_id: int = 8
-    rear_id: int = 7
+    left_front_id: int = 8
+    right_front_id: int = 7
+    rear_id: int = 9
     
     # 物理参数
     wheel_radius: float = 0.08      # 轮子半径 (m)
@@ -302,7 +302,7 @@ class SLAMConfig:
     
     # 地图配置
     map_size_pixels: int = 800                   # 栅格地图像素尺寸
-    map_size_meters: float = 20.0                # 地图物理尺寸（米）
+    map_size_meters: float = 10.0                # 地图物理尺寸（米）
     
     # AprilTag 配置
     tag_family: str = "tag36h11"
