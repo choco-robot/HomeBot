@@ -382,7 +382,7 @@ class SLAMFusion:
         Returns:
             (x_m, y_m, theta_rad, P_3x3)
         """
-        return self.x, self.y, self.theta, self.P.copy()
+        return -self.x, self.y, -self.theta, self.P.copy()
 
     def get_map_bytes(self) -> bytearray:
         """获取当前栅格地图字节数组。"""
