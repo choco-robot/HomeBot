@@ -5,11 +5,15 @@ Xbox手柄驱动模块
 - 按键状态读取
 - 摇杆数据读取（含死区处理）
 - 扳机键读取
-- 震动控制
+- 震动控制反馈
 - 事件回调机制
 
+跨平台支持:
+- Windows: 使用 XInput API（原生，性能最佳）
+- macOS / Linux: 使用 pygame joystick（需安装 pygame）
+
 使用方法:
-    >>> from xbox_driver import XboxController, Button
+    >>> from hal.gamepad import XboxController, Button
     >>> 
     >>> controller = XboxController(0)  # 使用第一个手柄
     >>> state = controller.get_state()
@@ -24,12 +28,8 @@ Xbox手柄驱动模块
 import sys
 
 # 根据平台选择后端
-# - Windows: 原生 XInput API，性能最佳
-# - Linux: 原生 /dev/input/js* 接口，无需额外 Python 依赖
-# - macOS / 其他: pygame 作为跨平台回退
 if sys.platform == "win32":
     from .xinput_core import (
-        XInputDriver,
         XInputDriver as XboxController,
         ControllerState,
         StickState,
@@ -41,26 +41,7 @@ if sys.platform == "win32":
         XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
         XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
     )
-elif sys.platform.startswith("linux"):
-    from .xinput_core import (
-        XInputDriver,
-    )
-    from .linux_js_backend import (
-        LinuxJsDriver as XboxController,
-        ControllerState,
-        StickState,
-        ButtonFlags as Button,
-        get_connected_controllers,
-        wait_for_connection,
-        XINPUT_MAX_CONTROLLERS,
-        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
-        XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
-    )
 else:
-    from .xinput_core import (
-        XInputDriver,
-    )
     from .pygame_backend import (
         PygameDriver as XboxController,
         ControllerState,
@@ -76,20 +57,12 @@ else:
 
 __version__ = "1.1.0"
 __all__ = [
-    # 核心类
-    "XInputDriver",
     "XboxController",
     "ControllerState",
     "StickState",
-
-    # 按键枚举
     "Button",
-
-    # 便捷函数
     "get_connected_controllers",
     "wait_for_connection",
-
-    # 常量
     "XINPUT_MAX_CONTROLLERS",
     "XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE",
     "XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE",

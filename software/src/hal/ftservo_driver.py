@@ -278,6 +278,58 @@ class FTServoBus:
         positions = self.packet_handler.SyncReadPos(servo_ids)
         return positions
 
+    def read_speed(self, servo_id: int) -> Optional[int]:
+        """读取舵机当前速度（有符号整数）"""
+        if not self._connected:
+            return None
+
+        if self._simulation:
+            return 0
+
+        speed, comm_result, error = self.packet_handler.ReadSpeed(servo_id)
+        if comm_result != COMM_SUCCESS:
+            return None
+        return speed
+
+    def sync_read_speeds(self, servo_ids: List[int]) -> Dict[int, Optional[int]]:
+        """同步读取多个舵机速度（有符号整数）"""
+        if not self._connected:
+            return {sid: None for sid in servo_ids}
+
+        if self._simulation:
+            return {sid: 0 for sid in servo_ids}
+
+        from .scservo_sdk import GroupSyncRead, SMS_STS_PRESENT_SPEED_L
+        group_sync_read = GroupSyncRead(self.packet_handler, SMS_STS_PRESENT_SPEED_L, 2)
+        speeds = {}
+
+        for sid in servo_ids:
+            group_sync_read.addParam(sid)
+
+        comm_result = group_sync_read.txRxPacket()
+        if comm_result != COMM_SUCCESS:
+            return {sid: None for sid in servo_ids}
+
+        for sid in servo_ids:
+            data_result, error = group_sync_read.isAvailable(sid, SMS_STS_PRESENT_SPEED_L, 2)
+            if data_result:
+                raw_speed = group_sync_read.getData(sid, SMS_STS_PRESENT_SPEED_L, 2)
+                # scs_tohost 已经在 getData 的底层调用中处理了吗？
+                # 注意：getData 返回的是原始 makeword 值，没有调用 scs_tohost
+                # 需要手动转换有符号值
+                speeds[sid] = self._to_signed_speed(raw_speed)
+            else:
+                speeds[sid] = None
+
+        return speeds
+
+    @staticmethod
+    def _to_signed_speed(raw_speed: int) -> int:
+        """将原始16位速度值转换为有符号整数（SDK scs_tohost 逻辑）"""
+        if raw_speed & (1 << 15):
+            return -(raw_speed & ~(1 << 15))
+        return raw_speed
+
     def set_wheel_mode(self, servo_id: int) -> bool:
         """设置舵机为轮式模式（连续旋转）"""
         if not self._connected:
@@ -293,7 +345,7 @@ class FTServoBus:
             return False
         return True
 
-    def write_speed(self, servo_id: int, speed: int, acc: int = 50) -> bool:
+    def write_speed(self, servo_id: int, speed: int, acc: int = 50, quiet: bool = False) -> bool:
         """
         设置舵机速度（轮式模式下）
 
@@ -301,6 +353,7 @@ class FTServoBus:
             servo_id: 舵机ID
             speed: 速度值，范围 -32767 ~ 32767
             acc: 加速度
+            quiet: 为 True 时不打印错误日志（用于关闭流程）
         """
         if not self._connected:
             return False
@@ -314,7 +367,8 @@ class FTServoBus:
         comm_result, error = self.packet_handler.WriteSpec(servo_id, speed, acc)
 
         if comm_result != COMM_SUCCESS:
-            print(f"[FTServo] Write speed failed for ID {servo_id}")
+            if not quiet:
+                print(f"[FTServo] Write speed failed for ID {servo_id}")
             return False
         return True
 

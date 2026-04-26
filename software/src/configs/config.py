@@ -38,7 +38,7 @@ class WebCameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM9"  # 与底盘共用串口
+    serial_port: str = "/usr/local/dev/servobus"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -80,29 +80,26 @@ class ChassisConfig:
     chassis_type: str = "diff"
     
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM9"
+    serial_port: str = "/usr/local/dev/servobus"
     baudrate: int = 1000000
     
-    # 三轮全向轮参数（chassis_type="omni" 时有效）
-    left_front_id: int = 8
-    right_front_id: int = 7
+    # 舵机ID映射
+    left_front_id: int = 7
+    right_front_id: int = 8
     rear_id: int = 9
-    wheel_radius: float = 0.08      # 轮子半径 (m)
-    chassis_radius: float = 0.18     # 底盘半径 (m)
-    default_wheel_speed: int = 3250  # 舵机最大速度
     
-    # 双轮差动参数（chassis_type="diff" 时有效）
-    wheel_track: float = 0.45        # 左右轮中心距 (m)
-    wheel_diameter: float = 0.125    # 轮直径 (m)
-    max_rpm: float = 120.0           # 电机最大转速
-    diff_chassis_id: int = 0x24      # 底盘虚拟设备ID
-    diff_motor_left_id: int = 0x21   # 左电机ID
-    diff_motor_right_id: int = 0x22  # 右电机ID
-    diff_imu_id: int = 0x23          # IMU虚拟设备ID
+    # 物理参数
+    wheel_radius: float = 0.04      # 轮子半径 (m)
+    chassis_radius: float = 0.14     # 底盘半径 (m)
     
     # 运动限制
-    max_linear_speed: float = 0.5    # 最大线速度 (m/s)
+    max_linear_speed: float = 0.4    # 最大线速度 (m/s)，已根据舵机满速 47.45 RPM 校准
     max_angular_speed: float = 1.0   # 最大角速度 (rad/s)
+    default_wheel_speed: int = 3250  # 舵机最大速度读数（与 servo_speed_scale 一致）
+    
+    # 舵机速度物理参数（已根据数据手册确认：1单位 = 0.0146 RPM）
+    servo_speed_scale: int = 3250    # 舵机速度满量程读数（100%输出 = 3250）
+    servo_max_rpm: float = 47.45     # 3250读数对应的实际转速 RPM（3250 * 0.0146）
     
     # ZeroMQ地址
     service_addr: str = "tcp://*:5556"
@@ -309,9 +306,10 @@ class VisionConfig:
 class SLAMConfig:
     """SLAM 与视觉定位配置"""
     # 雷达配置
-    lidar_port: str = "COM5"                     # Windows COM 端口
+    lidar_port: str = "/usr/local/dev/lidar"                     # 激光雷达串口
     lidar_scan_size: int = 360                   # 扫描分辨率（点数）
     lidar_max_distance_m: float = 12.0           # 最大检测距离
+    lidar_min_distance_m: float = 0.2            # 最小检测距离（过滤机器人本体结构，20cm）
     
     # 地图配置
     map_size_pixels: int = 800                   # 栅格地图像素尺寸
@@ -335,6 +333,9 @@ class SLAMConfig:
     # 融合参数
     confidence_threshold: float = 0.8            # 硬校正触发阈值
     odom_consistency_threshold: float = 9.21     # 里程计一致性卡方阈值
+    
+    # 地图持久化
+    map_save_dir: str = "maps"                   # 默认地图保存目录
 
 
 @dataclass

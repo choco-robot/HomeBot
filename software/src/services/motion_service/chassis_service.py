@@ -5,7 +5,7 @@
 import os
 import sys
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 from threading import Lock
 
@@ -72,6 +72,12 @@ class RealChassisController:
             return False
         
         return self.driver.set_velocity(vx, vy, vz)
+    
+    def get_actual_velocity(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """读取轮子实际转速并计算机器人实际速度"""
+        if not self._initialized:
+            return (None, None, None)
+        return self.driver.get_actual_velocity()
     
     def stop(self) -> None:
         """停止底盘运动"""
@@ -232,7 +238,7 @@ class ChassisService:
             print(f"[CHASSIS_SVC] [WARNING] 电池电量严重不足！请立即充电！")
     
     def _publish_chassis_state(self, force: bool = False) -> None:
-        """发布底盘状态（速度、控制源）供 OdomService 订阅"""
+        """发布底盘状态（命令速度、实际轮速、控制源）供 OdomService 订阅"""
         current_time = time.time()
         if not force and (current_time - self._last_state_publish_time) < self.STATE_PUBLISH_INTERVAL:
             return
@@ -248,24 +254,12 @@ class ChassisService:
                 "emergency_locked": self._emergency_locked,
             }
             
-            # 如果底盘支持直接读取里程计（如 DiffChassisDriver），加入状态中
-            # 优先使用底盘编码器里程计，避免上位机积分的累积误差
-            if hasattr(self.chassis.driver, 'read_odometry'):
-                try:
-                    odom = self.chassis.driver.read_odometry()
-                    if odom is not None:
-                        state["odom"] = {
-                            "x": float(odom.get("x", 0.0)),
-                            "y": float(odom.get("y", 0.0)),
-                            "yaw": float(odom.get("theta", 0.0)),
-                            "source": "chassis_encoder",
-                        }
-                        # 同时发布底盘反馈的实际速度（比命令速度更准确）
-                        state["vx_feedback"] = float(odom.get("vx", self._last_vx))
-                        state["vz_feedback"] = float(odom.get("vz", self._last_vz))
-                except Exception as e:
-                    # 读取失败时不阻断状态发布
-                    pass
+            # 读取实际轮速并加入状态
+            actual_vx, actual_vy, actual_vz = self.chassis.get_actual_velocity()
+            if actual_vx is not None:
+                state["actual_vx"] = float(round(actual_vx, 4))
+                state["actual_vy"] = float(round(actual_vy, 4))
+                state["actual_vz"] = float(round(actual_vz, 4))
             
             try:
                 self._state_pub_socket.send_json(state, flags=zmq.NOBLOCK)
@@ -474,7 +468,7 @@ class ChassisService:
         if not getattr(self, '_stopped', False):
             self._stopped = True
             self._running = False
-            self.chassis.stop()
+            # close() 内部已包含 stop() 逻辑，避免重复写入舵机速度
             self.chassis.close()
             if self._rep_socket:
                 self._rep_socket.close()

@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """OdomService - 轮式里程计服务
 
-订阅 ChassisService 发布的底盘状态（速度指令），
+订阅 ChassisService 发布的底盘状态（速度指令 + 实际轮速），
 通过积分推算机器人位姿 (x, y, yaw)，并通过 ZeroMQ PUB 发布。
 
-注意：当前使用底盘命令速度进行积分（开环里程计），
-未来接入编码器反馈或 IMU 后可提升精度。
+优先使用实际轮速计算的速度（actual_vx/vy/vz）进行积分；
+若实际轮速读取失败，则回退到命令速度（vx/vy/vz）。
+
+注意：舵机速度到物理速度的转换参数已根据数据手册确认（3250 = 47.45 RPM）。
 """
 from __future__ import annotations
 
@@ -103,9 +105,17 @@ class OdomService:
                 now = time.time()
 
                 if state is not None:
-                    vx = state.get("vx", 0.0)
-                    vy = state.get("vy", 0.0)
-                    vz = state.get("vz", 0.0)
+                    # 优先使用实际轮速计算的速度，否则回退到命令速度
+                    if "actual_vx" in state and "actual_vy" in state and "actual_vz" in state:
+                        vx = float(state["actual_vx"])
+                        vy = float(state["actual_vy"])
+                        vz = float(state["actual_vz"])
+                        using_actual = True
+                    else:
+                        vx = float(state.get("vx", 0.0))
+                        vy = float(state.get("vy", 0.0))
+                        vz = float(state.get("vz", 0.0))
+                        using_actual = False
 
                     # 2. 优先使用底盘直接发布的编码器里程计（如 DiffChassisDriver）
                     chassis_odom = state.get("odom")
