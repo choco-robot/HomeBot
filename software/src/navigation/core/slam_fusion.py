@@ -494,6 +494,21 @@ class SLAMFusion:
         self._last_odom_xyt = (x, y, theta)
         self._last_odom_time = ts
 
+    def reset_pose(self, x: float, y: float, theta: float) -> None:
+        """重置 SLAM 融合位姿（硬校正）。"""
+        self.x = x
+        self.y = y
+        self.theta = theta
+        self.P = np.diag([0.01, 0.01, 0.001])
+        self._slam_fail_count = 0
+        self.state = "NORMAL"
+        # 同步重置 BreezySLAM 内部位姿
+        x_mm = x * 1000.0 + self._map_center_mm
+        y_mm = y * 1000.0 + self._map_center_mm
+        theta_deg = math.degrees(theta)
+        self.slam.setpos(x_mm, y_mm, theta_deg)
+        logger.info(f"SLAM 位姿已重置: ({x:.3f}, {y:.3f}, {theta:.3f})")
+
 
 # ------------------------------------------------------------------------------
 # 工具函数

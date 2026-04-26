@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 DEFAULT_CHASSIS_STATE_ADDR = "tcp://localhost:5558"
 DEFAULT_ODOM_PUB_ADDR = "tcp://*:5559"
+DEFAULT_ODOM_CMD_ADDR = "tcp://*:5567"
 
 
 class OdomService:
@@ -37,10 +38,12 @@ class OdomService:
         self,
         chassis_state_addr: str = DEFAULT_CHASSIS_STATE_ADDR,
         odom_pub_addr: str = DEFAULT_ODOM_PUB_ADDR,
+        odom_cmd_addr: str = DEFAULT_ODOM_CMD_ADDR,
         publish_rate: float = 50.0,
     ):
         self.chassis_state_addr = chassis_state_addr
         self.odom_pub_addr = odom_pub_addr
+        self.odom_cmd_addr = odom_cmd_addr
         self.publish_interval = 1.0 / publish_rate if publish_rate > 0 else 0.02
 
         # SUB socket 订阅底盘状态
@@ -53,6 +56,10 @@ class OdomService:
         # PUB socket 发布里程计
         self._pub_socket = create_socket(zmq.PUB, bind=True, address=self.odom_pub_addr)
         logger.info(f"OdomService PUB odom={self.odom_pub_addr}")
+
+        # REP socket 接收命令（重置位姿等）
+        self._cmd_socket = create_socket(zmq.REP, bind=True, address=self.odom_cmd_addr)
+        logger.info(f"OdomService REP cmd={self.odom_cmd_addr}")
 
         # 位姿状态（世界坐标系）
         self.x = 0.0
@@ -77,9 +84,19 @@ class OdomService:
         self._running = True
         logger.info(f"OdomService 已启动，发布频率={1/self.publish_interval:.0f} Hz")
 
+        # Poller 同时监听 SUB 和 REP
+        poller = zmq.Poller()
+        poller.register(self._sub_socket, zmq.POLLIN)
+        poller.register(self._cmd_socket, zmq.POLLIN)
+
         try:
             while self._running:
                 t0 = time.perf_counter()
+
+                # 0. 处理命令请求（非阻塞）
+                socks = dict(poller.poll(0))
+                if self._cmd_socket in socks:
+                    self._handle_command()
 
                 # 1. 接收最新底盘状态
                 state = self._recv_state()
@@ -199,6 +216,28 @@ class OdomService:
         self._last_time = None
         logger.info(f"里程计已重置: ({x}, {y}, {yaw})")
 
+    def _handle_command(self) -> None:
+        """处理 REP 命令请求。"""
+        try:
+            req = self._cmd_socket.recv_json(flags=zmq.NOBLOCK)
+            cmd = req.get("cmd", "")
+            if cmd == "reset_pose":
+                x = req.get("x", 0.0)
+                y = req.get("y", 0.0)
+                yaw = req.get("yaw", 0.0)
+                self.reset_pose(x, y, yaw)
+                self._cmd_socket.send_json({"success": True, "message": f"已重置为 ({x}, {y}, {yaw})"})
+            else:
+                self._cmd_socket.send_json({"success": False, "message": f"未知命令: {cmd}"})
+        except zmq.Again:
+            pass
+        except Exception as e:
+            logger.warning(f"处理命令失败: {e}")
+            try:
+                self._cmd_socket.send_json({"success": False, "message": str(e)})
+            except Exception:
+                pass
+
     def stop(self) -> None:
         """停止服务并释放资源。"""
         self._running = False
@@ -206,6 +245,8 @@ class OdomService:
             self._sub_socket.close()
         if self._pub_socket:
             self._pub_socket.close()
+        if self._cmd_socket:
+            self._cmd_socket.close()
         logger.info("OdomService 已停止")
 
 
@@ -214,12 +255,14 @@ def main():
     parser = argparse.ArgumentParser(description="HomeBot 轮式里程计服务")
     parser.add_argument("--chassis-state", default=DEFAULT_CHASSIS_STATE_ADDR, help="底盘状态 SUB 地址")
     parser.add_argument("--odom-pub", default=DEFAULT_ODOM_PUB_ADDR, help="里程计 PUB 地址")
+    parser.add_argument("--odom-cmd", default=DEFAULT_ODOM_CMD_ADDR, help="里程计命令 REP 地址")
     parser.add_argument("--rate", type=float, default=50.0, help="发布频率 Hz")
     args = parser.parse_args()
 
     service = OdomService(
         chassis_state_addr=args.chassis_state,
         odom_pub_addr=args.odom_pub,
+        odom_cmd_addr=args.odom_cmd,
         publish_rate=args.rate,
     )
     service.start()

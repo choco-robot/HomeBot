@@ -31,6 +31,7 @@ DEFAULT_ODOM_ADDR = "tcp://localhost:5559"
 DEFAULT_SLAM_POSE_ADDR = "tcp://*:5563"
 DEFAULT_SLAM_MAP_ADDR = "tcp://*:5564"
 DEFAULT_LIDAR_SCAN_ADDR = "tcp://*:5565"
+DEFAULT_SLAM_CMD_ADDR = "tcp://*:5568"
 
 
 class SLAMService:
@@ -49,6 +50,7 @@ class SLAMService:
         pose_pub_addr: str = DEFAULT_SLAM_POSE_ADDR,
         map_pub_addr: str = DEFAULT_SLAM_MAP_ADDR,
         lidar_scan_pub_addr: str = DEFAULT_LIDAR_SCAN_ADDR,
+        slam_cmd_addr: str = DEFAULT_SLAM_CMD_ADDR,
         lidar_port: Optional[str] = None,
         scan_size: int = 360,
         map_size_pixels: int = 800,
@@ -65,6 +67,7 @@ class SLAMService:
         self.pose_pub_addr = pose_pub_addr
         self.map_pub_addr = map_pub_addr
         self.lidar_scan_pub_addr = lidar_scan_pub_addr
+        self.slam_cmd_addr = slam_cmd_addr
         self.publish_interval = 1.0 / publish_rate_hz
 
         # ------------------------------------------------------------------
@@ -95,6 +98,10 @@ class SLAMService:
         # 激光雷达扫描数据发布（供可视化器订阅）
         self._lidar_scan_pub = create_socket(zmq.PUB, bind=True, address=self.lidar_scan_pub_addr)
         logger.info(f"SLAMService LidarScan PUB: {self.lidar_scan_pub_addr}")
+
+        # REP socket 接收命令（重置位姿等）
+        self._cmd_socket = create_socket(zmq.REP, bind=True, address=self.slam_cmd_addr)
+        logger.info(f"SLAMService REP cmd: {self.slam_cmd_addr}")
 
         # ------------------------------------------------------------------
         # 雷达驱动
@@ -202,7 +209,10 @@ class SLAMService:
                     self._publish_map()
                     self._last_map_pub_time = now
 
-                # 7. 统计与帧率控制
+                # 7. 处理命令请求（非阻塞轮询）
+                self._handle_command()
+
+                # 8. 统计与帧率控制
                 self._update_stats()
                 elapsed = time.perf_counter() - t0
                 rem = self.publish_interval - elapsed
@@ -218,6 +228,28 @@ class SLAMService:
         finally:
             self.stop()
 
+    def _handle_command(self) -> None:
+        """处理 REP 命令请求（非阻塞）。"""
+        try:
+            req = self._cmd_socket.recv_json(flags=zmq.NOBLOCK)
+            cmd = req.get("cmd", "")
+            if cmd == "reset_pose":
+                x = req.get("x", 0.0)
+                y = req.get("y", 0.0)
+                theta = req.get("theta", 0.0)
+                self._fusion.reset_pose(x, y, theta)
+                self._cmd_socket.send_json({"success": True, "message": f"SLAM 已重置为 ({x}, {y}, {theta})"})
+            else:
+                self._cmd_socket.send_json({"success": False, "message": f"未知命令: {cmd}"})
+        except zmq.Again:
+            pass
+        except Exception as e:
+            logger.warning(f"处理命令失败: {e}")
+            try:
+                self._cmd_socket.send_json({"success": False, "message": str(e)})
+            except Exception:
+                pass
+
     def stop(self) -> None:
         """停止服务。"""
         self._running = False
@@ -226,7 +258,7 @@ class SLAMService:
         for t in (self._vision_thread, self._odom_thread):
             if t:
                 t.join(timeout=1.0)
-        for sock in (self._vision_sub, self._odom_sub, self._pose_pub, self._map_pub, self._lidar_scan_pub):
+        for sock in (self._vision_sub, self._odom_sub, self._pose_pub, self._map_pub, self._lidar_scan_pub, self._cmd_socket):
             if sock:
                 sock.close()
         logger.info("SLAMService 已停止")

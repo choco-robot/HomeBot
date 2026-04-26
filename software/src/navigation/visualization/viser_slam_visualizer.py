@@ -138,6 +138,9 @@ class ViserSLAMVisualizer:
         self._slam_map_addr = cfg.slam_map_sub_addr
         self._lidar_scan_addr = cfg.lidar_scan_sub_addr
         self._vision_addr = cfg.vision_sub_addr
+        self._goal_pub_addr = cfg.goal_pub_addr
+        self._odom_cmd_addr = cfg.odom_cmd_addr
+        self._slam_cmd_addr = cfg.slam_cmd_addr
 
         self._max_traj_points = cfg.max_trajectory_points
         self._point_size = cfg.point_size
@@ -156,6 +159,16 @@ class ViserSLAMVisualizer:
         self._vision_sub = ZMQMultipartImageSubscriber(self._vision_addr)
         self._map_sub = SLAMMapSubscriber(self._slam_map_addr)
 
+        # ZeroMQ 发布者/请求者（导航控制）
+        self._goal_pub = create_socket(zmq.PUB, bind=True, address=self._goal_pub_addr)
+        logger.info(f"Goal PUB: {self._goal_pub_addr}")
+        self._odom_cmd = create_socket(zmq.REQ, bind=False, address=self._odom_cmd_addr)
+        self._odom_cmd.setsockopt(zmq.RCVTIMEO, 1000)
+        logger.info(f"Odom CMD REQ: {self._odom_cmd_addr}")
+        self._slam_cmd = create_socket(zmq.REQ, bind=False, address=self._slam_cmd_addr)
+        self._slam_cmd.setsockopt(zmq.RCVTIMEO, 1000)
+        logger.info(f"SLAM CMD REQ: {self._slam_cmd_addr}")
+
         # 轨迹历史
         self._odom_traj: Deque[Tuple[float, float]] = deque(maxlen=self._max_traj_points)
         self._slam_traj: Deque[Tuple[float, float]] = deque(maxlen=self._max_traj_points)
@@ -165,12 +178,20 @@ class ViserSLAMVisualizer:
         self._last_map_update_time = 0.0
         self._last_lidar_time = 0.0
 
+        # 目标点状态
+        self._goal_x = 0.0
+        self._goal_y = 0.0
+        self._goal_theta = 0.0
+        self._goal_marker_visible = False
+
         # 场景节点 handle 缓存
         self._handles: dict[str, Any] = {}
 
         # 构建场景和 GUI
         self._setup_scene()
         self._setup_gui()
+        # 初始化默认目标点标记
+        self._update_goal_marker()
 
     # --------------------------------------------------------------------------
     # 场景初始化
@@ -207,17 +228,8 @@ class ViserSLAMVisualizer:
         s.add_cylinder(
             "/map/base_link/arrow_shaft",
             radius=0.03,
-            height=0.20,
+            height=0.30,
             position=(0.10, 0.0, 0.05),
-            wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
-            color=(255, 200, 50),
-        )
-        # 箭头尖端
-        s.add_cylinder(
-            "/map/base_link/arrow_tip",
-            radius=0.06,
-            height=0.08,
-            position=(0.22, 0.0, 0.05),
             wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
             color=(255, 200, 50),
         )
@@ -265,15 +277,15 @@ class ViserSLAMVisualizer:
 
         # 状态面板
         with g.add_folder("📊 机器人状态", expand_by_default=True):
-            self._gui_status_x = g.add_number("X (m)", 0.0, disabled=True)
-            self._gui_status_y = g.add_number("Y (m)", 0.0, disabled=True)
-            self._gui_status_theta = g.add_number("Theta (deg)", 0.0, disabled=True)
-            self._gui_status_vx = g.add_number("Vx (m/s)", 0.0, disabled=True)
-            self._gui_status_vz = g.add_number("Vz (rad/s)", 0.0, disabled=True)
+            self._gui_status_x = g.add_number("X (m)", 0.0, step=0.01, disabled=True)
+            self._gui_status_y = g.add_number("Y (m)", 0.0, step=0.01, disabled=True)
+            self._gui_status_theta = g.add_number("Theta (deg)", 0.0, step=0.01, disabled=True)
+            self._gui_status_vx = g.add_number("Vx (m/s)", 0.0, step=0.01, disabled=True)
+            self._gui_status_vz = g.add_number("Vz (rad/s)", 0.0, step=0.01, disabled=True)
             self._gui_status_state = g.add_text("SLAM 状态", "等待数据...")
 
         # 图层控制
-        with g.add_folder("🎨 图层控制", expand_by_default=True):
+        with g.add_folder("🎨 图层控制", expand_by_default=False):
             self._gui_show_map = g.add_checkbox("栅格地图", True)
             self._gui_show_lidar = g.add_checkbox("激光雷达", True)
             self._gui_show_odom_traj = g.add_checkbox("里程计轨迹", True)
@@ -282,11 +294,21 @@ class ViserSLAMVisualizer:
             self._gui_show_odom_frame = g.add_checkbox("里程计坐标系", False)
 
         # 视角控制
-        with g.add_folder("🎥 视角控制", expand_by_default=True):
+        with g.add_folder("🎥 视角控制", expand_by_default=False):
             self._gui_follow_robot = g.add_checkbox("跟随机器人", self._follow_robot)
             self._gui_top_view = g.add_button("🔝 顶视图")
             self._gui_reset_view = g.add_button("🔄 重置视角")
             self._gui_clear_traj = g.add_button("🗑️ 清除轨迹")
+
+        # 导航控制
+        with g.add_folder("🎯 导航控制", expand_by_default=True):
+            self._gui_goal_x = g.add_number("目标 X (m)", 0.0, step=0.1)
+            self._gui_goal_y = g.add_number("目标 Y (m)", 0.0, step=0.1)
+            self._gui_goal_theta = g.add_number("目标 Theta (deg)", 0.0, step=5.0)
+            self._gui_set_goal = g.add_button("📍 设置目标点")
+            self._gui_reset_odom = g.add_button("🔄 重置里程计")
+            self._gui_reset_slam = g.add_button("🔄 重置 SLAM 位姿")
+            self._gui_nav_status = g.add_text("操作状态", "就绪")
 
         # 数据流状态
         with g.add_folder("📡 数据流", expand_by_default=False):
@@ -300,6 +322,9 @@ class ViserSLAMVisualizer:
         self._gui_top_view.on_click(lambda _: self._set_top_view())
         self._gui_reset_view.on_click(lambda _: self._reset_view())
         self._gui_clear_traj.on_click(lambda _: self._clear_trajectories())
+        self._gui_set_goal.on_click(lambda _: self._on_set_goal())
+        self._gui_reset_odom.on_click(lambda _: self._on_reset_odom())
+        self._gui_reset_slam.on_click(lambda _: self._on_reset_slam())
 
         # 图层控制回调
         self._gui_show_map.on_update(lambda _: self._update_layer_visibility())
@@ -431,6 +456,12 @@ class ViserSLAMVisualizer:
         self._lidar_scan_sub.close()
         self._vision_sub.close()
         self._map_sub.close()
+        if self._goal_pub:
+            self._goal_pub.close()
+        if self._odom_cmd:
+            self._odom_cmd.close()
+        if self._slam_cmd:
+            self._slam_cmd.close()
         logger.info("ViserSLAMVisualizer 已停止")
 
     # --------------------------------------------------------------------------
@@ -526,7 +557,7 @@ class ViserSLAMVisualizer:
                 points=pts,
                 colors=colors,
                 point_size=self._point_size,
-                wxyz=tf.SO3.from_x_radians(math.pi).wxyz,  # 激光雷达坐标系绕 x 轴旋转 180°
+                wxyz=tf.SO3.from_z_radians(math.pi).wxyz,  # 点云绕 z 轴旋转 180°
             )
         self._last_lidar_time = time.time()
 
@@ -556,19 +587,16 @@ class ViserSLAMVisualizer:
         img[grid < 50] = [255, 255, 255]       # 空闲 -> 白
         img[(grid >= 50) & (grid < 200)] = [180, 180, 180]  # 未知 -> 灰
         img[grid >= 200] = [40, 40, 40]        # 占据 -> 深灰
-        # 图像旋转180度，使得地图坐标系与场景一致
-        img = cv2.rotate(img, cv2.ROTATE_180)
 
         if self._handles.get("/map/occupancy_map") is not None:
-            pass
-        self._remove_node("/map/occupancy_map")
+            self._handles.get("/map/occupancy_map").image = img
+            return
         self._handles["/map/occupancy_map"] = self._server.scene.add_image(
             "/map/occupancy_map",
             image=img,
             render_width=size_meters,
             render_height=size_meters,
             position=(0.0, 0.0, -0.1),  # 略低于地面
-            wxyz=tf.SO3.from_x_radians(math.pi).wxyz,
         )
 
     def _update_camera_image(self, img_bgr: np.ndarray) -> None:
@@ -662,6 +690,194 @@ class ViserSLAMVisualizer:
         self._gui_map_hz.value = self._map_sub.get_stats()["recv_count"]
         self._gui_vision_hz.value = self._vision_sub.get_stats()["recv_count"]
 
+    # --------------------------------------------------------------------------
+    # 导航控制
+    # --------------------------------------------------------------------------
+    def _on_set_goal(self) -> None:
+        """设置目标点并发布。"""
+        self._goal_x = float(self._gui_goal_x.value)
+        self._goal_y = float(self._gui_goal_y.value)
+        self._goal_theta = math.radians(float(self._gui_goal_theta.value))
+
+        goal_msg = {
+            "x": self._goal_x,
+            "y": self._goal_y,
+            "theta": self._goal_theta,
+            "timestamp": time.time(),
+        }
+        try:
+            self._goal_pub.send_json(goal_msg, flags=zmq.NOBLOCK)
+            self._gui_nav_status.value = f"目标点已发布: ({self._goal_x:.2f}, {self._goal_y:.2f})"
+            logger.info(f"目标点已发布: {goal_msg}")
+        except Exception as e:
+            self._gui_nav_status.value = f"发布失败: {e}"
+            logger.warning(f"发布目标点失败: {e}")
+
+        self._update_goal_marker()
+
+    def _on_reset_odom(self) -> None:
+        """发送里程计重置命令。"""
+        result = self._send_cmd_req(self._odom_cmd, {"cmd": "reset_pose", "x": 0.0, "y": 0.0, "yaw": 0.0})
+        self._gui_nav_status.value = result
+        logger.info(result)
+
+    def _on_reset_slam(self) -> None:
+        """发送 SLAM 位姿重置命令。"""
+        result = self._send_cmd_req(self._slam_cmd, {"cmd": "reset_pose", "x": 0.0, "y": 0.0, "theta": 0.0})
+        self._gui_nav_status.value = result
+        logger.info(result)
+
+    def _send_cmd_req(self, sock: zmq.Socket, req: dict) -> str:
+        """发送 REQ 命令并等待响应。"""
+        try:
+            sock.send_json(req)
+            rep = sock.recv_json()
+            if rep.get("success"):
+                return f"✅ {rep.get('message', '成功')}"
+            else:
+                return f"❌ {rep.get('message', '失败')}"
+        except zmq.Again:
+            return "❌ 请求超时"
+        except Exception as e:
+            return f"❌ 请求异常: {e}"
+
+    def _update_goal_marker(self) -> None:
+        """在场景中更新目标点标记。"""
+        s = self._server.scene
+        x, y, theta = self._goal_x, self._goal_y, self._goal_theta
+
+        # 目标点坐标系
+        name_frame = "/map/goal"
+        h = self._handles.get(name_frame)
+        if h is None:
+            self._handles[name_frame] = s.add_frame(
+                name_frame, show_axes=True, axes_length=0.2, axes_radius=0.015
+            )
+        self._handles[name_frame].position = np.array([x, y, 0.0])
+        self._handles[name_frame].wxyz = yaw_to_wxyz(theta)
+
+        # 目标点圆柱标记
+        name_body = "/map/goal/body"
+        if self._handles.get(name_body) is None:
+            s.add_cylinder(
+                name_body,
+                radius=0.08,
+                height=0.15,
+                position=(0.0, 0.0, 0.075),
+                color=(255, 50, 50),
+            )
+
+        # 目标点方向箭头
+        name_arrow = "/map/goal/arrow"
+        if self._handles.get(name_arrow) is None:
+            s.add_cylinder(
+                name_arrow,
+                radius=0.02,
+                height=0.15,
+                position=(0.08, 0.0, 0.05),
+                wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
+                color=(255, 200, 50),
+            )
+
+        # 目标点标签
+        name_label = "/map/goal/label"
+        h_label = self._handles.get(name_label)
+        theta_deg = math.degrees(theta)
+        text = f"Goal: ({x:.2f}, {y:.2f}, {theta_deg:.1f}°)"
+        if h_label is None:
+            self._handles[name_label] = s.add_label(
+                name_label, text=text, position=(0.0, 0.0, 0.35)
+            )
+        else:
+            h_label.text = text
+            h_label.position = np.array([0.0, 0.0, 0.35])
+
+        # 交互式拖拽控制器（首次创建时绑定回调）
+        name_tc = "/map/goal/_tc"
+        if self._handles.get(name_tc) is None:
+            tc = s.add_transform_controls(
+                name_tc,
+                scale=1.2,
+                active_axes=(True, True, False),                  # 只启用 X、Y 轴平移
+                disable_sliders=True,                             # 禁用平面滑块
+                disable_rotations=False,                          # 启用旋转
+                rotation_limits=((0, 0), (0, 0), (-1000, 1000)),  # 只允许绕 Z 轴旋转
+                depth_test=False,                                 # 始终可见
+            )
+            tc.on_update(lambda _: self._on_goal_drag_update())
+            tc.on_drag_end(lambda _: self._on_goal_drag_end())
+            self._handles[name_tc] = tc
+
+    def _quat_to_yaw(self, wxyz) -> float:
+        """从四元数安全提取绕 Z 轴的旋转角度。"""
+        wxyz = np.array(wxyz, dtype=np.float64)
+        norm = np.linalg.norm(wxyz)
+        if norm < 1e-6:
+            return 0.0
+        qw, qx, qy, qz = wxyz / norm
+        return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+
+    def _on_goal_drag_update(self) -> None:
+        """拖拽目标点时实时更新内部状态和 GUI 数值（不移动场景节点）。"""
+        tc = self._handles.get("/map/goal/_tc")
+        goal = self._handles.get("/map/goal")
+        if tc is None or goal is None:
+            return
+        # 角度 = goal 当前角度 + tc 局部增量
+        goal_theta = self._quat_to_yaw(goal.wxyz)
+        tc_theta = self._quat_to_yaw(tc.wxyz)
+        self._goal_theta = math.atan2(
+            math.sin(goal_theta + tc_theta), math.cos(goal_theta + tc_theta)
+        )
+        # 计算世界坐标：tc 的局部偏移需要先旋转 goal_theta 再叠加
+        ct = math.cos(goal_theta)
+        st = math.sin(goal_theta)
+        dx = float(tc.position[0])
+        dy = float(tc.position[1])
+        self._goal_x = float(goal.position[0]) + dx * ct - dy * st
+        self._goal_y = float(goal.position[1]) + dx * st + dy * ct
+        self._gui_goal_x.value = round(self._goal_x, 2)
+        self._gui_goal_y.value = round(self._goal_y, 2)
+        self._gui_goal_theta.value = round(math.degrees(self._goal_theta), 1)
+
+    def _on_goal_drag_end(self) -> None:
+        """拖拽结束：同步场景节点到 on_update 记录的最终值。"""
+        tc = self._handles.get("/map/goal/_tc")
+        goal = self._handles.get("/map/goal")
+        if tc is None or goal is None:
+            return
+        # 直接使用 on_update 中已经记录好的最终值
+        # （on_drag_end 时 tc.position 可能已被 Viser 重置，不能重新计算）
+        # 重置控件局部偏移和旋转
+        tc.position = np.array([0.0, 0.0, 0.0])
+        tc.wxyz = np.array([1.0, 0.0, 0.0, 0.0])
+        # 同步 goal 到最终位置
+        goal.position = np.array([self._goal_x, self._goal_y, 0.0])
+        goal.wxyz = yaw_to_wxyz(self._goal_theta)
+        # 更新标签
+        self._update_goal_marker_from_state()
+        # 更新 GUI
+        self._gui_goal_x.value = round(self._goal_x, 2)
+        self._gui_goal_y.value = round(self._goal_y, 2)
+        self._gui_goal_theta.value = round(math.degrees(self._goal_theta), 1)
+        self._gui_nav_status.value = "目标点已调整，点击 📍 设置目标点 发布"
+
+    def _update_goal_marker_from_state(self) -> None:
+        """仅更新场景标记（不重新创建 TransformControls）。"""
+        s = self._server.scene
+        x, y, theta = self._goal_x, self._goal_y, self._goal_theta
+        name_frame = "/map/goal"
+        h = self._handles.get(name_frame)
+        if h is not None:
+            h.position = np.array([x, y, 0.0])
+            h.wxyz = yaw_to_wxyz(theta)
+        name_label = "/map/goal/label"
+        h_label = self._handles.get(name_label)
+        if h_label is not None:
+            theta_deg = math.degrees(theta)
+            h_label.text = f"Goal: ({x:.2f}, {y:.2f}, {theta_deg:.1f}°)"
+            h_label.position = np.array([0.0, 0.0, 0.35])
+
 
 # ------------------------------------------------------------------------------
 # 入口
@@ -677,6 +893,9 @@ def main():
     parser.add_argument("--slam-map", default="tcp://localhost:5564", help="SLAM 地图 SUB 地址")
     parser.add_argument("--lidar-scan", default="tcp://localhost:5565", help="激光雷达扫描 SUB 地址")
     parser.add_argument("--vision", default="tcp://localhost:5560", help="摄像头图像 SUB 地址")
+    parser.add_argument("--goal-pub", default=None, help="目标点 PUB 地址 (默认 tcp://*:5566)")
+    parser.add_argument("--odom-cmd", default=None, help="里程计命令 REQ 地址 (默认 tcp://localhost:5567)")
+    parser.add_argument("--slam-cmd", default=None, help="SLAM 命令 REQ 地址 (默认 tcp://localhost:5568)")
     args = parser.parse_args()
 
     # 用命令行参数覆盖配置
@@ -688,6 +907,12 @@ def main():
     cfg.viser.slam_map_sub_addr = args.slam_map
     cfg.viser.lidar_scan_sub_addr = args.lidar_scan
     cfg.viser.vision_sub_addr = args.vision
+    if args.goal_pub:
+        cfg.viser.goal_pub_addr = args.goal_pub
+    if args.odom_cmd:
+        cfg.viser.odom_cmd_addr = args.odom_cmd
+    if args.slam_cmd:
+        cfg.viser.slam_cmd_addr = args.slam_cmd
 
     visualizer = ViserSLAMVisualizer()
     visualizer.start()

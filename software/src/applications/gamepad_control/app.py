@@ -810,6 +810,8 @@ def main():
     parser = argparse.ArgumentParser(description="游戏手柄控制应用")
     parser.add_argument("--controller", "-c", type=int, default=0, help="手柄索引")
     parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+    parser.add_argument("--chassis-addr", type=str, default=None, help="底盘服务地址 (默认从配置读取)")
+    parser.add_argument("--arm-addr", type=str, default=None, help="机械臂服务地址 (默认从配置读取)")
     
     args = parser.parse_args()
     
@@ -817,7 +819,14 @@ def main():
         import logging
         logging.getLogger().setLevel(logging.DEBUG)
     
-    app = GamepadControlApp(controller_index=args.controller)
+    from configs import get_config
+    config = get_config()
+    if args.chassis_addr:
+        config.gamepad.chassis_service_addr = args.chassis_addr
+    if args.arm_addr:
+        config.gamepad.arm_service_addr = args.arm_addr
+    
+    app = GamepadControlApp(config=config.gamepad, controller_index=args.controller)
     app.run()
 
 
