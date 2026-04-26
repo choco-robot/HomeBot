@@ -111,6 +111,9 @@ class ZMQConfig:
     slam_pose_pub_addr: str = "tcp://*:5563"    # SLAM 位姿 PUB 地址
     slam_map_pub_addr: str = "tcp://*:5564"     # SLAM 地图 PUB 地址
     lidar_scan_pub_addr: str = "tcp://*:5565"   # 激光雷达扫描数据 PUB 地址
+    goal_pub_addr: str = "tcp://*:5566"          # 目标点 PUB 地址
+    odom_cmd_addr: str = "tcp://*:5567"          # 里程计命令 REP 地址
+    slam_cmd_addr: str = "tcp://*:5568"          # SLAM 命令 REP 地址
     speech_service_addr: str = "tcp://*:5570"   # 语音服务地址（备用）
     wakeup_pub_addr: str = "tcp://*:5571"       # 唤醒+ASR PUB地址
 
@@ -335,6 +338,10 @@ class ViserConfig:
     slam_map_sub_addr: str = "tcp://localhost:5564"
     lidar_scan_sub_addr: str = "tcp://localhost:5565"
     vision_sub_addr: str = "tcp://localhost:5560"
+    # 发布地址
+    goal_pub_addr: str = "tcp://*:5566"          # 目标点 PUB 地址
+    odom_cmd_addr: str = "tcp://localhost:5567"  # 里程计命令 REQ 地址
+    slam_cmd_addr: str = "tcp://localhost:5568"  # SLAM 命令 REQ 地址
     # 可视化参数
     max_trajectory_points: int = 5000   # 最大轨迹点数
     point_size: float = 0.03            # 激光点大小
