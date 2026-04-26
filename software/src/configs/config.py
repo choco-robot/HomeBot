@@ -79,7 +79,7 @@ class ChassisConfig:
     chassis_radius: float = 0.14     # 底盘半径 (m)
     
     # 运动限制
-    max_linear_speed: float = 0.4    # 最大线速度 (m/s)，已根据舵机满速 47.45 RPM 校准
+    max_linear_speed: float = 0.3    # 最大线速度 (m/s)，已根据舵机满速 47.45 RPM 校准
     max_angular_speed: float = 1.0   # 最大角速度 (rad/s)
     default_wheel_speed: int = 3250  # 舵机最大速度读数（与 servo_speed_scale 一致）
     
@@ -275,7 +275,7 @@ class SLAMConfig:
     
     # 地图配置
     map_size_pixels: int = 800                   # 栅格地图像素尺寸
-    map_size_meters: float = 10.0                # 地图物理尺寸（米）
+    map_size_meters: float = 20.0                # 地图物理尺寸（米）
     
     # AprilTag 配置
     tag_family: str = "tag36h11"
@@ -315,6 +315,7 @@ class ViserConfig:
     goal_pub_addr: str = "tcp://*:5566"          # 目标点 PUB 地址
     odom_cmd_addr: str = "tcp://localhost:5567"  # 里程计命令 REQ 地址
     slam_cmd_addr: str = "tcp://localhost:5568"  # SLAM 命令 REQ 地址
+    global_path_sub_addr: str = "tcp://localhost:5569"  # 全局路径 SUB 地址
     # 可视化参数
     max_trajectory_points: int = 5000   # 最大轨迹点数
     point_size: float = 0.03            # 激光点大小
@@ -327,7 +328,7 @@ class GamepadConfig:
     """游戏手柄控制配置 - 同时控制底盘和机械臂"""
     
     # ========== 底盘控制参数 ==========
-    max_linear_speed: float = 0.5          # 最大线速度 (m/s)
+    max_linear_speed: float = 0.3          # 最大线速度 (m/s)
     max_angular_speed: float = 1.0         # 最大角速度 (rad/s)
     trigger_deadzone: float = 0.1          # 扳机键死区
     left_stick_deadzone: float = 0.15      # 左摇杆死区

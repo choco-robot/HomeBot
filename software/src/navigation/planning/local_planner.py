@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 @dataclass
 class LocalPlannerConfig:
     """VFH 局部规划器配置"""
-    max_linear_speed: float = 0.3       # 最大线速度 (m/s)
+    max_linear_speed: float = 0.1       # 最大线速度 (m/s)
     max_angular_speed: float = 1.0      # 最大角速度 (rad/s)
     num_sectors: int = 21               # 扇区数量（默认与深度条带数一致）
     fov_deg: float = 66.0               # 相机水平视场角（度）fov_deg/num_sectors = 每个扇区的角度范围
@@ -70,8 +70,6 @@ class VFHLocalPlanner:
         goal_distance = math.hypot(goal_x, goal_y)
 
         # # 如果目标不在正面90°范围内，优先原地旋转调整朝向
-        # if abs(goal_angle) > math.pi/4:
-        #     return 0.0, cfg.max_angular_speed if goal_angle > 0 else -cfg.max_angular_speed
 
         # 2. 构建阻挡数组
         histogram = obstacles
@@ -80,9 +78,11 @@ class VFHLocalPlanner:
         # 无障碍物数据时，默认所有方向畅通，直接朝向目标前进
         if n == 0:
             vx = cfg.max_linear_speed
+            if abs(goal_angle) > math.pi/4:
+                return 0.0, cfg.max_angular_speed if goal_angle > 0 else -cfg.max_angular_speed
             if goal_distance < 0.3:
                 vx *= goal_distance / 0.3
-            vz = np.clip(goal_angle * 0.5, -cfg.max_angular_speed, cfg.max_angular_speed)
+            vz = np.clip(goal_angle * 0.8, -cfg.max_angular_speed, cfg.max_angular_speed)
             return float(vx), float(vz)
 
         blocked = histogram < cfg.safety_distance_m

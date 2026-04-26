@@ -70,7 +70,7 @@ class BreezySLAMWrapper:
             map_size_meters,
             random_seed=42,
             map_quality=100,
-            hole_width_mm=120,
+            hole_width_mm=400,
         )
         self._map_size_meters = map_size_meters
 
@@ -147,6 +147,7 @@ class SLAMFusion:
 
         # 里程计缓存（用于一致性检验和 pose_change 计算）
         self._last_odom_xyt: Optional[Tuple[float, float, float]] = None
+        self._prev_odom_xyt: Optional[Tuple[float, float, float]] = None
         self._last_odom_time: Optional[float] = None
 
         # 用于 SLAM update 的里程计积分（毫米/度）
@@ -179,7 +180,9 @@ class SLAMFusion:
             odom: 可选的当前里程计 (x_m, y_m, theta_rad, timestamp_s)
         """
         # 1. 计算 pose_change for BreezySLAM
-        pose_change = self._compute_pose_change(odom)
+        dx,dy,dtheta,dt = self._compute_pose_change(odom)
+        dxy=math.hypot(dx, dy)*1000.0
+        pose_change = (dxy, math.degrees(dtheta), dt)
 
         # 2. BreezySLAM 更新
         self.slam.update(distances_mm, pose_change, angles_deg)
@@ -192,7 +195,7 @@ class SLAMFusion:
 
         # 4. 里程计一致性检验
         slam_delta = np.array([x_slam - self.x, y_slam - self.y, _normalize_angle(theta_slam - self.theta)])
-        odom_delta = self._get_odom_delta_since_last()
+        odom_delta = np.array([dx, dy, dtheta])
         consistent = self._check_consistency(slam_delta, odom_delta)
 
         if not consistent:
@@ -353,7 +356,7 @@ class SLAMFusion:
     # ------------------------------------------------------------------
     def _compute_pose_change(
         self, odom: Optional[Tuple[float, float, float, float]]
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float,float,float, float]:
         """从里程计计算 BreezySLAM 所需的 pose_change (dxy_mm, dtheta_deg, dt_s)。"""
         if odom is None or self._last_odom_xyt is None:
             # 无里程计时，使用内部累积值
@@ -374,23 +377,13 @@ class SLAMFusion:
         # 沿机器人朝向的位移分量
         dx = x - lx
         dy = y - ly
-        mid_theta = ltheta + (theta - ltheta) * 0.5
-        dxy = dx * math.cos(mid_theta) + dy * math.sin(mid_theta)
 
         dtheta = _normalize_angle(theta - ltheta)
 
         self._last_odom_xyt = (x, y, theta)
         self._last_odom_time = ts
 
-        return dxy * 1000.0, math.degrees(dtheta), dt
-
-    def _get_odom_delta_since_last(self) -> np.ndarray:
-        """返回从上帧以来的里程计变化量 [dx, dy, dtheta]。"""
-        if self._last_odom_xyt is None:
-            return np.zeros(3)
-        # 这里简化处理：如果没有新里程计，返回零
-        # 实际应由调用方维护上帧里程计
-        return np.zeros(3)
+        return dx,dy,dtheta,dt
 
     def _check_consistency(self, slam_delta: np.ndarray, odom_delta: np.ndarray) -> bool:
         """检验 SLAM 位姿变化与里程计积分是否一致。"""

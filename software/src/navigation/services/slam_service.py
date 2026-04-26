@@ -383,6 +383,7 @@ class SLAMService:
     def _odom_loop(self) -> None:
         """持续接收 OdomService 里程计，保留最新数据。"""
         logger.info("SLAMService 里程计接收线程已启动")
+        _first_odom = True
         while self._running:
             try:
                 msg = self._odom_sub.recv_json(flags=zmq.NOBLOCK)
@@ -393,6 +394,10 @@ class SLAMService:
                     ts = msg.get("timestamp", time.time())
                     with self._odom_lock:
                         self._latest_odom = (x, y, yaw, ts)
+                    if _first_odom:
+                        _first_odom = False
+                        self._fusion.reset_odom((x, y, yaw, ts))
+                        logger.info(f"里程计基准已初始化: ({x:.3f}, {y:.3f}, {yaw:.3f})")
             except zmq.Again:
                 time.sleep(0.005)
             except Exception as e:

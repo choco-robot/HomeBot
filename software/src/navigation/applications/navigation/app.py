@@ -29,6 +29,7 @@ import zmq
 
 from common.logging import get_logger
 from common.transform import world_to_robot2
+from common.zmq_helper import create_socket
 from common.zmq_subscriber import ZMQJsonSubscriber, ZMQMultipartJsonSubscriber
 from navigation.core.occupancy_grid import (
     COST_FREE,
@@ -46,6 +47,8 @@ DEFAULT_SLAM_POSE_ADDR = "tcp://localhost:5563"
 DEFAULT_SLAM_MAP_ADDR = "tcp://localhost:5564"
 DEFAULT_OBSTACLE_ADDR = "tcp://localhost:5562"
 DEFAULT_CHASSIS_ADDR = "tcp://127.0.0.1:5556"
+DEFAULT_PATH_PUB_ADDR = "tcp://*:5569"
+DEFAULT_GOAL_SUB_ADDR = "tcp://localhost:5566"
 
 
 # ------------------------------------------------------------------------------
@@ -100,6 +103,8 @@ class NavigationApp:
         slam_map_addr: str = DEFAULT_SLAM_MAP_ADDR,
         obstacle_addr: str = DEFAULT_OBSTACLE_ADDR,
         chassis_addr: str = DEFAULT_CHASSIS_ADDR,
+        path_pub_addr: str = DEFAULT_PATH_PUB_ADDR,
+        goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
         arrival_threshold_m: float = 0.15,
         lookahead_distance_m: float = 0.4,
@@ -137,6 +142,14 @@ class NavigationApp:
 
         self._chassis = ChassisArbiterClient(chassis_addr, timeout_ms=500)
 
+        # 全局路径发布者（供可视化端订阅）
+        self._path_pub = create_socket(zmq.PUB, bind=True, address=path_pub_addr)
+        logger.info(f"全局路径 PUB: {path_pub_addr}")
+
+        # 目标点订阅者（接收 Viser 等可视化端发布的目标点）
+        self._goal_sub = ZMQJsonSubscriber(goal_sub_addr, required_keys=("x", "y"))
+        logger.info(f"目标点 SUB: {goal_sub_addr}")
+
         # 局部规划器
         self._local_planner = VFHLocalPlanner(
             planner_config or LocalPlannerConfig()
@@ -150,6 +163,8 @@ class NavigationApp:
         self._last_pose: Optional[Tuple[float, float, float]] = None
         self._grid: Optional[OccupancyGrid] = None
         self._reached_reported = False
+        self._path_pub_addr = path_pub_addr
+        self._goal_sub_addr = goal_sub_addr
 
     # ------------------------------------------------------------------
     # 公共接口
@@ -173,8 +188,9 @@ class NavigationApp:
         # 尝试初始规划
         if self._state == "IDLE":
             self._state = "PLANNING"
-        if not self._plan():
+        while not self._plan():
             logger.warning("初始规划失败，将在主循环中持续尝试...")
+            time.sleep(1.0)
 
         try:
             while self._running:
@@ -194,6 +210,11 @@ class NavigationApp:
                 )
                 self._last_pose = pose
 
+                # 1b. 检查 Viser 等可视化端发布的目标点（支持运动中动态更新）
+                goal_msg = self._goal_sub.read()
+                if goal_msg is not None:
+                    self._handle_goal_message(goal_msg)
+
                 # 2. 读取障碍物直方图（从 JSON dict 中提取并转换）
                 if self._use_depth:
                     obstacle_msg = self._obstacle_sub.read()
@@ -211,7 +232,16 @@ class NavigationApp:
                         self._reached_reported = True
                         self._state = "REACHED"
                     self._send_command(0.0, 0.0)
-                    self._prompt_next_goal()
+
+                    # 到达后优先检查 ZMQ 目标点，避免阻塞在 input()
+                    goal_msg = self._goal_sub.read()
+                    if goal_msg is not None:
+                        self._handle_goal_message(goal_msg)
+                        self._sleep_remaining(t0)
+                        continue
+
+                    # self._prompt_next_goal()
+                    self._sleep_remaining(t0)
                     continue
                 else:
                     self._reached_reported = False
@@ -279,6 +309,8 @@ class NavigationApp:
         self._slam_map_sub.close()
         if self._obstacle_sub is not None:
             self._obstacle_sub.close()
+        self._path_pub.close()
+        self._goal_sub.close()
         self._chassis.close()
         logger.info("NavigationApp 已停止")
 
@@ -361,6 +393,7 @@ class NavigationApp:
             f"A* 规划成功，路径点={len(path)}，"
             f"耗时 {(t_plan_end - t_plan_start)*1000:.1f}ms"
         )
+        self._publish_path(path)
         return True
 
     def _build_grid(
@@ -400,6 +433,17 @@ class NavigationApp:
         grid.data[arr < 50] = COST_LETHAL
 
         return grid
+
+    def _publish_path(self, path: List[Tuple[float, float]]) -> None:
+        """发布全局路径到 ZMQ，供可视化端订阅。"""
+        try:
+            msg = {
+                "path": [[float(x), float(y)] for x, y in path],
+                "timestamp": time.time(),
+            }
+            self._path_pub.send_json(msg, flags=zmq.NOBLOCK)
+        except Exception as e:
+            logger.debug(f"发布全局路径失败: {e}")
 
     def _clear_robot_footprint(
         self,
@@ -480,8 +524,16 @@ class NavigationApp:
     # ------------------------------------------------------------------
     # 交互与底盘
     # ------------------------------------------------------------------
+    def _handle_goal_message(self, goal_msg: dict) -> None:
+        """处理 Viser 等可视化端发布的目标点消息。"""
+        x = float(goal_msg.get("x", 0.0))
+        y = float(goal_msg.get("y", 0.0))
+        if (x, y) != self._goal:
+            logger.info(f"收到外部目标点: ({x:.2f}, {y:.2f})")
+            self.set_goal(x, y)
+
     def _prompt_next_goal(self) -> None:
-        """到达后提示用户输入下一个目标点。"""
+        """到达后提示用户输入下一个目标点（阻塞，仅作为 fallback）。"""
         try:
             next_goal = input("请输入下一个目标点 (x y)，或 'exit' 退出: ")
         except EOFError:
@@ -561,6 +613,12 @@ def main():
         default=True,
         help="是否使用深度图做局部避障（默认开启，--no-use-depth 可关闭）",
     )
+    parser.add_argument(
+        "--path-pub", default=DEFAULT_PATH_PUB_ADDR, help="全局路径 PUB 地址"
+    )
+    parser.add_argument(
+        "--goal-sub", default=DEFAULT_GOAL_SUB_ADDR, help="目标点 SUB 地址（Viser 发布端）"
+    )
     args = parser.parse_args()
 
     app = NavigationApp(
@@ -570,6 +628,8 @@ def main():
         slam_map_addr=args.slam_map,
         obstacle_addr=args.obstacle,
         chassis_addr=args.chassis,
+        path_pub_addr=args.path_pub,
+        goal_sub_addr=args.goal_sub,
         control_rate=args.rate,
         arrival_threshold_m=args.threshold,
         lookahead_distance_m=args.lookahead,

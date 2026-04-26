@@ -84,8 +84,12 @@ class TestSLAMFusion:
 
         # 模拟前进 1 秒
         angles = list(range(360))
-        distances = [1000] * 360
-        fusion.update_lidar(angles, distances, odom=(0.1, 0.0, 0.0, time.time()))
+        # 添加一些距离变化，避免 BreezySLAM 扫描匹配陷入 "No error gradient"
+        distances = [1000 + (i % 20) * 10 for i in range(360)]
+        t = time.time()
+        # 先初始化里程计基准，否则 pose_change 计算为 0，BreezySLAM 不更新
+        fusion.reset_odom((0.0, 0.0, 0.0, t))
+        fusion.update_lidar(angles, distances, odom=(0.1, 0.0, 0.0, t + 1.0))
 
         x, y, theta, P = fusion.get_pose()
         # 位姿应发生变化（至少 SLAM 位姿会更新）
