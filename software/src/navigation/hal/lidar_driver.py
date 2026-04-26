@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """LD06 / LD19 激光雷达驱动
 
-基于 LDRobot LD06 协议实现的纯 Python 串口驱动，
-支持真实硬件和 Mock 模拟模式（用于无硬件测试）。
+基于 LDRobot LD06 协议实现的纯 Python 串口驱动。
+无可用雷达连接时直接抛出异常，不模拟。
 
 协议格式（每包 47 字节，小端）：
     Header      1B  0x54
@@ -87,12 +87,14 @@ class LD06Driver:
         baudrate: int = 230400,
         scan_size: int = 360,
         max_distance_m: float = 12.0,
+        min_distance_m: float = 0.2,
         timeout: float = 1.0,
     ):
         self.port = port
         self.baudrate = baudrate
         self.scan_size = scan_size
         self.max_distance_mm = int(max_distance_m * 1000)
+        self.min_distance_mm = int(min_distance_m * 1000)
         self.timeout = timeout
 
         self._serial: Optional[object] = None
@@ -256,8 +258,12 @@ class LD06Driver:
         distances = np.array([m[1] for m in measurements])
         confidences = np.array([m[2] for m in measurements])
 
-        # 过滤无效距离和置信度过低的点
-        valid_mask = (distances > 0) & (distances <= self.max_distance_mm) & (confidences > 0)
+        # 过滤无效距离、过近距离（机器人本体结构）和置信度过低的点
+        valid_mask = (
+            (distances >= self.min_distance_mm)
+            & (distances <= self.max_distance_mm)
+            & (confidences > 0)
+        )
         if not np.any(valid_mask):
             return
 
@@ -301,111 +307,24 @@ class LD06Driver:
 
 
 # ------------------------------------------------------------------------------
-# Mock 模拟驱动
-# ------------------------------------------------------------------------------
-
-class MockLidarDriver:
-    """模拟激光雷达驱动，用于无硬件环境测试。
-
-    生成一个简单的圆形房间扫描数据，并加入可控噪声。
-    """
-
-    def __init__(
-        self,
-        scan_size: int = 360,
-        room_radius_m: float = 3.0,
-        noise_std_m: float = 0.02,
-        update_rate_hz: float = 10.0,
-    ):
-        self.scan_size = scan_size
-        self.room_radius_mm = int(room_radius_m * 1000)
-        self.noise_std_mm = int(noise_std_m * 1000)
-        self.update_rate_hz = update_rate_hz
-
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._latest_scan: Optional[Tuple[List[float], List[float]]] = None
-        self._lock = threading.Lock()
-
-        # 模拟障碍物（角度范围 → 距离，mm）
-        self._obstacles: List[Tuple[float, float, float]] = []
-
-    def add_obstacle(self, angle_start: float, angle_end: float, distance_m: float) -> None:
-        """添加模拟障碍物（角度范围，距离）。"""
-        self._obstacles.append((angle_start % 360.0, angle_end % 360.0, int(distance_m * 1000)))
-
-    def start(self) -> None:
-        self._running = True
-        self._thread = threading.Thread(target=self._generate_loop, daemon=True)
-        self._thread.start()
-        logger.info("MockLidarDriver 已启动（模拟模式）")
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1.0)
-        logger.info("MockLidarDriver 已停止")
-
-    def get_scan(self) -> Optional[Tuple[List[float], List[float]]]:
-        with self._lock:
-            return self._latest_scan
-
-    def _generate_loop(self) -> None:
-        import random
-
-        interval = 1.0 / self.update_rate_hz
-        while self._running:
-            t0 = time.perf_counter()
-            scan = self._generate_scan(random)
-            with self._lock:
-                self._latest_scan = scan
-            elapsed = time.perf_counter() - t0
-            rem = interval - elapsed
-            if rem > 0:
-                time.sleep(rem)
-
-    def _generate_scan(self, random_mod) -> Tuple[List[float], List[float]]:
-        angles = np.linspace(0.0, 360.0, self.scan_size, endpoint=False)
-        distances = np.full(self.scan_size, self.room_radius_mm, dtype=np.float32)
-
-        # 应用障碍物
-        for a_start, a_end, dist_mm in self._obstacles:
-            if a_start <= a_end:
-                mask = (angles >= a_start) & (angles <= a_end)
-            else:
-                mask = (angles >= a_start) | (angles <= a_end)
-            distances[mask] = np.minimum(distances[mask], dist_mm)
-
-        # 加入噪声
-        noise = np.random.normal(0, self.noise_std_mm, self.scan_size)
-        distances = distances + noise
-        distances = np.clip(distances, 120, self.room_radius_mm).astype(np.int32)
-
-        return angles.tolist(), distances.tolist()
-
-
-# ------------------------------------------------------------------------------
 # 工厂函数
 # ------------------------------------------------------------------------------
 
 def create_lidar_driver(
     port: Optional[str] = None,
     scan_size: int = 360,
-    mock: bool = False,
-) -> object:
+    min_distance_m: float = 0.2,
+) -> LD06Driver:
     """创建激光雷达驱动实例。
 
     Args:
         port: 串口号，None 时使用默认（Windows=COM3, Linux=/dev/ttyUSB0）
         scan_size: 扫描分辨率（点数）
-        mock: 是否使用模拟驱动
+        min_distance_m: 最小有效距离（米），小于此距离的点会被过滤
 
     Returns:
-        LD06Driver 或 MockLidarDriver 实例
+        LD06Driver 实例
     """
-    if mock:
-        return MockLidarDriver(scan_size=scan_size)
-
     if port is None:
         import sys
         if sys.platform.startswith("win"):
@@ -413,4 +332,4 @@ def create_lidar_driver(
         else:
             port = "/dev/ttyUSB0"
 
-    return LD06Driver(port=port, scan_size=scan_size)
+    return LD06Driver(port=port, scan_size=scan_size, min_distance_m=min_distance_m)

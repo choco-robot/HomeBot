@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import struct
 import time
 
@@ -65,86 +66,16 @@ class TestLD06Protocol:
 
 
 # ------------------------------------------------------------------------------
-# Mock Lidar 测试
-# ------------------------------------------------------------------------------
-
-class TestMockLidar:
-    def test_scan_shape(self):
-        from navigation.hal.lidar_driver import MockLidarDriver
-        lidar = MockLidarDriver(scan_size=360, room_radius_m=3.0)
-        lidar.start()
-        time.sleep(0.3)
-        scan = lidar.get_scan()
-        lidar.stop()
-
-        assert scan is not None
-        angles, distances = scan
-        assert len(angles) == 360
-        assert len(distances) == 360
-        # 所有距离应在合理范围内
-        assert all(120 <= d <= 3000 for d in distances)
-
-    def test_obstacle(self):
-        from navigation.hal.lidar_driver import MockLidarDriver
-        lidar = MockLidarDriver(scan_size=360)
-        lidar.add_obstacle(80, 100, 1.5)
-        lidar.start()
-        time.sleep(0.15)
-        scan = lidar.get_scan()
-        lidar.stop()
-
-        angles, distances = scan
-        # 在 80-100° 范围内的距离应接近 1500mm
-        for a, d in zip(angles, distances):
-            if 80 <= a <= 100:
-                assert d < 2000  # 应被障碍物截断
-
-
-# ------------------------------------------------------------------------------
-# Mock AprilTag 检测器测试
-# ------------------------------------------------------------------------------
-
-class TestMockAprilTag:
-    def test_detection_in_fov(self):
-        from navigation.perception.apriltag_detector import MockAprilTagDetector
-        tag_map = {0: (1.0, 0.0, 0.0)}
-        det = MockAprilTagDetector(tag_map=tag_map, fov_deg=90.0, max_range_m=2.0)
-
-        # 机器人在原点，面向标签
-        det.set_robot_pose(0.0, 0.0, 0.0)
-        results = det.detect()
-        assert len(results) == 1
-        assert results[0]["tag_id"] == 0
-        assert results[0]["confidence"] > 0.5
-
-    def test_no_detection_out_of_range(self):
-        from navigation.perception.apriltag_detector import MockAprilTagDetector
-        tag_map = {0: (5.0, 0.0, 0.0)}
-        det = MockAprilTagDetector(tag_map=tag_map, max_range_m=2.0)
-        det.set_robot_pose(0.0, 0.0, 0.0)
-        results = det.detect()
-        assert len(results) == 0
-
-    def test_no_detection_out_of_fov(self):
-        from navigation.perception.apriltag_detector import MockAprilTagDetector
-        tag_map = {0: (1.0, 0.0, 0.0)}
-        det = MockAprilTagDetector(tag_map=tag_map, fov_deg=60.0)
-        # 背对标签
-        det.set_robot_pose(0.0, 0.0, math.pi)
-        results = det.detect()
-        assert len(results) == 0
-
-
-# ------------------------------------------------------------------------------
 # SLAM 融合核心测试
 # ------------------------------------------------------------------------------
 
 class TestSLAMFusion:
-    def test_slam_available(self):
-        """验证 BreezySLAM 已正确安装并可用。"""
+    def test_slam_initialization(self):
+        """验证 SLAMFusion 可正常初始化。"""
         from navigation.core.slam_fusion import SLAMFusion
         fusion = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
-        assert fusion.slam.available is True  # BreezySLAM 已安装
+        assert fusion.map_size_pixels == 200
+        assert fusion.map_size_meters == 10.0
 
     def test_odom_propagation(self):
         """测试纯里程计积分模式。"""
@@ -186,7 +117,7 @@ class TestSLAMFusion:
 
         # 位姿应被拉到标签附近（受权重影响，但趋势是向标签靠拢）
         x, y, theta, P = fusion.get_pose()
-        # 由于 MockSLAM 初始位姿在地图中心 (5,5)，硬校正后也应接近 (5,5)
+        # 初始位姿在地图中心 (5,5)，硬校正后也应接近 (5,5)
         assert abs(x - 5.0) < 1.0
         assert abs(y - 5.0) < 1.0
         assert fusion.state == "NORMAL"
@@ -268,39 +199,101 @@ class TestSLAMFusion:
         # 结果应接近 180° 或 -180°
         assert abs(avg) > math.radians(170)
 
+    def test_save_and_load_map(self, tmp_path):
+        """测试地图保存与加载。"""
+        from navigation.core.slam_fusion import SLAMFusion
 
-# ------------------------------------------------------------------------------
-# 集成测试
-# ------------------------------------------------------------------------------
+        fusion = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+        map_path = str(tmp_path / "test_map.npz")
 
-class TestSLAMServiceMock:
-    def test_service_startup_no_hardware(self):
-        """验证服务可在纯 Mock 模式下启动并运行数轮。"""
-        from navigation.services.slam_service import SLAMService
+        # 先运行几帧让位姿变化
+        angles = list(np.linspace(0, 360, 360, endpoint=False))
+        distances = [2000] * 360
+        for i in range(3):
+            fusion.update_lidar(angles, distances, odom=(i * 0.1, 0.0, 0.0, time.time()))
 
-        service = SLAMService(
-            use_mock_lidar=True,
-            use_mock_apriltag=True,
-            publish_rate_hz=20.0,
-        )
+        # 保存地图
+        fusion.save_map(map_path)
+        assert os.path.exists(map_path)
 
-        # 设置模拟标签地图，让 MockAprilTag 能检测到
-        tag_map = {0: (5.0, 5.0, 0.0)}
-        service._tag_detector.tag_map = tag_map
+        # 新建一个 fusion 实例并加载地图
+        fusion2 = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+        fusion2.load_map(map_path)
 
-        # 后台启动服务，运行 0.5 秒后停止
-        import threading
-        t = threading.Thread(target=service.start, daemon=True)
-        t.start()
-        time.sleep(0.6)
-        service.stop()
-        t.join(timeout=2.0)
+        # 验证地图字节一致
+        bytes1 = fusion.get_map_bytes()
+        bytes2 = fusion2.get_map_bytes()
+        assert len(bytes1) == len(bytes2) == 200 * 200
+        assert bytes1 == bytes2
 
-        # 验证位姿已被更新（非初始值）
-        x, y, theta, P = service._fusion.get_pose()
-        assert P.shape == (3, 3)
-        # 至少主循环已运行若干轮
-        assert service._loop_count >= 3
+        # 验证能读出保存的位姿
+        saved_pose = fusion2.get_saved_pose(map_path)
+        assert saved_pose is not None
+        x, y, theta = saved_pose
+        # 应与 fusion 保存时的位姿一致
+        assert abs(x - fusion.x) < 1e-3
+        assert abs(y - fusion.y) < 1e-3
+        assert abs(theta - fusion.theta) < 1e-3
+
+    def test_load_map_size_mismatch(self, tmp_path):
+        """测试加载尺寸不匹配的地图应抛异常。"""
+        from navigation.core.slam_fusion import SLAMFusion
+
+        fusion = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+        map_path = str(tmp_path / "bad_map.npz")
+
+        # 伪造一个尺寸错误的 npz
+        np.savez(map_path, map_bytes=np.zeros(400 * 400, dtype=np.uint8),
+                 map_size_pixels=400, map_size_meters=20.0)
+
+        with pytest.raises(ValueError, match="尺寸不匹配"):
+            fusion.load_map(map_path)
+
+    def test_set_initial_pose(self):
+        """测试手动设置初始位姿。"""
+        from navigation.core.slam_fusion import SLAMFusion
+
+        fusion = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+
+        # 先运行几帧
+        angles = list(np.linspace(0, 360, 360, endpoint=False))
+        distances = [2000] * 360
+        fusion.update_lidar(angles, distances, odom=(0.1, 0.0, 0.0, time.time()))
+
+        # 重置位姿
+        fusion.set_initial_pose(1.5, 2.5, math.radians(45))
+        x, y, theta, P = fusion.get_pose()
+
+        assert abs(x - 1.5) < 1e-6
+        assert abs(y - 2.5) < 1e-6
+        assert abs(theta - math.radians(45)) < 1e-6
+        assert fusion.state == "NORMAL"
+        assert fusion._slam_fail_count == 0
+
+    def test_load_map_with_auto_pose(self, tmp_path):
+        """测试加载地图后自动使用保存的位姿。"""
+        from navigation.core.slam_fusion import SLAMFusion
+
+        # 创建并保存地图
+        fusion1 = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+        angles = list(np.linspace(0, 360, 360, endpoint=False))
+        distances = [2000] * 360
+        fusion1.update_lidar(angles, distances, odom=(0.2, 0.1, 0.05, time.time()))
+
+        map_path = str(tmp_path / "auto_pose_map.npz")
+        fusion1.save_map(map_path)
+
+        # 新建实例，加载地图，并读取保存位姿
+        fusion2 = SLAMFusion(map_size_pixels=200, map_size_meters=10.0)
+        fusion2.load_map(map_path)
+        saved = fusion2.get_saved_pose(map_path)
+        assert saved is not None
+        fusion2.set_initial_pose(*saved)
+
+        x, y, theta, _ = fusion2.get_pose()
+        assert abs(x - fusion1.x) < 1e-3
+        assert abs(y - fusion1.y) < 1e-3
+        assert abs(theta - fusion1.theta) < 1e-3
 
 
 if __name__ == "__main__":

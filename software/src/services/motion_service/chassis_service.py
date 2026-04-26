@@ -5,7 +5,7 @@
 import os
 import sys
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 from threading import Lock
 
@@ -62,6 +62,12 @@ class RealChassisController:
             return False
         
         return self.driver.set_velocity(vx, vy, vz)
+    
+    def get_actual_velocity(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """读取轮子实际转速并计算机器人实际速度"""
+        if not self._initialized:
+            return (None, None, None)
+        return self.driver.get_actual_velocity()
     
     def stop(self) -> None:
         """停止底盘运动"""
@@ -222,7 +228,7 @@ class ChassisService:
             print(f"[CHASSIS_SVC] [WARNING] 电池电量严重不足！请立即充电！")
     
     def _publish_chassis_state(self, force: bool = False) -> None:
-        """发布底盘状态（速度、控制源）供 OdomService 订阅"""
+        """发布底盘状态（命令速度、实际轮速、控制源）供 OdomService 订阅"""
         current_time = time.time()
         if not force and (current_time - self._last_state_publish_time) < self.STATE_PUBLISH_INTERVAL:
             return
@@ -237,6 +243,14 @@ class ChassisService:
                 "timestamp": current_time,
                 "emergency_locked": self._emergency_locked,
             }
+            
+            # 读取实际轮速并加入状态
+            actual_vx, actual_vy, actual_vz = self.chassis.get_actual_velocity()
+            if actual_vx is not None:
+                state["actual_vx"] = float(round(actual_vx, 4))
+                state["actual_vy"] = float(round(actual_vy, 4))
+                state["actual_vz"] = float(round(actual_vz, 4))
+            
             try:
                 self._state_pub_socket.send_json(state, flags=zmq.NOBLOCK)
                 self._last_state_publish_time = current_time
@@ -444,7 +458,7 @@ class ChassisService:
         if not getattr(self, '_stopped', False):
             self._stopped = True
             self._running = False
-            self.chassis.stop()
+            # close() 内部已包含 stop() 逻辑，避免重复写入舵机速度
             self.chassis.close()
             if self._rep_socket:
                 self._rep_socket.close()

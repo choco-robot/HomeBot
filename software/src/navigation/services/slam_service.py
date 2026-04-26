@@ -12,8 +12,12 @@
 """
 from __future__ import annotations
 
+import atexit
 import math
+import signal
+import sys
 import time
+from pathlib import Path
 from threading import Lock, Thread
 from typing import Optional, Tuple
 
@@ -23,14 +27,17 @@ import zmq
 
 from common.logging import get_logger
 from common.zmq_helper import create_socket
+from configs import get_config
 
 logger = get_logger(__name__)
 
-DEFAULT_VISION_ADDR = "tcp://localhost:5560"
-DEFAULT_ODOM_ADDR = "tcp://localhost:5559"
-DEFAULT_SLAM_POSE_ADDR = "tcp://*:5563"
-DEFAULT_SLAM_MAP_ADDR = "tcp://*:5564"
-DEFAULT_LIDAR_SCAN_ADDR = "tcp://*:5565"
+_DEFAULT_CONFIG = get_config()
+
+DEFAULT_VISION_ADDR = _DEFAULT_CONFIG.viser.vision_sub_addr
+DEFAULT_ODOM_ADDR = _DEFAULT_CONFIG.viser.odom_sub_addr
+DEFAULT_SLAM_POSE_ADDR = _DEFAULT_CONFIG.zmq.slam_pose_pub_addr
+DEFAULT_SLAM_MAP_ADDR = _DEFAULT_CONFIG.zmq.slam_map_pub_addr
+DEFAULT_LIDAR_SCAN_ADDR = _DEFAULT_CONFIG.zmq.lidar_scan_pub_addr
 DEFAULT_SLAM_CMD_ADDR = "tcp://*:5568"
 
 
@@ -52,23 +59,36 @@ class SLAMService:
         lidar_scan_pub_addr: str = DEFAULT_LIDAR_SCAN_ADDR,
         slam_cmd_addr: str = DEFAULT_SLAM_CMD_ADDR,
         lidar_port: Optional[str] = None,
-        scan_size: int = 360,
-        map_size_pixels: int = 800,
-        map_size_meters: float = 10.0,
+        scan_size: Optional[int] = None,
+        map_size_pixels: Optional[int] = None,
+        map_size_meters: Optional[float] = None,
         tag_map: Optional[dict] = None,
         camera_matrix: Optional[np.ndarray] = None,
-        tag_size_m: float = 0.165,
-        use_mock_lidar: bool = False,
-        use_mock_apriltag: bool = False,
-        publish_rate_hz: float = 10.0,
+        tag_size_m: Optional[float] = None,
+        publish_rate_hz: Optional[float] = None,
+        load_map_path: Optional[str] = None,
+        save_map_path: Optional[str] = None,
+        init_x: Optional[float] = None,
+        init_y: Optional[float] = None,
+        init_theta: Optional[float] = None,
     ):
+        config = get_config()
+        slam_cfg = config.slam
+
         self.vision_addr = vision_addr
         self.odom_addr = odom_addr
         self.pose_pub_addr = pose_pub_addr
         self.map_pub_addr = map_pub_addr
         self.lidar_scan_pub_addr = lidar_scan_pub_addr
         self.slam_cmd_addr = slam_cmd_addr
-        self.publish_interval = 1.0 / publish_rate_hz
+        self.publish_interval = 1.0 / (publish_rate_hz if publish_rate_hz is not None else 10.0)
+
+        # 地图加载/保存参数
+        self._load_map_path = load_map_path
+        self._save_map_path = save_map_path
+        self._init_x = init_x
+        self._init_y = init_y
+        self._init_theta = init_theta
 
         # ------------------------------------------------------------------
         # ZeroMQ sockets
@@ -106,8 +126,26 @@ class SLAMService:
         # ------------------------------------------------------------------
         # 雷达驱动
         # ------------------------------------------------------------------
+        lidar_port = lidar_port if lidar_port is not None else slam_cfg.lidar_port
+        scan_size = scan_size if scan_size is not None else slam_cfg.lidar_scan_size
+        map_size_pixels = map_size_pixels if map_size_pixels is not None else slam_cfg.map_size_pixels
+        map_size_meters = map_size_meters if map_size_meters is not None else slam_cfg.map_size_meters
+        tag_size_m = tag_size_m if tag_size_m is not None else slam_cfg.tag_size_m
+        tag_map = tag_map if tag_map is not None else slam_cfg.tag_map
+
+        if camera_matrix is None:
+            camera_matrix = np.array([
+                [slam_cfg.camera_fx, 0.0, slam_cfg.camera_cx],
+                [0.0, slam_cfg.camera_fy, slam_cfg.camera_cy],
+                [0.0, 0.0, 1.0],
+            ], dtype=np.float64)
+
         from navigation.hal.lidar_driver import create_lidar_driver
-        self._lidar = create_lidar_driver(port=lidar_port, scan_size=scan_size, mock=use_mock_lidar)
+        self._lidar = create_lidar_driver(
+            port=lidar_port,
+            scan_size=scan_size,
+            min_distance_m=slam_cfg.lidar_min_distance_m,
+        )
 
         # ------------------------------------------------------------------
         # SLAM 融合核心
@@ -120,6 +158,11 @@ class SLAMService:
         )
 
         # ------------------------------------------------------------------
+        # 地图加载与初始位姿设置
+        # ------------------------------------------------------------------
+        self._setup_map_and_pose()
+
+        # ------------------------------------------------------------------
         # AprilTag 检测器
         # ------------------------------------------------------------------
         from navigation.perception.apriltag_detector import create_apriltag_detector
@@ -127,7 +170,6 @@ class SLAMService:
             camera_matrix=camera_matrix,
             tag_map=tag_map,
             tag_size_m=tag_size_m,
-            mock=use_mock_apriltag,
         )
 
         # ------------------------------------------------------------------
@@ -152,13 +194,67 @@ class SLAMService:
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
+    def _setup_map_and_pose(self) -> None:
+        """根据构造参数加载地图并设置初始位姿。"""
+        # 1. 加载已有地图
+        if self._load_map_path:
+            try:
+                self._fusion.load_map(self._load_map_path)
+            except Exception as e:
+                logger.error(f"加载地图失败: {e}")
+
+        # 2. 设置初始位姿
+        init_pose = None
+        if self._init_x is not None and self._init_y is not None and self._init_theta is not None:
+            init_pose = (self._init_x, self._init_y, self._init_theta)
+        elif self._load_map_path:
+            # 若未手动指定，尝试读取地图中保存的位姿
+            saved = self._fusion.get_saved_pose(self._load_map_path)
+            if saved:
+                init_pose = saved
+                logger.info(f"使用地图保存的位姿作为初始位姿: ({saved[0]:.3f}, {saved[1]:.3f}, {math.degrees(saved[2]):.2f}°)")
+
+        if init_pose:
+            self._fusion.set_initial_pose(*init_pose)
+
+        # 3. 注册退出保存（如指定了 save_map_path）
+        if self._save_map_path:
+            atexit.register(self._save_map_on_exit)
+            # 同时捕获 SIGINT/SIGTERM 做优雅保存
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, self._signal_handler)
+
+    def _save_map_on_exit(self) -> None:
+        """服务退出时自动保存地图。"""
+        if not self._save_map_path:
+            return
+        try:
+            path = Path(self._save_map_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._fusion.save_map(str(path))
+            logger.info(f"退出时自动保存地图成功: {path}")
+        except Exception as e:
+            logger.error(f"退出保存地图失败: {e}")
+
+    def _signal_handler(self, signum, frame) -> None:
+        """信号处理：保存地图后退出。"""
+        logger.info(f"接收到信号 {signum}，准备保存地图并退出...")
+        self._save_map_on_exit()
+        self.stop()
+        sys.exit(0)
+
     def start(self) -> None:
-        """启动 SLAM 服务。"""
+        """启动 SLAM 服务。无可用雷达时直接结束并提示错误。"""
         self._running = True
         logger.info("SLAMService 启动中...")
 
         # 启动雷达
-        self._lidar.start()
+        try:
+            self._lidar.start()
+        except Exception as e:
+            logger.error(f"雷达启动失败，服务终止: {e}")
+            self.stop()
+            sys.exit(1)
 
         # 启动后台接收线程
         self._vision_thread = Thread(target=self._vision_loop, daemon=True)
@@ -314,11 +410,6 @@ class SLAMService:
         if frame is None:
             return
 
-        # Mock 模式下需要传入当前位姿
-        if hasattr(self._tag_detector, "set_robot_pose"):
-            x, y, theta, _ = self._fusion.get_pose()
-            self._tag_detector.set_robot_pose(x, y, theta)
-
         detections = self._tag_detector.detect(frame)
         if detections:
             self._tag_detect_count += 1
@@ -339,7 +430,7 @@ class SLAMService:
             "covariance": P.tolist(),
             "state": status["state"],
             "slam_fail_count": status["slam_fail_count"],
-            "breezyslam_available": status["breezyslam_available"],
+
             "timestamp": time.time(),
         }
         try:
@@ -419,9 +510,12 @@ def main():
     parser.add_argument("--map-pub", default=DEFAULT_SLAM_MAP_ADDR, help="地图 PUB 地址")
     parser.add_argument("--lidar-scan-pub", default=DEFAULT_LIDAR_SCAN_ADDR, help="激光雷达扫描 PUB 地址")
     parser.add_argument("--lidar-port", default=None, help="雷达串口")
-    parser.add_argument("--mock-lidar", action="store_true", help="使用模拟雷达")
-    parser.add_argument("--mock-tag", action="store_true", help="使用模拟 AprilTag")
-    parser.add_argument("--rate", type=float, default=10.0, help="主循环频率 Hz")
+    parser.add_argument("--rate", type=float, default=None, help="主循环频率 Hz")
+    parser.add_argument("--load-map", default=None, help="启动时加载已有地图 (.npz)")
+    parser.add_argument("--save-map", default=None, help="退出时保存地图到指定路径 (.npz)")
+    parser.add_argument("--init-x", type=float, default=None, help="初始位姿 X (m)")
+    parser.add_argument("--init-y", type=float, default=None, help="初始位姿 Y (m)")
+    parser.add_argument("--init-theta", type=float, default=None, help="初始位姿朝向 (rad)")
     args = parser.parse_args()
 
     service = SLAMService(
@@ -431,9 +525,12 @@ def main():
         map_pub_addr=args.map_pub,
         lidar_scan_pub_addr=args.lidar_scan_pub,
         lidar_port=args.lidar_port,
-        use_mock_lidar=args.mock_lidar,
-        use_mock_apriltag=args.mock_tag,
         publish_rate_hz=args.rate,
+        load_map_path=args.load_map,
+        save_map_path=args.save_map,
+        init_x=args.init_x,
+        init_y=args.init_y,
+        init_theta=args.init_theta,
     )
     service.start()
 

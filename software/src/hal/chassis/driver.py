@@ -84,21 +84,22 @@ class ChassisDriver:
         self.bus.torque_enable()
         time.sleep(0.1)
 
+        self._initialized = True
         # 停止所有轮子
         self.stop()
-
-        self._initialized = True
         print(f"[Chassis] Initialized with wheels: {self.wheel_ids}")
         return True
 
-    def stop(self) -> None:
+    def stop(self, quiet: bool = False) -> None:
         """停止底盘运动"""
+        if not self._initialized:
+            return
         self._current_vx = 0.0
         self._current_vy = 0.0
         self._current_omega = 0.0
 
         for servo_id in self.wheel_ids:
-            self.bus.write_speed(servo_id, 0)
+            self.bus.write_speed(servo_id, 0, quiet=quiet)
 
     def set_velocity(self, vx: float, vy: float, omega: float) -> bool:
         """
@@ -166,27 +167,64 @@ class ChassisDriver:
 
         return [v_left_front, v_right_front, v_rear]
 
+    def _forward_kinematics(self, v_left_front: float, v_right_front: float, v_rear: float) -> Tuple[float, float, float]:
+        """
+        三轮全向轮正运动学
+        从各轮子线速度计算机器人速度
+
+        Returns:
+            (vx, vy, omega) 其中 vx 前进为正，vy 左移为正，omega 逆时针为正 (rad/s)
+            注意：此处的 vy 为底盘内部坐标系（与 set_velocity 中逆运动学使用的坐标系一致）
+        """
+        r = self.config.chassis_radius
+        sqrt3 = math.sqrt(3)
+
+        vx = (v_right_front - v_left_front) / sqrt3
+        vy = (2.0 * v_rear - v_left_front - v_right_front) / 3.0
+        omega = -(v_left_front + v_right_front + v_rear) / (3.0 * r)
+
+        return (vx, vy, omega)
+
     def _wheel_speed_to_servo(self, wheel_speed: float) -> int:
         """
         将轮子线速度 (m/s) 转换为舵机速度值
 
-        ST3215 速度值说明:
-        - 值范围: -3250 ~ 3250
-        - 单位: 约 0.0146 rpm / 单位
-        - 转换为线速度: V(m/s) = speed * 0.0146 * (2*PI*R) / 60
+        优先使用物理模型（基于 servo_max_rpm），若未配置则回退到比例映射。
         """
-        # 最大舵机速度对应的线速度
-        max_speed_value = self.config.default_wheel_speed
-        max_linear_speed = self.config.max_linear_speed
+        scale = self.config.servo_speed_scale
+        max_rpm = self.config.servo_max_rpm
 
-        # 速度比例
-        speed_ratio = wheel_speed / max_linear_speed if max_linear_speed > 0 else 0
+        if max_rpm > 0:
+            # 物理模型：RPM -> rad/s -> m/s
+            # V = (servo_speed / scale) * max_rpm * 2π * R / 60
+            # servo_speed = V * scale * 60 / (max_rpm * 2π * R)
+            rpm = wheel_speed * 60.0 / (2.0 * math.pi * self.config.wheel_radius)
+            servo_speed = int(rpm / max_rpm * scale)
+        else:
+            # 回退到比例映射（与旧版本兼容）
+            max_linear_speed = self.config.max_linear_speed
+            speed_ratio = wheel_speed / max_linear_speed if max_linear_speed > 0 else 0
+            servo_speed = int(speed_ratio * scale)
 
-        # 转换为舵机速度值
-        servo_speed = int(speed_ratio * max_speed_value)
+        return max(-scale, min(scale, servo_speed))
 
-        # 限制范围
-        return max(-3250, min(3250, servo_speed))
+    def _servo_to_wheel_speed(self, servo_speed: int) -> float:
+        """
+        将舵机速度读数转换为轮子线速度 (m/s)
+
+        优先使用物理模型（基于 servo_max_rpm），若未配置则回退到比例映射。
+        """
+        scale = self.config.servo_speed_scale
+        max_rpm = self.config.servo_max_rpm
+
+        if max_rpm > 0:
+            # 物理模型
+            rpm = (servo_speed / scale) * max_rpm
+            return rpm * 2.0 * math.pi * self.config.wheel_radius / 60.0
+        else:
+            # 回退到比例映射
+            max_linear_speed = self.config.max_linear_speed
+            return (servo_speed / scale) * max_linear_speed if scale > 0 else 0.0
 
     def move_forward(self, distance: float, speed: float = 0.2) -> bool:
         """
@@ -233,11 +271,51 @@ class ChassisDriver:
         """获取当前速度 (vx, vy, omega)"""
         return (self._current_vx, self._current_vy, self._current_omega)
 
+    def read_wheel_speeds(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        读取三个轮子的实际线速度 (m/s)
+
+        Returns:
+            (left_front_speed, right_front_speed, rear_speed)，读取失败返回 None
+        """
+        if not self._initialized:
+            return (None, None, None)
+
+        speeds = self.bus.sync_read_speeds(self.wheel_ids)
+        result = []
+        for sid in self.wheel_ids:
+            s = speeds.get(sid)
+            if s is None:
+                result.append(None)
+            else:
+                result.append(self._servo_to_wheel_speed(s))
+        return tuple(result)  # type: ignore[return-value]
+
+    def get_actual_velocity(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        读取轮子实际转速，通过正运动学计算机器人实际速度
+
+        Returns:
+            (vx, vy, omega) 与 set_velocity 输入坐标系一致（vy 左移为正）
+            任一轮子读取失败则返回 (None, None, None)
+        """
+        wheel_speeds = self.read_wheel_speeds()
+        if any(v is None for v in wheel_speeds):
+            return (None, None, None)
+
+        vx, vy_internal, omega_internal = self._forward_kinematics(
+            wheel_speeds[0], wheel_speeds[1], wheel_speeds[2]
+        )
+        # set_velocity 中 vy 和 omega 都被取反后送入逆运动学，
+        # 这里需要恢复外部坐标系（vy 左移为正，omega 逆时针为正）
+        return (vx, -vy_internal, -omega_internal)
+
     def close(self) -> None:
         """关闭底盘驱动"""
         if not self._initialized:
             return  # 已经关闭，避免重复操作
-        self.stop()
+        # 静默停止，避免关闭过程中因串口不稳定而打印错误
+        self.stop(quiet=True)
         time.sleep(0.1)
         self.bus.torque_disable()
         time.sleep(0.1)

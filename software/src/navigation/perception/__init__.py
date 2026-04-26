@@ -1,8 +1,8 @@
 from .depth_estimator import DepthEstimator
 from .obstacle_detector import DepthObstacleDetector
-from .apriltag_detector import AprilTagDetector, MockAprilTagDetector, create_apriltag_detector
+from .apriltag_detector import AprilTagDetector, create_apriltag_detector
 
 __all__ = [
     "DepthEstimator", "DepthObstacleDetector",
-    "AprilTagDetector", "MockAprilTagDetector", "create_apriltag_detector",
+    "AprilTagDetector", "create_apriltag_detector",
 ]

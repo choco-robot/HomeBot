@@ -76,6 +76,15 @@ class VFHLocalPlanner:
         # 2. 构建阻挡数组
         histogram = obstacles
         n = len(histogram)
+
+        # 无障碍物数据时，默认所有方向畅通，直接朝向目标前进
+        if n == 0:
+            vx = cfg.max_linear_speed
+            if goal_distance < 0.3:
+                vx *= goal_distance / 0.3
+            vz = np.clip(goal_angle * 0.5, -cfg.max_angular_speed, cfg.max_angular_speed)
+            return float(vx), float(vz)
+
         blocked = histogram < cfg.safety_distance_m
 
         # 3. 寻找可通行谷

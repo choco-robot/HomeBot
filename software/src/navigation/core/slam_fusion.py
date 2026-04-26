@@ -10,13 +10,15 @@
 - Split CIF 融合: x_fused = w1*x_slam + w2*x_abs, w ∝ tr(P)^-1
 - 绑架恢复: 连续匹配失败 + 检测到标签 → 全局重定位
 
-若 BreezySLAM 未安装，自动回退到 MockSLAM（纯里程计积分模拟）。
+依赖 BreezySLAM，未安装时初始化将直接失败。
 """
 from __future__ import annotations
 
 import math
+import os
 import time
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -41,54 +43,6 @@ Q_SCALE_THETA = 0.05    # 角度 5% 相对噪声
 Q_BASE_THETA = 0.005    # ~0.3° 基础噪声
 
 # ------------------------------------------------------------------------------
-# MockSLAM（BreezySLAM 不可用时回退）
-# ------------------------------------------------------------------------------
-
-class _MockPosition:
-    """兼容 BreezySLAM Position 的模拟对象。"""
-    def __init__(self, x_mm: float, y_mm: float, theta_degrees: float):
-        self.x_mm = x_mm
-        self.y_mm = y_mm
-        self.theta_degrees = theta_degrees
-
-    def copy(self):
-        return _MockPosition(self.x_mm, self.y_mm, self.theta_degrees)
-
-
-class MockSLAM:
-    """模拟 SLAM，当 BreezySLAM 未安装时使用。
-
-    纯里程计积分 + 小噪声，不建图。
-    """
-
-    def __init__(self, map_size_pixels: int, map_size_meters: float):
-        self.map_size_pixels = map_size_pixels
-        self.map_size_meters = map_size_meters
-        center_mm = 500 * map_size_meters
-        self.position = _MockPosition(center_mm, center_mm, 0.0)
-
-    def update(self, scans_mm, pose_change=None, scan_angles_degrees=None, should_update_map=True):
-        if pose_change is None:
-            pose_change = (0, 0, 0)
-        dxy_mm, dtheta_deg, dt = pose_change
-        theta_rad = math.radians(self.position.theta_degrees)
-        self.position.x_mm += dxy_mm * math.cos(theta_rad)
-        self.position.y_mm += dxy_mm * math.sin(theta_rad)
-        self.position.theta_degrees += dtheta_deg
-
-    def getpos(self):
-        return self.position.x_mm, self.position.y_mm, self.position.theta_degrees
-
-    def getmap(self, mapbytes):
-        # 返回全灰色地图（127 = 未知）
-        for i in range(len(mapbytes)):
-            mapbytes[i] = 127
-
-    def setmap(self, mapbytes):
-        pass
-
-
-# ------------------------------------------------------------------------------
 # BreezySLAM 封装
 # ------------------------------------------------------------------------------
 
@@ -99,12 +53,8 @@ class BreezySLAMWrapper:
         try:
             from breezyslam.algorithms import RMHC_SLAM
             from breezyslam.sensors import Laser
-            self._available = True
         except ImportError as e:
-            logger.warning(f"BreezySLAM 未安装，使用 MockSLAM 回退: {e}")
-            self._slam = MockSLAM(map_size_pixels, map_size_meters)
-            self._available = False
-            return
+            raise RuntimeError(f"BreezySLAM 未安装，无法初始化 SLAM: {e}") from e
 
         self.laser = Laser(
             scan_size=scan_size,
@@ -119,12 +69,10 @@ class BreezySLAMWrapper:
             map_size_pixels,
             map_size_meters,
             random_seed=42,
+            map_quality=100,
+            hole_width_mm=120,
         )
         self._map_size_meters = map_size_meters
-
-    @property
-    def available(self) -> bool:
-        return self._available
 
     def update(self, scans_mm: List[float], pose_change: Tuple[float, float, float], scan_angles_degrees: Optional[List[float]] = None):
         """更新 SLAM。
@@ -142,11 +90,8 @@ class BreezySLAMWrapper:
 
     def setpos(self, x_mm: float, y_mm: float, theta_degrees: float) -> None:
         """直接设置 SLAM 位姿（用于硬校正 / 绑架恢复）。"""
-        if self._available:
-            import pybreezyslam
-            self._slam.position = pybreezyslam.Position(x_mm, y_mm, theta_degrees)
-        else:
-            self._slam.position = _MockPosition(x_mm, y_mm, theta_degrees)
+        import pybreezyslam
+        self._slam.position = pybreezyslam.Position(x_mm, y_mm, theta_degrees)
 
     def getmap(self, mapbytes: bytearray) -> None:
         self._slam.getmap(mapbytes)
@@ -154,6 +99,8 @@ class BreezySLAMWrapper:
     def setmap(self, mapbytes: bytearray) -> None:
         if hasattr(self._slam, 'setmap'):
             self._slam.setmap(mapbytes)
+        else:
+            logger.warning("底层 SLAM 不支持 setmap，地图加载被忽略")
 
 
 # ------------------------------------------------------------------------------
@@ -212,7 +159,7 @@ class SLAMFusion:
 
         logger.info(
             f"SLAMFusion 初始化: map={map_size_pixels}x{map_size_pixels} "
-            f"({map_size_meters}m), BreezySLAM={'可用' if self.slam.available else 'Mock'}"
+            f"({map_size_meters}m)"
         )
 
     # ------------------------------------------------------------------
@@ -382,7 +329,7 @@ class SLAMFusion:
         Returns:
             (x_m, y_m, theta_rad, P_3x3)
         """
-        return -self.x, self.y, -self.theta, self.P.copy()
+        return self.x, self.y, self.theta, self.P.copy()
 
     def get_map_bytes(self) -> bytearray:
         """获取当前栅格地图字节数组。"""
@@ -399,7 +346,6 @@ class SLAMFusion:
             "theta": round(self.theta, 4),
             "covariance": self.P.tolist(),
             "slam_fail_count": self._slam_fail_count,
-            "breezyslam_available": self.slam.available,
         }
 
     # ------------------------------------------------------------------
@@ -493,6 +439,101 @@ class SLAMFusion:
         x, y, theta, ts = odom
         self._last_odom_xyt = (x, y, theta)
         self._last_odom_time = ts
+
+    # ------------------------------------------------------------------
+    # 地图持久化
+    # ------------------------------------------------------------------
+    def save_map(self, path: str) -> None:
+        """将当前栅格地图和位姿保存为 .npz 文件。
+
+        Args:
+            path: 保存路径，如 "maps/home_map.npz"
+        """
+        mapbytes = self.get_map_bytes()
+        np_bytes = np.frombuffer(mapbytes, dtype=np.uint8)
+        np.savez(
+            path,
+            map_bytes=np_bytes,
+            map_size_pixels=self.map_size_pixels,
+            map_size_meters=self.map_size_meters,
+            pose_x=self.x,
+            pose_y=self.y,
+            pose_theta=self.theta,
+            timestamp=time.time(),
+        )
+        logger.info(f"地图已保存: {path} (pose=({self.x:.3f}, {self.y:.3f}, {math.degrees(self.theta):.2f}°))")
+
+    def load_map(self, path: str) -> None:
+        """从 .npz 文件加载栅格地图。
+
+        加载后会自动将地图写入底层 SLAM，但不会改变当前位姿。
+        如需同时恢复位姿，请在 load_map 后调用 set_initial_pose()。
+
+        Args:
+            path: 地图文件路径
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"地图文件不存在: {path}")
+
+        data = np.load(path)
+        loaded_pixels = int(data["map_size_pixels"])
+        loaded_meters = float(data["map_size_meters"])
+
+        if loaded_pixels != self.map_size_pixels or abs(loaded_meters - self.map_size_meters) > 1e-6:
+            raise ValueError(
+                f"地图尺寸不匹配: 文件={loaded_pixels}px/{loaded_meters}m, "
+                f"当前={self.map_size_pixels}px/{self.map_size_meters}m"
+            )
+
+        np_bytes = data["map_bytes"].astype(np.uint8)
+        mapbytes = bytearray(np_bytes.tobytes())
+        self.slam.setmap(mapbytes)
+
+        logger.info(f"地图已加载: {path} ({loaded_pixels}px/{loaded_meters}m)")
+
+    def get_saved_pose(self, path: str) -> Optional[Tuple[float, float, float]]:
+        """读取地图文件中保存的位姿（若存在）。
+
+        Returns:
+            (x, y, theta) 或 None
+        """
+        if not os.path.exists(path):
+            return None
+        try:
+            data = np.load(path)
+            if "pose_x" in data and "pose_y" in data and "pose_theta" in data:
+                return float(data["pose_x"]), float(data["pose_y"]), float(data["pose_theta"])
+        except Exception as e:
+            logger.warning(f"读取地图保存位姿失败: {e}")
+        return None
+
+    # ------------------------------------------------------------------
+    # 初始位姿设置
+    # ------------------------------------------------------------------
+    def set_initial_pose(self, x: float, y: float, theta: float) -> None:
+        """设置机器人初始位姿，同步更新融合状态和底层 SLAM 粒子群。
+
+        Args:
+            x: 世界坐标 X (m)
+            y: 世界坐标 Y (m)
+            theta: 朝向 (rad)
+        """
+        self.x = float(x)
+        self.y = float(y)
+        self.theta = float(theta)
+        self.P = np.diag([0.01, 0.01, 0.001])
+        self._slam_fail_count = 0
+        self.state = "NORMAL"
+
+        # 重置 SLAM 底层位姿（BreezySLAM 以地图左上角为原点，单位 mm/deg）
+        x_mm = self.x * 1000.0 + self._map_center_mm
+        y_mm = self.y * 1000.0 + self._map_center_mm
+        theta_deg = math.degrees(self.theta)
+        self.slam.setpos(x_mm, y_mm, theta_deg)
+
+        logger.info(
+            f"初始位姿已设置: ({self.x:.3f}, {self.y:.3f}, {math.degrees(self.theta):.2f}°)"
+        )
 
     def reset_pose(self, x: float, y: float, theta: float) -> None:
         """重置 SLAM 融合位姿（硬校正）。"""

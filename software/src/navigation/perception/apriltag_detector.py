@@ -10,7 +10,7 @@ r"""AprilTag 视觉定位检测器
     3. 已知标签世界坐标，推导相机绝对位姿
     4. 输出协方差与置信度
 
-支持真实检测和 Mock 模拟模式。
+仅支持真实检测，无模拟回退。
 """
 from __future__ import annotations
 
@@ -331,77 +331,6 @@ class AprilTagDetector:
 
 
 # ------------------------------------------------------------------------------
-# Mock 模拟检测器
-# ------------------------------------------------------------------------------
-
-class MockAprilTagDetector:
-    """模拟 AprilTag 检测器，用于无相机/无标签环境测试。"""
-
-    def __init__(
-        self,
-        tag_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
-        fov_deg: float = 75.0,
-        max_range_m: float = 3.0,
-        confidence_threshold: float = 0.8,
-    ):
-        self.tag_map = tag_map or {}
-        self.fov_rad = math.radians(fov_deg)
-        self.max_range_m = max_range_m
-        self.confidence_threshold = confidence_threshold
-        self._robot_pose: Optional[Tuple[float, float, float]] = None
-
-    def set_robot_pose(self, x: float, y: float, theta: float) -> None:
-        self._robot_pose = (x, y, theta)
-
-    def detect(self, frame: Optional[np.ndarray] = None) -> List[Dict]:
-        if self._robot_pose is None:
-            return []
-
-        rx, ry, rtheta = self._robot_pose
-        results = []
-
-        for tag_id, (tx, ty, ttheta) in self.tag_map.items():
-            dx = tx - rx
-            dy = ty - ry
-            dist = math.hypot(dx, dy)
-            if dist > self.max_range_m or dist < 0.1:
-                continue
-
-            bearing = math.atan2(dy, dx)
-            rel_angle = _normalize_angle(bearing - rtheta)
-            if abs(rel_angle) > self.fov_rad / 2:
-                continue
-
-            confidence = 1.0 - (abs(rel_angle) / (self.fov_rad / 2)) * 0.3
-            confidence -= (dist / self.max_range_m) * 0.2
-            confidence = min(1.0, max(0.0, confidence))
-
-            noise_xy = 0.02 * dist
-            noise_theta = 0.03 * dist
-            x_r = rx + np.random.normal(0, noise_xy)
-            y_r = ry + np.random.normal(0, noise_xy)
-            theta_r = _normalize_angle(rtheta + np.random.normal(0, noise_theta))
-
-            sigma_xy = 0.01 + 0.015 * dist
-            P = np.diag([sigma_xy ** 2, sigma_xy ** 2, (0.02 + 0.03 * dist) ** 2])
-
-            results.append({
-                "tag_id": tag_id,
-                "x": float(x_r),
-                "y": float(y_r),
-                "theta": float(theta_r),
-                "confidence": float(confidence),
-                "pose_err": float(0.5 + dist * 0.3),
-                "covariance": P,
-                "rvec": np.zeros((3, 1)),
-                "tvec": np.zeros((3, 1)),
-                "corners": None,
-            })
-
-        return results
-
-
-# ------------------------------------------------------------------------------
 # 工厂函数
 # ------------------------------------------------------------------------------
 
@@ -409,12 +338,8 @@ def create_apriltag_detector(
     camera_matrix: Optional[np.ndarray] = None,
     tag_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
     tag_size_m: float = 0.165,
-    mock: bool = False,
-) -> object:
+) -> AprilTagDetector:
     """创建 AprilTag 检测器。"""
-    if mock:
-        return MockAprilTagDetector(tag_map=tag_map)
-
     if camera_matrix is None:
         camera_matrix = np.array([
             [600.0, 0.0, 320.0],
