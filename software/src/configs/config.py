@@ -38,7 +38,7 @@ class WebCameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM23"  # 与底盘共用串口
+    serial_port: str = "COM12"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -52,7 +52,7 @@ class ArmConfig:
     forearm_length: float = 130.0    # 小臂长度 (L2)
     # 关节角度限制 (度) 人工设置，AI勿动
     joint_limits: dict = field(default_factory=lambda: {
-        "base": (-180, 180),
+        "base": (-90, 90),
         "shoulder": (0, 180),
         "elbow": (0, 180),
         "wrist_flex": (-90, 90),
@@ -64,10 +64,10 @@ class ArmConfig:
     default_acc: int = 50
     # 休息位置/待机位置 (度) - 服务启动时自动恢复到此位置 人工设置，AI勿动
     rest_position: dict = field(default_factory=lambda: {
-        "base": -90,         # J1: 基座旋转
-        "shoulder": 0,   # J2: 肩关节（自然下垂）
+        "base": 0,         # J1: 基座旋转
+        "shoulder": 15,   # J2: 肩关节（自然下垂）
         "elbow": 150,       # J3: 肘关节
-        "wrist_flex": 30,   # J4: 腕关节屈伸
+        "wrist_flex": 0,   # J4: 腕关节屈伸
         "wrist_roll": 0,   # J5: 腕关节旋转
         "gripper": 45,     # J6: 夹爪（半开）
     })
