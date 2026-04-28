@@ -25,6 +25,17 @@ class CameraConfig:
 
 
 @dataclass
+class WebCameraConfig:
+    """网络摄像头配置"""
+    enabled: bool = False                         # 是否启用网络摄像头
+    url: str = "rtsp://admin:admin@192.168.1.100:554/live"  # 视频流地址
+    width: int = 0                                # 0=使用原始分辨率
+    height: int = 0                               # 0=使用原始分辨率
+    fps: int = 0                                  # 0=使用原始帧率
+    reconnect_interval: float = 5.0               # 断线重连间隔 (秒)
+
+
+@dataclass
 class ArmConfig:
     """机械臂配置"""
     serial_port: str = "COM23"  # 与底盘共用串口
@@ -338,6 +349,7 @@ class BatteryConfig:
 class Config:
     """全局配置"""
     camera: CameraConfig = field(default_factory=CameraConfig)
+    webcamera: WebCameraConfig = field(default_factory=WebCameraConfig)
     arm: ArmConfig = field(default_factory=ArmConfig)
     chassis: ChassisConfig = field(default_factory=ChassisConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
@@ -359,6 +371,7 @@ class Config:
         """从字典创建配置"""
         return cls(
             camera=CameraConfig(**data.get("camera", {})),
+            webcamera=WebCameraConfig(**data.get("webcamera", {})),
             arm=ArmConfig(**data.get("arm", {})),
             chassis=ChassisConfig(**data.get("chassis", {})),
             battery=BatteryConfig(**data.get("battery", {})),

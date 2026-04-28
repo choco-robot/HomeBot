@@ -142,6 +142,48 @@ class VisionService:
     listen = start
 
 
+class WebCameraVisionService(VisionService):
+    """网络摄像头视觉服务 - 从网络摄像头/视频流 URL 获取图像并重新发布.
+    
+    继承 VisionService，复用其发布逻辑，仅修改相机初始化部分.
+    """
+    
+    def __init__(self, pub_addr: str = "tcp://*:5560", config=None):
+        """初始化网络摄像头视觉服务.
+        
+        Args:
+            pub_addr: ZMQ PUB socket 绑定地址
+            config: 配置对象，需包含 webcamera 配置
+        """
+        super().__init__(pub_addr=pub_addr, config=config)
+        
+        # 读取网络摄像头配置 (如果配置中没有则使用默认值)
+        if hasattr(self._config, 'webcamera'):
+            wc = self._config.webcamera
+            self._wc_url = getattr(wc, 'url', "")
+            self._wc_width = getattr(wc, 'width', 0)
+            self._wc_height = getattr(wc, 'height', 0)
+            self._wc_fps = getattr(wc, 'fps', 0)
+        else:
+            self._wc_url = ""
+            self._wc_width = 0
+            self._wc_height = 0
+            self._wc_fps = 0
+    
+    def _init_camera(self):
+        """初始化网络摄像头驱动."""
+        from hal.camera.webcamera_driver import WebCameraDriver
+        if not self._wc_url:
+            raise RuntimeError("webcamera URL not configured")
+        self._cam = WebCameraDriver(
+            url=self._wc_url,
+            width=self._wc_width,
+            height=self._wc_height,
+            fps=self._wc_fps
+        )
+        logger.info(f"WebCamera initialized: url={self._wc_url}")
+
+
 class VisionSubscriber:
     """视觉订阅者 - 用于其他应用订阅 VisionService 发布的图像帧.
     

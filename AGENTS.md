@@ -18,6 +18,7 @@ HomeBot 是一个面向家庭场景的轻量级机器人项目，采用**分层�
 | 组件 | 技术 |
 |------|------|
 | 语言 | Python 3.11+ |
+| Python 环境 | `venv/` 目录下的虚拟环境 |
 | 通信 | ZeroMQ (pyzmq) |
 | Web 框架 | Flask + Flask-SocketIO |
 | 计算机视觉 | OpenCV, Ultralytics YOLO |
@@ -286,6 +287,22 @@ api_key = config.llm.api_key  # 自动从环境变量加载
 
 ## 构建与运行
 
+### Python 环境
+
+**项目使用 `venv/` 目录下的虚拟环境，所有 Python 命令应通过该环境执行：**
+
+```bash
+# Windows
+venv\Scripts\python.exe -m pip install -e .
+venv\Scripts\python.exe start_system.py
+
+# Linux / macOS / 树莓派
+venv/bin/python -m pip install -e .
+venv/bin/python start_system.py
+```
+
+> 注意：不要直接使用系统默认的 `python` 命令，确保始终使用 `venv` 中的 Python 解释器。
+
 ### 安装依赖
 
 ```bash
@@ -303,7 +320,9 @@ pip install -r requirements.txt
 **方式一：一键启动（推荐）**
 ```bash
 cd software
-python start_system.py
+..\venv\Scripts\python.exe start_system.py    # Windows
+# 或
+../venv/bin/python start_system.py             # Linux/macOS
 ```
 
 **方式二：手动启动（分终端）**
@@ -311,64 +330,64 @@ python start_system.py
 终端 1 - 底盘服务：
 ```bash
 cd software/src
-python -m services.motion_service.chassis_service
-# 或指定串口：python -m services.motion_service.chassis_service --port COM3
+..\..\venv\Scripts\python.exe -m services.motion_service.chassis_service
+# 或指定串口：..\..\venv\Scripts\python.exe -m services.motion_service.chassis_service --port COM3
 ```
 
 终端 2 - 视觉服务：
 ```bash
 cd software/src
-python -m services.vision_service
-# 或带显示：python -m services.vision_service --display
+..\..\venv\Scripts\python.exe -m services.vision_service
+# 或带显示：..\..\venv\Scripts\python.exe -m services.vision_service --display
 ```
 
 终端 3 - Web 控制端：
 ```bash
 cd software/src
-python -m applications.remote_control
-# 或指定参数：python -m applications.remote_control --host 0.0.0.0 --port 5000
+..\..\venv\Scripts\python.exe -m applications.remote_control
+# 或指定参数：..\..\venv\Scripts\python.exe -m applications.remote_control --host 0.0.0.0 --port 5000
 ```
 
 终端 4 - 人体跟随（可选）：
 ```bash
 cd software/src
-python -m applications.human_follow
-# 或带显示：python -m applications.human_follow --display
+..\..\venv\Scripts\python.exe -m applications.human_follow
+# 或带显示：..\..\venv\Scripts\python.exe -m applications.human_follow --display
 ```
 
 终端 5 - 游戏手柄控制（可选）：
 ```bash
 cd software/src
-python -m applications.gamepad_control
-# 或指定手柄：python -m applications.gamepad_control --controller 0
+..\..\venv\Scripts\python.exe -m applications.gamepad_control
+# 或指定手柄：..\..\venv\Scripts\python.exe -m applications.gamepad_control --controller 0
 ```
 
 终端 6 - 语音交互服务（可选）：
 ```bash
 cd software/src
 # 先启动 Wakeup+ASR 服务（PUB模式）
-python -m services.speech_service wakeup
+..\..\venv\Scripts\python.exe -m services.speech_service wakeup
 
 # 再启动语音交互应用（SUB模式，新终端）
-python -m applications.speech_interaction
+..\..\venv\Scripts\python.exe -m applications.speech_interaction
 ```
 
 或者使用一键启动脚本：
 ```bash
 cd software
-python start_speech_service.py
+..\venv\Scripts\python.exe start_speech_service.py
 ```
 
 检查模型文件：
 ```bash
 cd software
-python start_speech_service.py --check-models
+..\venv\Scripts\python.exe start_speech_service.py --check-models
 ```
 
 下载语音模型（首次使用）：
 ```bash
 cd software
-python tools/download_speech_models.py
+..\venv\Scripts\python.exe tools/download_speech_models.py
 ```
 
 ### 访问控制界面
@@ -421,9 +440,9 @@ python -m applications.human_follow
 
 ```bash
 cd software/src
-python -m tests.test_zmq
-python -m tests.test_human_follow
-python -m tests.test_web_control
+..\..\venv\Scripts\python.exe -m tests.test_zmq
+..\..\venv\Scripts\python.exe -m tests.test_human_follow
+..\..\venv\Scripts\python.exe -m tests.test_web_control
 ```
 
 ## 安全注意事项
@@ -446,7 +465,9 @@ python -m tests.test_web_control
 **模型下载：**
 首次运行人体跟随时会自动下载 YOLO 模型，或手动运行：
 ```bash
-python software/tools/download_models.py
+venv\Scripts\python.exe software/tools/download_models.py    # Windows
+# 或
+venv/bin/python software/tools/download_models.py             # Linux/macOS
 ```
 
 ## 扩展开发
@@ -459,4 +480,4 @@ python software/tools/download_models.py
 
 ---
 
-*最后更新：2026-03-17*
+*最后更新：2026-04-28*

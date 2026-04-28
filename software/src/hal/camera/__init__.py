@@ -11,9 +11,11 @@
 """
 
 from hal.camera.driver import CameraDriver
+from hal.camera.webcamera_driver import WebCameraDriver
 
 __all__ = [
     'CameraDriver',
+    'WebCameraDriver',
     'CameraPublisher', 
     'CameraSubscriber',
     'VisionClient',

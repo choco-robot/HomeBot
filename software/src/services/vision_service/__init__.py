@@ -14,9 +14,10 @@
     frame_id, frame = subscriber.read_frame()
 """
 
-from services.vision_service.vision import VisionService, VisionSubscriber
+from services.vision_service.vision import VisionService, VisionSubscriber, WebCameraVisionService
 
 __all__ = [
     'VisionService',
     'VisionSubscriber',
+    'WebCameraVisionService',
 ]
