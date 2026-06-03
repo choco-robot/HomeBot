@@ -1,7 +1,7 @@
 """Hardware Abstraction Layer"""
 
 from .ftservo_driver import FTServoBus, ServoConfig, ServoState, ServoMode
-from .chassis.driver import ChassisDriver, ChassisConfig, OmniWheelKinematics
+from .chassis import OmniChassisDriver, DiffChassisDriver, ChassisDriver, OmniWheelKinematics
 from .arm.driver import ArmDriver, ArmConfig, ArmKinematics
 from .battery.driver import BatteryDriver, BatteryState, BatteryStatus
 
@@ -12,8 +12,9 @@ __all__ = [
     "ServoState",
     "ServoMode",
     # 底盘
+    "OmniChassisDriver",
+    "DiffChassisDriver",
     "ChassisDriver",
-    "ChassisConfig",
     "OmniWheelKinematics",
     # 机械臂
     "ArmDriver",

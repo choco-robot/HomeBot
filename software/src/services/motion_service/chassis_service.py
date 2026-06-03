@@ -35,8 +35,18 @@ class RealChassisController:
     def __init__(self, config: Optional[ChassisConfig] = None, bus=None):
         # 从全局配置读取，或使用传入的配置
         self.config = config or get_config().chassis
-        # 支持传入外部总线（共享模式）
-        self.driver = ChassisDriver(self.config, bus=bus)
+        
+        # 根据底盘类型选择驱动类
+        if self.config.chassis_type == "diff":
+            from hal.chassis.diff_driver import DiffChassisDriver
+            self.driver = DiffChassisDriver(self.config, bus=bus)
+            print(f"[RealChassis] 使用双轮差动底盘驱动 (type=diff)")
+        else:
+            # 默认使用三轮全向轮底盘
+            from hal.chassis.driver import OmniChassisDriver
+            self.driver = OmniChassisDriver(self.config, bus=bus)
+            print(f"[RealChassis] 使用三轮全向底盘驱动 (type={self.config.chassis_type})")
+        
         self._initialized = False
         
     def initialize(self) -> bool:
@@ -237,6 +247,26 @@ class ChassisService:
                 "timestamp": current_time,
                 "emergency_locked": self._emergency_locked,
             }
+            
+            # 如果底盘支持直接读取里程计（如 DiffChassisDriver），加入状态中
+            # 优先使用底盘编码器里程计，避免上位机积分的累积误差
+            if hasattr(self.chassis.driver, 'read_odometry'):
+                try:
+                    odom = self.chassis.driver.read_odometry()
+                    if odom is not None:
+                        state["odom"] = {
+                            "x": float(odom.get("x", 0.0)),
+                            "y": float(odom.get("y", 0.0)),
+                            "yaw": float(odom.get("theta", 0.0)),
+                            "source": "chassis_encoder",
+                        }
+                        # 同时发布底盘反馈的实际速度（比命令速度更准确）
+                        state["vx_feedback"] = float(odom.get("vx", self._last_vx))
+                        state["vz_feedback"] = float(odom.get("vz", self._last_vz))
+                except Exception as e:
+                    # 读取失败时不阻断状态发布
+                    pass
+            
             try:
                 self._state_pub_socket.send_json(state, flags=zmq.NOBLOCK)
                 self._last_state_publish_time = current_time

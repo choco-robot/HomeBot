@@ -12,9 +12,9 @@ from ..ftservo_driver import FTServoBus, ServoMode
 from configs import ChassisConfig
 
 
-class ChassisDriver:
+class OmniChassisDriver:
     """
-    底盘驱动器
+    三轮全向底盘驱动器
     控制全向轮底盘的运动
     """
 
@@ -244,6 +244,10 @@ class ChassisDriver:
         self.bus.disconnect()
         self._initialized = False
         print("[Chassis] Closed")
+
+
+# 向后兼容别名
+ChassisDriver = OmniChassisDriver
 
 
 class OmniWheelKinematics:

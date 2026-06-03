@@ -107,11 +107,21 @@ class OdomService:
                     vy = state.get("vy", 0.0)
                     vz = state.get("vz", 0.0)
 
-                    # 2. 积分推算位姿
-                    if self._last_time is not None:
-                        dt = now - self._last_time
-                        if dt > 0 and dt < 1.0:  # 忽略异常大的时间间隔
-                            self._integrate(vx, vy, vz, dt)
+                    # 2. 优先使用底盘直接发布的编码器里程计（如 DiffChassisDriver）
+                    chassis_odom = state.get("odom")
+                    if chassis_odom is not None and chassis_odom.get("source") == "chassis_encoder":
+                        # 底盘直接提供了编码器里程计，跳过速度积分，直接使用
+                        self.x = float(chassis_odom.get("x", self.x))
+                        self.y = float(chassis_odom.get("y", self.y))
+                        self.yaw = float(chassis_odom.get("yaw", self.yaw))
+                        # 规范化 yaw
+                        self.yaw = math.atan2(math.sin(self.yaw), math.cos(self.yaw))
+                    else:
+                        # 无底盘里程计（如 OmniChassisDriver），用速度积分推算位姿
+                        if self._last_time is not None:
+                            dt = now - self._last_time
+                            if dt > 0 and dt < 1.0:  # 忽略异常大的时间间隔
+                                self._integrate(vx, vy, vz, dt)
 
                     self._last_vx = vx
                     self._last_vy = vy
