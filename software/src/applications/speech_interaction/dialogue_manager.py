@@ -27,6 +27,7 @@ class DialogueManager:
             "history": []
         }
         self.system_prompt = self._get_system_prompt()
+        self.provider = llm_config.provider
         
         # 初始化 OpenAI 客户端
         self.client = OpenAI(
@@ -74,6 +75,12 @@ class DialogueManager:
 - release_object(): 执行释放/松开动作/打开夹爪
 - hold_object(): "帮我拿着这个" - 复合动作：复位→打开夹爪→等待2秒→关闭夹爪
 - move_arm_to_position(joint_angles): 移动机械臂到指定关节角度
+
+【视觉跟随】
+- start_human_follow(): 启动人体跟随，机器人会自动跟随画面中的人体移动
+- stop_human_follow(): 停止人体跟随
+- start_face_tracking(): 启动人脸跟踪，机械臂相机会自动左右上下转动，保持人脸在画面正中间
+- stop_face_tracking(): 停止人脸跟踪
 
 重要规则：
 1. 用户要求控制机械臂或底盘时，必须强制调用工具，不要只回复文字不干活
@@ -150,16 +157,21 @@ class DialogueManager:
             dict: LLM API 返回结果
         """
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                top_p=self.top_p,
-                tools=self.mcp_tools if self.mcp_tools else None,
-                tool_choice="auto" if self.mcp_tools else None,
-                extra_body={"thinking": {"type": "disabled"}}  # 显式禁用思考功能，提升响应速度
-            )
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "top_p": self.top_p,
+                "tools": self.mcp_tools if self.mcp_tools else None,
+                "tool_choice": "auto" if self.mcp_tools else None,
+            }
+            # 火山Ark 特有参数：显式禁用思考功能，提升响应速度
+            # DeepSeek 不支持此参数，因此仅对火山Ark发送
+            if self.provider == "volcano":
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            
+            response = self.client.chat.completions.create(**kwargs)
             
             # 转换为统一格式
             response_dict = {

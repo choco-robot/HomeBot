@@ -31,6 +31,11 @@ MODELS = {
         "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
         "description": "YOLO11 Nano - alternative lightweight model (~2.6MB)",
         "size_mb": 2.6
+    },
+    "yolo11s.pt": {
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt",
+        "description": "YOLO11 Small - alternative balanced model (~9.5MB)",
+        "size_mb": 9.5
     }
 }
 

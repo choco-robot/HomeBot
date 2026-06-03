@@ -79,8 +79,9 @@ class TTSSecrets:
 @dataclass
 class LLMSecrets:
     """LLM 密钥配置"""
+    provider: str = "volcano"                 # 提供商: volcano / deepseek
     api_key: str = ""
-    api_url: str = "https://ark.cn-beijing.volces.com/api/v3"  # 默认使用火山Ark
+    api_url: str = ""                         # 默认在 load_secrets 中根据 provider 设置
     model: str = ""  # 火山Ark需要填写模型ID，如 ep-20250324123456-abcdef
 
 
@@ -150,12 +151,24 @@ def load_secrets() -> Secrets:
         voice_type=_get_env("VOLCANO_VOICE_TYPE", "zh_female_vv_uranus_bigtts"),
     )
     
-    # LLM 配置 - 优先使用火山Ark，兼容DeepSeek
-    llm = LLMSecrets(
-        api_key=_get_env("ARK_API_KEY", _get_env("VOLCANO_API_KEY", _get_env("DEEPSEEK_API_KEY", _get_env("LLM_API_KEY", "")))),
-        api_url=_get_env("ARK_API_URL", _get_env("LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3")),
-        model=_get_env("ARK_MODEL_ID", _get_env("VOLCANO_MODEL_ID", _get_env("DEEPSEEK_MODEL", _get_env("LLM_MODEL", "")))),
-    )
+    # LLM 配置 - 根据 provider 选择对应的环境变量
+    llm_provider = _get_env("LLM_PROVIDER", "volcano").lower().strip()
+    
+    if llm_provider == "deepseek":
+        llm = LLMSecrets(
+            provider="deepseek",
+            api_key=_get_env("DEEPSEEK_API_KEY", _get_env("LLM_API_KEY", "")),
+            api_url=_get_env("DEEPSEEK_API_URL", _get_env("LLM_API_URL", "https://api.deepseek.com/v1")),
+            model=_get_env("DEEPSEEK_MODEL", _get_env("LLM_MODEL", "deepseek-chat")),
+        )
+    else:
+        # 默认火山Ark
+        llm = LLMSecrets(
+            provider="volcano",
+            api_key=_get_env("ARK_API_KEY", _get_env("VOLCANO_API_KEY", _get_env("LLM_API_KEY", ""))),
+            api_url=_get_env("ARK_API_URL", _get_env("LLM_API_URL", "https://ark.cn-beijing.volces.com/api/v3")),
+            model=_get_env("ARK_MODEL_ID", _get_env("VOLCANO_MODEL_ID", _get_env("LLM_MODEL", ""))),
+        )
     
     # Vision 配置
     vision_provider = _get_env("VISION_PROVIDER", "deepseek")
@@ -228,6 +241,7 @@ def check_secrets(verbose: bool = True) -> dict:
         },
         "llm": {
             "configured": bool(secrets.llm.api_key),
+            "provider": secrets.llm.provider,
             "api_key": _mask_key(secrets.llm.api_key),
             "model": secrets.llm.model,
         },
@@ -255,14 +269,21 @@ def check_secrets(verbose: bool = True) -> dict:
         
         # LLM 状态
         llm_ok = status["llm"]["configured"]
+        llm_provider = status["llm"].get("provider", "volcano")
         status_icon = "[OK]" if llm_ok else "[MISSING]"
-        print(f"\n[LLM] 火山Ark LLM: {status_icon}")
+        provider_name = "DeepSeek" if llm_provider == "deepseek" else "火山Ark"
+        print(f"\n[LLM] {provider_name} LLM: {status_icon}")
         if llm_ok:
+            print(f"   Provider: {llm_provider}")
             print(f"   API Key: {status['llm']['api_key']}")
             print(f"   Model: {status['llm']['model'] if status['llm']['model'] else '(未设置，必填)'}")
         else:
-            print("   [提示] 设置 ARK_API_KEY 和 ARK_MODEL_ID 环境变量")
-            print("   ARK_MODEL_ID 格式: ep-20250324123456-abcdef")
+            if llm_provider == "deepseek":
+                print("   [提示] 设置 DEEPSEEK_API_KEY 环境变量")
+                print("   模型默认使用 deepseek-chat")
+            else:
+                print("   [提示] 设置 ARK_API_KEY 和 ARK_MODEL_ID 环境变量")
+                print("   ARK_MODEL_ID 格式: ep-20250324123456-abcdef")
         
         # Vision 状态
         vision_ok = status["vision"]["configured"]
@@ -312,23 +333,39 @@ def require_secrets(service: str) -> None:
             sys.exit(1)
     
     elif service == "llm":
+        provider = secrets.llm.provider
         if not secrets.llm.api_key:
-            logger.error("火山Ark LLM API Key 未配置")
-            print("\n[错误] 火山Ark LLM API Key 未配置")
-            print("\n请设置以下环境变量:")
-            print("  ARK_API_KEY=your_api_key")
-            print("  ARK_MODEL_ID=ep-your_model_id")
-            print(f"\n或创建 {PROJECT_ROOT / '.env.local'} 文件，格式如下:")
-            print("  ARK_API_KEY=your_api_key")
-            print("  ARK_MODEL_ID=ep-20250324123456-abcdef")
+            if provider == "deepseek":
+                logger.error("DeepSeek API Key 未配置")
+                print("\n[错误] DeepSeek LLM API Key 未配置")
+                print("\n请设置以下环境变量:")
+                print("  DEEPSEEK_API_KEY=your_api_key")
+                print("\n可选环境变量:")
+                print("  DEEPSEEK_API_URL=https://api.deepseek.com/v1")
+                print("  DEEPSEEK_MODEL=deepseek-chat")
+                print(f"\n或创建 {PROJECT_ROOT / '.env.local'} 文件，格式如下:")
+                print("  LLM_PROVIDER=deepseek")
+                print("  DEEPSEEK_API_KEY=sk-your_api_key")
+            else:
+                logger.error("火山Ark LLM API Key 未配置")
+                print("\n[错误] 火山Ark LLM API Key 未配置")
+                print("\n请设置以下环境变量:")
+                print("  ARK_API_KEY=your_api_key")
+                print("  ARK_MODEL_ID=ep-your_model_id")
+                print(f"\n或创建 {PROJECT_ROOT / '.env.local'} 文件，格式如下:")
+                print("  ARK_API_KEY=your_api_key")
+                print("  ARK_MODEL_ID=ep-20250324123456-abcdef")
             sys.exit(1)
         if not secrets.llm.model:
-            logger.error("火山Ark 模型ID未配置")
-            print("\n[错误] 火山Ark 模型ID未配置")
-            print("\n请在 .env.local 文件中设置 ARK_MODEL_ID:")
-            print("  ARK_MODEL_ID=ep-20250324123456-abcdef")
-            print("\n注意: 需要在火山方舟控制台创建推理接入点并复制模型ID")
-            sys.exit(1)
+            if provider == "deepseek":
+                logger.warning("DeepSeek 模型未配置，将使用默认模型 deepseek-chat")
+            else:
+                logger.error("火山Ark 模型ID未配置")
+                print("\n[错误] 火山Ark 模型ID未配置")
+                print("\n请在 .env.local 文件中设置 ARK_MODEL_ID:")
+                print("  ARK_MODEL_ID=ep-20250324123456-abcdef")
+                print("\n注意: 需要在火山方舟控制台创建推理接入点并复制模型ID")
+                sys.exit(1)
     
     elif service == "vision":
         # Vision 可以复用 DeepSeek 的配置

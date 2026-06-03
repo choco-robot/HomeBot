@@ -420,6 +420,13 @@ _human_follow_log_files: list = []  # 存储日志文件句柄，用于后续关
 # 人体跟随预加载状态
 _human_follow_preload_result: Optional[dict] = None
 
+# 人脸跟踪进程
+_face_tracking_process: Optional[subprocess.Popen] = None
+_face_tracking_log_files: list = []
+
+# 人脸跟踪预加载状态
+_face_tracking_preload_result: Optional[dict] = None
+
 
 def preload_human_follow_model() -> dict:
     """
@@ -508,6 +515,94 @@ def get_human_follow_preload_status() -> dict:
     """
     global _human_follow_preload_result
     return _human_follow_preload_result or {"status": "unknown", "message": "尚未预加载"}
+
+
+def preload_face_tracking_model() -> dict:
+    """
+    预加载人脸跟踪模型
+    
+    在应用启动时后台加载模型，验证模型文件可用。
+    如果加载失败，返回错误信息供语音提示使用。
+    
+    Returns:
+        dict: 预加载结果，包含 status 和 message
+    """
+    global _face_tracking_preload_result
+    
+    try:
+        logger.info("开始预加载人脸跟踪模型...")
+        
+        # 直接导入并初始化检测器，验证模型可加载
+        import sys
+        import os
+        
+        # 添加 src 到路径
+        current_file = os.path.abspath(__file__)
+        software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+        src_dir = os.path.join(software_dir, "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        
+        from applications.human_follow.detector import HumanDetector
+        
+        # 人脸跟踪使用 yolov8n-face-lindevs.pt 模型
+        model_path = os.path.join(software_dir, "models", "yolov8n-face-lindevs.pt")
+        if not os.path.exists(model_path):
+            _face_tracking_preload_result = {
+                "status": "error",
+                "message": f"模型文件不存在: {model_path}"
+            }
+            logger.error(f"人脸跟踪模型文件不存在: {model_path}")
+            return _face_tracking_preload_result
+        
+        logger.info(f"加载模型: {model_path}")
+        
+        # 初始化检测器（加载模型到内存）
+        detector = HumanDetector(
+            model_path=model_path,
+            conf_threshold=0.5,
+            inference_size=640,
+            use_half=False,
+            device="cpu",
+            detect_mode="face"
+        )
+        
+        if not detector.initialize():
+            _face_tracking_preload_result = {
+                "status": "error",
+                "message": "模型初始化失败"
+            }
+            logger.error("人脸跟踪模型初始化失败")
+            return _face_tracking_preload_result
+        
+        # 预加载成功，释放资源（模型文件已在系统缓存中）
+        detector.release()
+        
+        _face_tracking_preload_result = {
+            "status": "success",
+            "message": "人脸跟踪模型预加载成功"
+        }
+        logger.info("人脸跟踪模型预加载成功")
+            
+    except Exception as e:
+        _face_tracking_preload_result = {
+            "status": "error",
+            "message": f"预加载异常: {str(e)}"
+        }
+        logger.error(f"预加载人脸跟踪模型异常: {e}")
+    
+    return _face_tracking_preload_result
+
+
+def get_face_tracking_preload_status() -> dict:
+    """
+    获取人脸跟踪模型预加载状态
+    
+    Returns:
+        dict: 预加载结果，如果尚未预加载则返回 None
+    """
+    global _face_tracking_preload_result
+    return _face_tracking_preload_result or {"status": "unknown", "message": "尚未预加载"}
 
 
 def get_controller() -> RobotControllerClient:
@@ -1801,6 +1896,251 @@ def start_human_follow() -> dict:
 
 
 @mcp.tool
+def start_face_tracking() -> dict:
+    """启动机械臂人脸跟踪功能
+    
+    启动人脸跟踪应用，机械臂相机会自动检测人脸并跟踪，保持人脸在画面正中间。
+    只控制机械臂 base（左右）和 wrist_flex（上下俯仰）两个关节。
+    当用户说"跟踪人脸"、"看着我"、"启动人脸跟踪"、"人脸跟随"等指令时调用此工具。
+    
+    Returns:
+        启动结果
+    """
+    global _face_tracking_process, _face_tracking_preload_result
+    
+    try:
+        # 检查预加载状态
+        if _face_tracking_preload_result:
+            if _face_tracking_preload_result['status'] == 'error':
+                logger.warning(f"人脸跟踪模型预加载失败，启动可能较慢: {_face_tracking_preload_result['message']}")
+            else:
+                logger.info("人脸跟踪模型已预加载，启动会更快")
+        
+        # 检查是否已经在运行
+        if _face_tracking_process is not None:
+            if _face_tracking_process.poll() is None:
+                return {
+                    "status": "success",
+                    "message": "人脸跟踪已经在运行中"
+                }
+            else:
+                _face_tracking_process = None
+        
+        # 构建启动命令
+        current_file = os.path.abspath(__file__)
+        software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+        src_dir = os.path.join(software_dir, "src")
+        
+        cmd = [
+            sys.executable,
+            "-m",
+            "applications.face_tracking"
+        ]
+        
+        logger.info(f"启动人脸跟踪: {' '.join(cmd)}")
+        logger.info(f"工作目录: {src_dir}")
+        
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        
+        log_dir = os.path.join(software_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        stdout_file = open(os.path.join(log_dir, "face_tracking_stdout.log"), "w")
+        stderr_file = open(os.path.join(log_dir, "face_tracking_stderr.log"), "w")
+        
+        global _face_tracking_log_files
+        _face_tracking_log_files = [stdout_file, stderr_file]
+        
+        _face_tracking_process = subprocess.Popen(
+            cmd,
+            cwd=src_dir,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **kwargs
+        )
+        
+        stdout_file.close()
+        stderr_file.close()
+        
+        logger.info("等待人脸跟踪进程初始化...")
+        time.sleep(3.0)
+        
+        if _face_tracking_process.poll() is not None:
+            time.sleep(0.5)
+            with open(os.path.join(log_dir, "face_tracking_stderr.log"), "r") as f:
+                error_msg = f.read()
+            if not error_msg:
+                with open(os.path.join(log_dir, "face_tracking_stdout.log"), "r") as f:
+                    error_msg = f.read()
+            _face_tracking_process = None
+            logger.error(f"人脸跟踪启动失败: {error_msg}")
+            return {
+                "status": "error",
+                "message": f"人脸跟踪启动失败: {error_msg[:200] if error_msg else '进程异常退出'}"
+            }
+        
+        logger.info("等待服务完全初始化...")
+        time.sleep(2.0)
+        
+        if _face_tracking_process.poll() is not None:
+            time.sleep(0.5)
+            with open(os.path.join(log_dir, "face_tracking_stderr.log"), "r") as f:
+                error_msg = f.read()
+            if not error_msg:
+                with open(os.path.join(log_dir, "face_tracking_stdout.log"), "r") as f:
+                    error_msg = f.read()
+            _face_tracking_process = None
+            logger.error(f"人脸跟踪启动后异常退出: {error_msg[:500]}")
+            return {
+                "status": "error",
+                "message": f"人脸跟踪启动失败: {error_msg[:200] if error_msg else '进程异常退出'}"
+            }
+        
+        try:
+            with open(os.path.join(log_dir, "face_tracking_stdout.log"), "r") as f:
+                recent_logs = f.read()[-500:]
+            if "初始化完成" in recent_logs or "人脸跟踪已启动" in recent_logs:
+                logger.info("人脸跟踪服务初始化成功")
+            else:
+                logger.warning(f"人脸跟踪服务可能未完全就绪，最近日志: {recent_logs[-200:]}")
+        except Exception as e:
+            logger.debug(f"读取日志文件失败: {e}")
+        
+        logger.info(f"人脸跟踪已启动，PID: {_face_tracking_process.pid}")
+        return {
+            "status": "success",
+            "message": "人脸跟踪已启动，我会看着你"
+        }
+        
+    except Exception as e:
+        logger.error(f"启动人脸跟踪失败: {e}")
+        _face_tracking_process = None
+        return {
+            "status": "error",
+            "message": f"启动人脸跟踪失败: {e}"
+        }
+
+
+@mcp.tool
+def stop_face_tracking() -> dict:
+    """停止机械臂人脸跟踪功能
+    
+    停止正在运行的人脸跟踪应用，机械臂会复位到初始姿态。
+    当用户说"停止人脸跟踪"、"别看了"、"取消人脸跟踪"等指令时调用此工具。
+    
+    Returns:
+        停止结果
+    """
+    global _face_tracking_process
+    
+    try:
+        if _face_tracking_process is None:
+            return {
+                "status": "success",
+                "message": "人脸跟踪未在运行"
+            }
+        
+        if _face_tracking_process.poll() is not None:
+            _face_tracking_process = None
+            return {
+                "status": "success",
+                "message": "人脸跟踪已结束"
+            }
+        
+        logger.info(f"停止人脸跟踪，PID: {_face_tracking_process.pid}")
+        
+        if sys.platform == "win32":
+            _face_tracking_process.send_signal(subprocess.signal.CTRL_BREAK_EVENT)
+        else:
+            _face_tracking_process.send_signal(subprocess.signal.SIGINT)
+        
+        try:
+            _face_tracking_process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            logger.warning("人脸跟踪进程未响应，强制终止")
+            _face_tracking_process.terminate()
+            try:
+                _face_tracking_process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                _face_tracking_process.kill()
+                _face_tracking_process.wait()
+        
+        _face_tracking_process = None
+        
+        global _face_tracking_log_files
+        _face_tracking_log_files = []
+        
+        return {
+            "status": "success",
+            "message": "人脸跟踪已停止"
+        }
+        
+    except Exception as e:
+        logger.error(f"停止人脸跟踪失败: {e}")
+        _face_tracking_process = None
+        _face_tracking_log_files = []
+        return {
+            "status": "error",
+            "message": f"停止人脸跟踪失败: {e}"
+        }
+
+
+@mcp.tool
+def get_face_tracking_status() -> dict:
+    """获取人脸跟踪状态
+    
+    检查人脸跟踪功能是否正在运行，并返回最近的日志信息用于诊断。
+    
+    Returns:
+        人脸跟踪状态信息
+    """
+    global _face_tracking_process
+    
+    try:
+        recent_logs = ""
+        try:
+            current_file = os.path.abspath(__file__)
+            software_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+            log_dir = os.path.join(software_dir, "logs")
+            stdout_log = os.path.join(log_dir, "face_tracking_stdout.log")
+            if os.path.exists(stdout_log):
+                with open(stdout_log, "r") as f:
+                    recent_logs = f.read()[-1000:]
+        except Exception:
+            pass
+        
+        if _face_tracking_process is None:
+            return {
+                "status": "success",
+                "data": {"running": False, "recent_logs": recent_logs[-200:]},
+                "message": "人脸跟踪未启动"
+            }
+        
+        if _face_tracking_process.poll() is None:
+            return {
+                "status": "success",
+                "data": {"running": True, "pid": _face_tracking_process.pid, "recent_logs": recent_logs[-200:]},
+                "message": "人脸跟踪正在运行"
+            }
+        else:
+            exit_code = _face_tracking_process.poll()
+            _face_tracking_process = None
+            return {
+                "status": "success",
+                "data": {"running": False, "exit_code": exit_code, "recent_logs": recent_logs[-500:]},
+                "message": f"人脸跟踪已结束（退出码: {exit_code}）"
+            }
+            
+    except Exception as e:
+        logger.error(f"获取人脸跟踪状态失败: {e}")
+        return {
+            "status": "error",
+            "message": f"获取状态失败: {e}"
+        }
+
+
+@mcp.tool
 def stop_human_follow() -> dict:
     """停止人体跟随功能
     
@@ -2188,6 +2528,30 @@ class MCPClientWrapper:
                     "description": "获取人体跟随功能当前是否正在运行的状态",
                     "parameters": {"type": "object", "properties": {}}
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_face_tracking",
+                    "description": "启动机械臂人脸跟踪功能。当用户说'跟踪人脸'、'看着我'、'启动人脸跟踪'、'人脸跟随'等指令时调用此工具。机械臂相机会自动左右上下转动，保持人脸在画面正中间",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stop_face_tracking",
+                    "description": "停止机械臂人脸跟踪功能。当用户说'停止人脸跟踪'、'别看了'、'取消人脸跟踪'等指令时调用此工具",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_face_tracking_status",
+                    "description": "获取人脸跟踪功能当前是否正在运行的状态",
+                    "parameters": {"type": "object", "properties": {}}
+                }
             }
         ]
     
@@ -2219,6 +2583,9 @@ class MCPClientWrapper:
             "start_human_follow": start_human_follow,
             "stop_human_follow": stop_human_follow,
             "get_human_follow_status": get_human_follow_status,
+            "start_face_tracking": start_face_tracking,
+            "stop_face_tracking": stop_face_tracking,
+            "get_face_tracking_status": get_face_tracking_status,
         }
         
         if tool_name in tool_map:

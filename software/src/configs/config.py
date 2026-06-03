@@ -195,6 +195,9 @@ class LLMConfig:
     def __post_init__(self):
         """从密钥管理加载敏感配置"""
         secrets = get_secrets()
+        # 同步提供商
+        if secrets.llm.provider:
+            self.provider = secrets.llm.provider
         if not self.api_key:
             self.api_key = secrets.llm.api_key
         # 非敏感配置可以从环境变量覆盖
@@ -204,7 +207,11 @@ class LLMConfig:
             self.model = secrets.llm.model
         # 如果没有配置model，给出警告
         if not self.model:
-            logger.warning("LLM模型未配置，请在.env.local中设置 ARK_MODEL_ID 或 LLM_MODEL")
+            if self.provider == "deepseek":
+                logger.warning("LLM模型未配置，将使用默认模型 deepseek-chat")
+                self.model = "deepseek-chat"
+            else:
+                logger.warning("LLM模型未配置，请在.env.local中设置 ARK_MODEL_ID 或 LLM_MODEL")
 
 
 @dataclass
