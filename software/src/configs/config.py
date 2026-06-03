@@ -38,7 +38,7 @@ class WebCameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "COM4"  # 与底盘共用串口
+    serial_port: str = "COM9"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -76,23 +76,33 @@ class ArmConfig:
 @dataclass
 class ChassisConfig:
     """底盘配置 - 从机器人配置文件读取"""
+    # 底盘类型: "omni" = 三轮全向轮, "diff" = 双轮差动
+    chassis_type: str = "diff"
+    
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM4"
+    serial_port: str = "COM9"
     baudrate: int = 1000000
     
-    # 舵机ID映射
+    # 三轮全向轮参数（chassis_type="omni" 时有效）
     left_front_id: int = 8
     right_front_id: int = 7
     rear_id: int = 9
-    
-    # 物理参数
     wheel_radius: float = 0.08      # 轮子半径 (m)
     chassis_radius: float = 0.18     # 底盘半径 (m)
+    default_wheel_speed: int = 3250  # 舵机最大速度
+    
+    # 双轮差动参数（chassis_type="diff" 时有效）
+    wheel_track: float = 0.45        # 左右轮中心距 (m)
+    wheel_diameter: float = 0.125    # 轮直径 (m)
+    max_rpm: float = 120.0           # 电机最大转速
+    diff_chassis_id: int = 0x24      # 底盘虚拟设备ID
+    diff_motor_left_id: int = 0x21   # 左电机ID
+    diff_motor_right_id: int = 0x22  # 右电机ID
+    diff_imu_id: int = 0x23          # IMU虚拟设备ID
     
     # 运动限制
     max_linear_speed: float = 0.5    # 最大线速度 (m/s)
     max_angular_speed: float = 1.0   # 最大角速度 (rad/s)
-    default_wheel_speed: int = 3250  # 舵机最大速度
     
     # ZeroMQ地址
     service_addr: str = "tcp://*:5556"
