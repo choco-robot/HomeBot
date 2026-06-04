@@ -1,0 +1,1850 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HomeBot 地图/路径编辑器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            overflow: hidden;
+        }
+        
+        /* 顶部工具栏 */
+        .toolbar {
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            gap: 10px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+        }
+        
+        .toolbar-title {
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            margin-right: 30px;
+        }
+        
+        .toolbar-btn {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .toolbar-btn:hover {
+            background: rgba(255,255,255,0.3);
+            transform: translateY(-2px);
+        }
+        
+        .toolbar-divider {
+            width: 1px;
+            height: 40px;
+            background: rgba(255,255,255,0.3);
+            margin: 0 10px;
+        }
+        
+        /* 主容器 */
+        .container {
+            display: flex;
+            height: calc(100vh - 60px);
+            margin-top: 60px;
+        }
+        
+        /* 左侧工具面板 */
+        .tool-panel {
+            width: 200px;
+            background: white;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        .panel-section {
+            margin-bottom: 20px;
+        }
+        
+        .panel-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .tool-btn {
+            width: 100%;
+            background: white;
+            border: 2px solid #e0e0e0;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            text-align: left;
+            transition: all 0.3s;
+            font-size: 13px;
+        }
+        
+        .tool-btn:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .tool-btn.active {
+            border-color: #667eea;
+            background: #667eea;
+            color: white;
+        }
+        
+        .tool-icon {
+            display: inline-block;
+            width: 20px;
+            margin-right: 8px;
+            text-align: center;
+        }
+        
+        /* 画布区域 */
+        .canvas-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #e8e8e8;
+        }
+        
+        #mainCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        
+        .canvas-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+        
+        /* 光标预览层 */
+        #cursorCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        
+        /* 右侧属性面板 */
+        .property-panel {
+            width: 280px;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.05);
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        .property-group {
+            margin-bottom: 15px;
+        }
+        
+        .property-label {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .property-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .property-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .property-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .property-row .property-group {
+            flex: 1;
+        }
+        
+        .btn-primary {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 10px;
+            transition: transform 0.2s;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+        }
+        
+        .btn-secondary {
+            width: 100%;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            padding: 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 5px;
+        }
+        
+        .btn-danger {
+            width: 100%;
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        
+        .marker-list {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+        }
+        
+        .marker-item {
+            padding: 8px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .marker-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .marker-start { background: #28a745; }
+        .marker-goal { background: #dc3545; }
+        .marker-waypoint { background: #007bff; }
+        
+        .range-slider {
+            width: 100%;
+            margin-top: 5px;
+        }
+        
+        .range-value {
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            margin-top: 3px;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.show {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .modal-btn {
+            padding: 8px 20px;
+            border-radius: 5px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        
+        .modal-btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .modal-btn-secondary {
+            background: #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+    <!-- 顶部工具栏 -->
+    <div class="toolbar">
+        <div class="toolbar-title">🗺️ HomeBot 地图/路径编辑器</div>
+        <button class="toolbar-btn" onclick="newMap()">📄 新建地图</button>
+        <button class="toolbar-btn" onclick="loadMap()">📁 加载地图</button>
+        <button class="toolbar-btn" onclick="saveMap()">💾 保存地图</button>
+        <div class="toolbar-divider"></div>
+        <button class="toolbar-btn" onclick="exportPath()">🛤️ 生成路径</button>
+        <div class="toolbar-divider"></div>
+        <button class="toolbar-btn" onclick="clearAll()">🗑️ 清空</button>
+        <button class="toolbar-btn" onclick="toggleGrid()">📐 网格</button>
+        <button class="toolbar-btn" onclick="toggleBackgroundImage()">🖼️ 背景</button>
+        <button class="toolbar-btn" onclick="fitView()">🔍 适应</button>
+    </div>
+    
+    <!-- 主容器 -->
+    <div class="container">
+        <!-- 左侧工具面板 -->
+        <div class="tool-panel">
+            <div class="panel-section">
+                <div class="panel-title">绘图工具</div>
+                <button class="tool-btn active" data-tool="select" onclick="setTool('select')">
+                    <span class="tool-icon">🖱️</span>选择工具
+                </button>
+                <button class="tool-btn" data-tool="rectangle" onclick="setTool('rectangle')">
+                    <span class="tool-icon">⬛</span>矩形障碍物
+                </button>
+                <button class="tool-btn" data-tool="circle" onclick="setTool('circle')">
+                    <span class="tool-icon">⚫</span>圆形障碍物
+                </button>
+                <button class="tool-btn" data-tool="brush" onclick="setTool('brush')">
+                    <span class="tool-icon">📏</span>直线障碍物
+                </button>
+                <button class="tool-btn" data-tool="eraser" onclick="setTool('eraser')">
+                    <span class="tool-icon">🧹</span>橡皮擦
+                </button>
+                <button class="tool-btn" data-tool="marker" onclick="setTool('marker')">
+                    <span class="tool-icon">📍</span>标记点
+                </button>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">视图控制</div>
+                <button class="tool-btn" onclick="zoomIn()">➕ 放大</button>
+                <button class="tool-btn" onclick="zoomOut()">➖ 缩小</button>
+                <button class="tool-btn" onclick="resetZoom()">🔄 重置视图</button>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">直线障碍物设置</div>
+                <label class="property-label">墙体厚度 (米)</label>
+                <input type="range" class="range-slider" id="brushSize" min="0.1" max="1.0" step="0.05" value="0.2" oninput="updateBrushSize()">
+                <div class="range-value" id="brushSizeValue">0.20 m</div>
+                
+                <label class="property-label" style="margin-top: 10px;">橡皮擦大小 (米)</label>
+                <input type="range" class="range-slider" id="eraserSize" min="0.2" max="2.0" step="0.1" value="0.5" oninput="updateEraserSize()">
+                <div class="range-value" id="eraserSizeValue">0.50 m</div>
+            </div>
+        </div>
+        
+        <!-- 画布区域 -->
+        <div class="canvas-area" id="canvasArea">
+            <canvas id="mainCanvas"></canvas>
+            <canvas id="cursorCanvas"></canvas>
+            <div class="canvas-info" id="canvasInfo">
+                缩放: 100% | 位置: (0.0, 0.0) m
+            </div>
+        </div>
+        
+        <!-- 右侧属性面板 -->
+        <div class="property-panel">
+            <div class="panel-section">
+                <div class="panel-title">地图设置</div>
+                
+                <div class="property-row">
+                    <div class="property-group">
+                        <label class="property-label">宽度 (m)</label>
+                        <input type="number" class="property-input" id="mapWidth" value="10.0" step="0.1" onchange="updateMapInfo()">
+                    </div>
+                    <div class="property-group">
+                        <label class="property-label">高度 (m)</label>
+                        <input type="number" class="property-input" id="mapHeight" value="10.0" step="0.1" onchange="updateMapInfo()">
+                    </div>
+                </div>
+                
+                <div class="property-group">
+                    <label class="property-label">分辨率 (m/pixel)</label>
+                    <input type="number" class="property-input" id="mapResolution" value="0.05" step="0.01" min="0.01" onchange="updateMapInfo()">
+                </div>
+                
+                <div class="property-row">
+                    <div class="property-group">
+                        <label class="property-label">原点 X</label>
+                        <input type="number" class="property-input" id="mapOriginX" value="0.0" step="0.1" onchange="updateMapInfo()">
+                    </div>
+                    <div class="property-group">
+                        <label class="property-label">原点 Y</label>
+                        <input type="number" class="property-input" id="mapOriginY" value="0.0" step="0.1" onchange="updateMapInfo()">
+                    </div>
+                </div>
+                
+                <div class="property-group">
+                    <label class="property-label">膨胀半径 (m)</label>
+                    <input type="number" class="property-input" id="inflationRadius" value="0.4" step="0.1" min="0">
+                </div>
+            </div>
+            
+            <div class="panel-section" id="obstacleProps" style="display:none;">
+                <div class="panel-title">障碍物属性</div>
+                
+                <div class="property-row">
+                    <div class="property-group">
+                        <label class="property-label">位置 X</label>
+                        <input type="number" class="property-input" id="obsX" step="0.1" onchange="updateObstacle()">
+                    </div>
+                    <div class="property-group">
+                        <label class="property-label">位置 Y</label>
+                        <input type="number" class="property-input" id="obsY" step="0.1" onchange="updateObstacle()">
+                    </div>
+                </div>
+                
+                <div id="rectProps">
+                    <div class="property-row">
+                        <div class="property-group">
+                            <label class="property-label">宽度</label>
+                            <input type="number" class="property-input" id="obsWidth" step="0.1" min="0.1" onchange="updateObstacle()">
+                        </div>
+                        <div class="property-group">
+                            <label class="property-label">高度</label>
+                            <input type="number" class="property-input" id="obsHeight" step="0.1" min="0.1" onchange="updateObstacle()">
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="circleProps" style="display:none;">
+                    <div class="property-group">
+                        <label class="property-label">半径 (m)</label>
+                        <input type="number" class="property-input" id="obsRadius" step="0.1" min="0.1" onchange="updateObstacle()">
+                    </div>
+                </div>
+                
+                <button class="btn-danger" onclick="deleteObstacle()">🗑️ 删除障碍物</button>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">标记点</div>
+                
+                <div class="property-group">
+                    <label class="property-label">标记类型</label>
+                    <select class="property-input" id="markerType">
+                        <option value="start">起点 (绿色)</option>
+                        <option value="goal">终点 (红色)</option>
+                        <option value="waypoint">路径点 (蓝色)</option>
+                    </select>
+                </div>
+                
+                <div class="marker-list" id="markerList">
+                    <div style="padding: 20px; text-align: center; color: #999; font-size: 12px;">
+                        暂无标记点
+                    </div>
+                </div>
+                
+                <button class="btn-secondary" onclick="connectWaypoints()">连接路径点</button>
+                <button class="btn-secondary" onclick="clearMarkers()">清空标记点</button>
+            </div>
+            
+            <div class="panel-section">
+                <div class="panel-title">统计信息</div>
+                <div style="font-size: 13px; color: #666; line-height: 1.8;">
+                    <div>障碍物数量: <strong id="obstacleCount">0</strong></div>
+                    <div>标记点数量: <strong id="markerCount">0</strong></div>
+                    <div>画布像素: <strong id="canvasSize">0 × 0</strong></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 新建地图对话框 -->
+    <div class="modal" id="newMapModal">
+        <div class="modal-content">
+            <div class="modal-title">新建地图</div>
+            <div class="property-group">
+                <label class="property-label">地图宽度 (米)</label>
+                <input type="number" class="property-input" id="newMapWidth" value="10.0" step="0.1">
+            </div>
+            <div class="property-group">
+                <label class="property-label">地图高度 (米)</label>
+                <input type="number" class="property-input" id="newMapHeight" value="10.0" step="0.1">
+            </div>
+            <div class="property-group">
+                <label class="property-label">分辨率 (米/像素)</label>
+                <input type="number" class="property-input" id="newMapResolution" value="0.05" step="0.01" min="0.01">
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary" onclick="closeModal('newMapModal')">取消</button>
+                <button class="modal-btn modal-btn-primary" onclick="createNewMap()">创建</button>
+            </div>
+        </div>
+    </div>
+    
+    <input type="file" id="mapFileInput" class="file-input" accept="image/*" onchange="handleMapLoad(event)">
+    
+    <script>
+        // ==================== 全局变量 ====================
+        let canvas, ctx, cursorCanvas, cursorCtx;
+        let currentTool = 'select';
+        let isDrawing = false;
+        let startX, startY;
+        let obstacles = [];
+        let markers = [];
+        let selectedObstacle = null;
+        
+        let scale = 1.0;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let dragStartX, dragStartY;
+        let isSpacePressed = false;
+        
+        let brushSize = 0.2;  // 墙体厚度，单位：米
+        let eraserSize = 0.5;  // 橡皮擦大小，单位：米
+        
+        let mapInfo = {
+            width: 10.0,
+            height: 10.0,
+            resolution: 0.05,
+            origin: [0.0, 0.0],
+            inflationRadius: 0.4
+        };
+        
+        let backgroundImage = null;
+        let showGrid = true;
+        let showBackgroundImage = true;
+        
+        // ==================== 初始化 ====================
+        window.onload = function() {
+            canvas = document.getElementById('mainCanvas');
+            ctx = canvas.getContext('2d');
+            cursorCanvas = document.getElementById('cursorCanvas');
+            cursorCtx = cursorCanvas.getContext('2d');
+            
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('mouseleave', handleMouseLeave);
+            canvas.addEventListener('wheel', handleWheel);
+            canvas.addEventListener('contextmenu', e => e.preventDefault());
+            
+            document.addEventListener('keydown', handleKeyDown);
+            document.addEventListener('keyup', handleKeyUp);
+            
+            clearCanvas();
+            render();
+            
+            // 自动适应地图到窗口中心
+            setTimeout(() => fitView(), 100);
+        };
+        
+        // ==================== 画布操作 ====================
+        function resizeCanvas() {
+            const area = document.getElementById('canvasArea');
+            canvas.width = area.clientWidth;
+            canvas.height = area.clientHeight;
+            cursorCanvas.width = area.clientWidth;
+            cursorCanvas.height = area.clientHeight;
+            
+            render();
+        }
+        
+        function clearCanvas() {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            document.getElementById('canvasSize').textContent = `${canvas.width} × ${canvas.height}`;
+        }
+        
+        function render() {
+            clearCanvas();
+            
+            // 绘制背景图片
+            if (backgroundImage && showBackgroundImage) {
+                const imgX = worldToScreen(mapInfo.origin[0], mapInfo.origin[1]);
+                const imgWidth = mapInfo.width / mapInfo.resolution * scale;
+                const imgHeight = mapInfo.height / mapInfo.resolution * scale;
+                
+                // 保存当前状态
+                ctx.save();
+                ctx.translate(imgX.x, imgX.y);
+                ctx.drawImage(backgroundImage, 0, 0, imgWidth, imgHeight);
+                // 恢复状态
+                ctx.restore();
+            }
+            
+            // 绘制地图边界
+            drawMapBoundary();
+            
+            // 绘制障碍物
+            obstacles.forEach(obs => drawObstacle(obs));
+            
+            // 绘制标记点
+            markers.forEach(marker => drawMarker(marker));
+            
+            // 绘制路径
+            drawPath();
+            
+            // 绘制网格
+            if (showGrid) {
+                drawGrid();
+            }
+            
+            // 绘制标尺
+            drawRulers();
+            
+            // 绘制原点
+            drawOrigin();
+            
+            updateStats();
+        }
+        
+        // ==================== 坐标转换 ====================
+        function screenToWorld(sx, sy) {
+            return {
+                x: (sx - offsetX) / scale * mapInfo.resolution + mapInfo.origin[0],
+                y: (sy - offsetY) / scale * mapInfo.resolution + mapInfo.origin[1]
+            };
+        }
+        
+        function worldToScreen(wx, wy) {
+            return {
+                x: (wx - mapInfo.origin[0]) / mapInfo.resolution * scale + offsetX,
+                y: (wy - mapInfo.origin[1]) / mapInfo.resolution * scale + offsetY
+            };
+        }
+        
+        // ==================== 绘制函数 ====================
+        function drawMapBoundary() {
+            const topLeft = worldToScreen(mapInfo.origin[0], mapInfo.origin[1] + mapInfo.height);
+            const bottomRight = worldToScreen(mapInfo.origin[0] + mapInfo.width, mapInfo.origin[1]);
+            
+            ctx.strokeStyle = '#0066cc';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 5]);
+            ctx.strokeRect(topLeft.x, topLeft.y, 
+                          bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+            ctx.setLineDash([]);
+            
+            // 绘制角点坐标
+            ctx.fillStyle = '#0066cc';
+            ctx.font = '11px Arial';
+            ctx.textAlign = 'left';
+            
+            const corners = [
+                {x: mapInfo.origin[0], y: mapInfo.origin[1], label: 'bottom-left'},
+                {x: mapInfo.origin[0] + mapInfo.width, y: mapInfo.origin[1], label: 'bottom-right'},
+                {x: mapInfo.origin[0], y: mapInfo.origin[1] + mapInfo.height, label: 'top-left'},
+                {x: mapInfo.origin[0] + mapInfo.width, y: mapInfo.origin[1] + mapInfo.height, label: 'top-right'}
+            ];
+            
+            corners.forEach(corner => {
+                const pos = worldToScreen(corner.x, corner.y);
+                const text = `(${corner.x.toFixed(1)}, ${corner.y.toFixed(1)})`;
+                
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillRect(pos.x - textWidth/2 - 3, pos.y - 18, textWidth + 6, 16);
+                
+                ctx.fillStyle = '#0066cc';
+                ctx.textAlign = 'center';
+                ctx.fillText(text, pos.x, pos.y - 6);
+            });
+        }
+        
+        function drawOrigin() {
+            const originScreen = worldToScreen(mapInfo.origin[0], mapInfo.origin[1]);
+            
+            // 绘制原点圆圈
+            ctx.fillStyle = '#dc3545';
+            ctx.beginPath();
+            ctx.arc(originScreen.x, originScreen.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // 绘制坐标标签
+            ctx.fillStyle = '#dc3545';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'left';
+            const label = `(${mapInfo.origin[0].toFixed(1)}, ${mapInfo.origin[1].toFixed(1)})`;
+            ctx.fillText(label, originScreen.x + 12, originScreen.y - 5);
+            ctx.fillText('原点', originScreen.x + 12, originScreen.y + 10);
+        }
+        
+        function drawRulers() {
+            const rulerSize = 30;
+            
+            // 计算可见范围
+            const visibleLeft = -offsetX / scale;
+            const visibleTop = -offsetY / scale;
+            const visibleRight = (canvas.width - offsetX) / scale;
+            const visibleBottom = (canvas.height - offsetY) / scale;
+            
+            // 计算刻度间隔
+            const metersPerPixel = mapInfo.resolution;
+            let tickInterval = 1.0; // 默认1米
+            
+            if (scale < 0.5) tickInterval = 5.0;
+            else if (scale < 1) tickInterval = 2.0;
+            else if (scale > 3) tickInterval = 0.5;
+            
+            const tickPixels = tickInterval / metersPerPixel * scale;
+            
+            // 绘制顶部标尺（X轴）
+            ctx.fillStyle = 'rgba(240, 240, 240, 0.95)';
+            ctx.fillRect(0, 0, canvas.width, rulerSize);
+            
+            ctx.strokeStyle = '#cccccc';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, rulerSize);
+            ctx.lineTo(canvas.width, rulerSize);
+            ctx.stroke();
+            
+            // X轴刻度
+            const startX_world = Math.floor(visibleLeft * metersPerPixel / tickInterval) * tickInterval;
+            for (let x = startX_world; x < (visibleRight * metersPerPixel); x += tickInterval) {
+                const screenX = x / metersPerPixel * scale + offsetX;
+                
+                if (screenX < 0 || screenX > canvas.width) continue;
+                
+                // 主刻度线
+                ctx.strokeStyle = '#999999';
+                ctx.beginPath();
+                ctx.moveTo(screenX, rulerSize - 15);
+                ctx.lineTo(screenX, rulerSize);
+                ctx.stroke();
+                
+                // 刻度值
+                if (Math.abs(x) > 0.01) {
+                    ctx.fillStyle = '#666666';
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`${x.toFixed(1)}m`, screenX, rulerSize - 17);
+                }
+            }
+            
+            // 绘制左侧标尺（Y轴）
+            ctx.fillStyle = 'rgba(240, 240, 240, 0.95)';
+            ctx.fillRect(0, 0, rulerSize, canvas.height);
+            
+            ctx.strokeStyle = '#cccccc';
+            ctx.beginPath();
+            ctx.moveTo(rulerSize, 0);
+            ctx.lineTo(rulerSize, canvas.height);
+            ctx.stroke();
+            
+            // Y轴刻度
+            const startY_world = Math.floor(visibleTop * metersPerPixel / tickInterval) * tickInterval;
+            for (let y = startY_world; y < (visibleBottom * metersPerPixel); y += tickInterval) {
+                const screenY = y / metersPerPixel * scale + offsetY;
+                
+                if (screenY < 0 || screenY > canvas.height) continue;
+                
+                // 主刻度线
+                ctx.strokeStyle = '#999999';
+                ctx.beginPath();
+                ctx.moveTo(rulerSize - 15, screenY);
+                ctx.lineTo(rulerSize, screenY);
+                ctx.stroke();
+                
+                // 刻度值
+                if (Math.abs(y) > 0.01) {
+                    ctx.fillStyle = '#666666';
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'right';
+                    ctx.fillText(`${y.toFixed(1)}m`, rulerSize - 17, screenY + 4);
+                }
+            }
+            
+            // 标尺角标
+            ctx.fillStyle = '#666666';
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('X(m)', canvas.width / 2, 18);
+            
+            ctx.save();
+            ctx.translate(12, canvas.height / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText('Y(m)', 0, 0);
+            ctx.restore();
+        }
+        
+        function drawObstacle(obs) {
+            const screenPos = worldToScreen(obs.x, obs.y);
+            ctx.fillStyle = obs.color || '#764ba2';
+            ctx.strokeStyle = selectedObstacle === obs ? '#ff0000' : '#5a3d7a';
+            ctx.lineWidth = selectedObstacle === obs ? 3 : 1;
+            
+            if (obs.type === 'rectangle') {
+                ctx.fillRect(screenPos.x, screenPos.y,
+                            obs.width / mapInfo.resolution * scale,
+                            obs.height / mapInfo.resolution * scale);
+                ctx.strokeRect(screenPos.x, screenPos.y,
+                              obs.width / mapInfo.resolution * scale,
+                              obs.height / mapInfo.resolution * scale);
+            } else if (obs.type === 'circle') {
+                const screenRadius = obs.radius / mapInfo.resolution * scale;
+                ctx.beginPath();
+                ctx.arc(screenPos.x, screenPos.y, screenRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            } else if (obs.type === 'polygon' && obs.points.length > 0) {
+                ctx.beginPath();
+                const firstPoint = worldToScreen(obs.points[0].x, obs.points[0].y);
+                ctx.moveTo(firstPoint.x, firstPoint.y);
+                for (let i = 1; i < obs.points.length; i++) {
+                    const p = worldToScreen(obs.points[i].x, obs.points[i].y);
+                    ctx.lineTo(p.x, p.y);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            } else if (obs.type === 'line') {
+                const p1 = worldToScreen(obs.x1, obs.y1);
+                const p2 = worldToScreen(obs.x2, obs.y2);
+                const screenThickness = obs.thickness / mapInfo.resolution * scale;
+                
+                ctx.lineCap = 'round';
+                ctx.lineWidth = screenThickness;
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+                
+                // 重置lineWidth，避免影响其他绘制
+                ctx.lineWidth = selectedObstacle === obs ? 3 : 1;
+            }
+        }
+        
+        function drawMarker(marker) {
+            const screenPos = worldToScreen(marker.x, marker.y);
+            
+            let color = '#007bff';
+            let symbol = '📍';
+            if (marker.type === 'start') {
+                color = '#28a745';
+                symbol = '🚀';
+            } else if (marker.type === 'goal') {
+                color = '#dc3545';
+                symbol = '🎯';
+            }
+            
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(screenPos.x, screenPos.y, 10, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(symbol, screenPos.x, screenPos.y);
+        }
+        
+        function drawPath() {
+            const waypoints = markers.filter(m => m.type === 'waypoint');
+            if (waypoints.length < 2) return;
+            
+            ctx.strokeStyle = '#007bff';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            
+            const first = worldToScreen(waypoints[0].x, waypoints[0].y);
+            ctx.moveTo(first.x, first.y);
+            
+            for (let i = 1; i < waypoints.length; i++) {
+                const p = worldToScreen(waypoints[i].x, waypoints[i].y);
+                ctx.lineTo(p.x, p.y);
+            }
+            
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        
+        function drawGrid() {
+            const gridSize = 1.0 / mapInfo.resolution * scale;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.lineWidth = 1;
+            
+            const startX = offsetX % gridSize;
+            for (let x = startX; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            
+            const startY = offsetY % gridSize;
+            for (let y = startY; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+        
+        function drawCursorPreview(x, y) {
+            cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+            
+            if (currentTool === 'brush') {
+                // 将米转换为屏幕像素
+                const radiusPixels = brushSize / mapInfo.resolution * scale / 2;
+                
+                cursorCtx.strokeStyle = '#667eea';
+                cursorCtx.lineWidth = 2;
+                cursorCtx.beginPath();
+                cursorCtx.arc(x, y, radiusPixels, 0, Math.PI * 2);
+                cursorCtx.stroke();
+                
+                // 显示尺寸
+                cursorCtx.fillStyle = 'rgba(102, 126, 234, 0.8)';
+                cursorCtx.font = '11px Arial';
+                cursorCtx.textAlign = 'center';
+                cursorCtx.fillText(`${brushSize.toFixed(2)}m`, x, y - radiusPixels - 5);
+            } else if (currentTool === 'eraser') {
+                // 将米转换为屏幕像素
+                const radiusPixels = eraserSize / mapInfo.resolution * scale / 2;
+                
+                cursorCtx.strokeStyle = '#dc3545';
+                cursorCtx.lineWidth = 2;
+                cursorCtx.beginPath();
+                cursorCtx.arc(x, y, radiusPixels, 0, Math.PI * 2);
+                cursorCtx.stroke();
+                
+                // 显示尺寸
+                cursorCtx.fillStyle = 'rgba(220, 53, 69, 0.8)';
+                cursorCtx.font = '11px Arial';
+                cursorCtx.textAlign = 'center';
+                cursorCtx.fillText(`${eraserSize.toFixed(2)}m`, x, y - radiusPixels - 5);
+            }
+        }
+        
+        // ==================== 事件处理 ====================
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`.tool-btn[data-tool="${tool}"]`).classList.add('active');
+            
+            if (tool === 'brush' || tool === 'eraser') {
+                canvas.style.cursor = 'none';
+            } else {
+                canvas.style.cursor = 'crosshair';
+            }
+            
+            cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+        }
+        
+        function handleMouseDown(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (isSpacePressed || e.button === 1) {
+                isDragging = true;
+                dragStartX = x - offsetX;
+                dragStartY = y - offsetY;
+                canvas.style.cursor = 'grabbing';
+                return;
+            }
+            
+            if (currentTool === 'select') {
+                selectObstacleAt(x, y);
+            } else if (currentTool === 'rectangle' || currentTool === 'circle') {
+                isDrawing = true;
+                startX = x;
+                startY = y;
+            } else if (currentTool === 'brush') {
+                isDrawing = true;
+                startX = x;
+                startY = y;
+            } else if (currentTool === 'eraser') {
+                isDrawing = true;
+                eraseAt(x, y);
+            } else if (currentTool === 'marker') {
+                addMarker(x, y);
+            }
+        }
+        
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // 更新信息显示
+            const worldPos = screenToWorld(x, y);
+            document.getElementById('canvasInfo').textContent = 
+                `缩放: ${Math.round(scale * 100)}% | 位置: (${worldPos.x.toFixed(2)}, ${worldPos.y.toFixed(2)}) m`;
+            
+            // 绘制光标预览
+            if (currentTool === 'brush' || currentTool === 'eraser') {
+                drawCursorPreview(x, y);
+            }
+            
+            if (isDragging) {
+                offsetX = x - dragStartX;
+                offsetY = y - dragStartY;
+                render();
+                return;
+            }
+            
+            if (!isDrawing) return;
+            
+            if (currentTool === 'rectangle' || currentTool === 'circle') {
+                render();
+                ctx.strokeStyle = '#667eea';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                
+                if (currentTool === 'rectangle') {
+                    ctx.strokeRect(startX, startY, x - startX, y - startY);
+                } else {
+                    const radius = Math.sqrt(Math.pow(x - startX, 2) + Math.pow(y - startY, 2));
+                    ctx.beginPath();
+                    ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                ctx.setLineDash([]);
+            } else if (currentTool === 'brush') {
+                // 绘制直线预览
+                render();
+                const thicknessPixels = brushSize / mapInfo.resolution * scale;
+                ctx.strokeStyle = '#764ba2';
+                ctx.lineWidth = thicknessPixels;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            } else if (currentTool === 'eraser') {
+                eraseAt(x, y);
+            }
+        }
+        
+        function handleMouseUp(e) {
+            if (isDragging) {
+                isDragging = false;
+                canvas.style.cursor = isSpacePressed ? 'grab' : 
+                    (currentTool === 'brush' || currentTool === 'eraser' ? 'none' : 'crosshair');
+                return;
+            }
+            
+            if (!isDrawing) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (currentTool === 'rectangle' && (x !== startX || y !== startY)) {
+                const worldStart = screenToWorld(startX, startY);
+                const worldEnd = screenToWorld(x, y);
+                
+                const minX = Math.min(worldStart.x, worldEnd.x);
+                const minY = Math.min(worldStart.y, worldEnd.y);
+                const width = Math.abs(worldEnd.x - worldStart.x);
+                const height = Math.abs(worldEnd.y - worldStart.y);
+                
+                if (width > 0.1 && height > 0.1) {
+                    obstacles.push({
+                        id: Date.now(),
+                        type: 'rectangle',
+                        x: minX,
+                        y: minY,
+                        width: width,
+                        height: height,
+                        color: '#764ba2'
+                    });
+                }
+            } else if (currentTool === 'circle') {
+                const radius = Math.sqrt(Math.pow(x - startX, 2) + Math.pow(y - startY, 2)) / scale;
+                const worldRadius = radius * mapInfo.resolution;
+                const worldCenter = screenToWorld(startX, startY);
+                
+                if (worldRadius > 0.1) {
+                    obstacles.push({
+                        id: Date.now(),
+                        type: 'circle',
+                        x: worldCenter.x,
+                        y: worldCenter.y,
+                        radius: worldRadius,
+                        color: '#764ba2'
+                    });
+                }
+            } else if (currentTool === 'brush') {
+                // 创建直线障碍物（带厚度的矩形）
+                const startWorld = screenToWorld(startX, startY);
+                const endWorld = screenToWorld(x, y);
+                const thicknessMeters = brushSize;  // 直接使用米为单位
+                
+                // 计算直线的角度和长度
+                const dx = endWorld.x - startWorld.x;
+                const dy = endWorld.y - startWorld.y;
+                const length = Math.sqrt(dx * dx + dy * dy);
+                const angle = Math.atan2(dy, dx);
+                
+                // 创建直线障碍物对象
+                obstacles.push({
+                    id: Date.now(),
+                    type: 'line',
+                    x1: startWorld.x,
+                    y1: startWorld.y,
+                    x2: endWorld.x,
+                    y2: endWorld.y,
+                    thickness: thicknessMeters,
+                    color: '#764ba2'
+                });
+            }
+            
+            isDrawing = false;
+            render();
+        }
+        
+        function handleMouseLeave(e) {
+            cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+        }
+        
+        function handleWheel(e) {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = scale * delta;
+            
+            if (newScale >= 0.1 && newScale <= 10) {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                offsetX = x - (x - offsetX) * delta;
+                offsetY = y - (y - offsetY) * delta;
+                scale = newScale;
+                
+                render();
+            }
+        }
+        
+        function handleKeyDown(e) {
+            if (e.code === 'Space') {
+                isSpacePressed = true;
+                canvas.style.cursor = 'grab';
+            } else if (e.code === 'Delete' && selectedObstacle) {
+                deleteObstacle();
+            }
+        }
+        
+        function handleKeyUp(e) {
+            if (e.code === 'Space') {
+                isSpacePressed = false;
+                canvas.style.cursor = currentTool === 'brush' || currentTool === 'eraser' ? 'none' : 'crosshair';
+            }
+        }
+        
+        // 计算点到线段的距离
+        function pointToLineDistance(px, py, x1, y1, x2, y2) {
+            const A = px - x1;
+            const B = py - y1;
+            const C = x2 - x1;
+            const D = y2 - y1;
+            
+            const dot = A * C + B * D;
+            const len_sq = C * C + D * D;
+            let param = -1;
+            
+            if (len_sq !== 0) param = dot / len_sq;
+            
+            let xx, yy;
+            
+            if (param < 0) {
+                xx = x1;
+                yy = y1;
+            } else if (param > 1) {
+                xx = x2;
+                yy = y2;
+            } else {
+                xx = x1 + param * C;
+                yy = y1 + param * D;
+            }
+            
+            const dx = px - xx;
+            const dy = py - yy;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+        
+        // ==================== 其他功能 ====================
+        function selectObstacleAt(x, y) {
+            const worldPos = screenToWorld(x, y);
+            selectedObstacle = null;
+            
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                if (obs.type === 'rectangle') {
+                    if (worldPos.x >= obs.x && worldPos.x <= obs.x + obs.width &&
+                        worldPos.y >= obs.y && worldPos.y <= obs.y + obs.height) {
+                        selectedObstacle = obs;
+                        break;
+                    }
+                } else if (obs.type === 'circle') {
+                    const dist = Math.sqrt(Math.pow(worldPos.x - obs.x, 2) + 
+                                          Math.pow(worldPos.y - obs.y, 2));
+                    if (dist <= obs.radius) {
+                        selectedObstacle = obs;
+                        break;
+                    }
+                } else if (obs.type === 'line') {
+                    // 点到线段的距离检测
+                    const dist = pointToLineDistance(worldPos.x, worldPos.y, 
+                                                    obs.x1, obs.y1, obs.x2, obs.y2);
+                    if (dist <= obs.thickness / 2) {
+                        selectedObstacle = obs;
+                        break;
+                    }
+                }
+            }
+            
+            if (selectedObstacle) {
+                document.getElementById('obstacleProps').style.display = 'block';
+                document.getElementById('obsX').value = selectedObstacle.x.toFixed(2);
+                document.getElementById('obsY').value = selectedObstacle.y.toFixed(2);
+                
+                if (selectedObstacle.type === 'rectangle') {
+                    document.getElementById('rectProps').style.display = 'block';
+                    document.getElementById('circleProps').style.display = 'none';
+                    document.getElementById('obsWidth').value = selectedObstacle.width.toFixed(2);
+                    document.getElementById('obsHeight').value = selectedObstacle.height.toFixed(2);
+                } else if (selectedObstacle.type === 'circle') {
+                    document.getElementById('rectProps').style.display = 'none';
+                    document.getElementById('circleProps').style.display = 'block';
+                    document.getElementById('obsRadius').value = selectedObstacle.radius.toFixed(2);
+                } else {
+                    document.getElementById('rectProps').style.display = 'none';
+                    document.getElementById('circleProps').style.display = 'none';
+                }
+            } else {
+                document.getElementById('obstacleProps').style.display = 'none';
+            }
+            
+            render();
+        }
+        
+        function updateObstacle() {
+            if (!selectedObstacle) return;
+            selectedObstacle.x = parseFloat(document.getElementById('obsX').value);
+            selectedObstacle.y = parseFloat(document.getElementById('obsY').value);
+            
+            if (selectedObstacle.type === 'rectangle') {
+                selectedObstacle.width = parseFloat(document.getElementById('obsWidth').value);
+                selectedObstacle.height = parseFloat(document.getElementById('obsHeight').value);
+            } else if (selectedObstacle.type === 'circle') {
+                selectedObstacle.radius = parseFloat(document.getElementById('obsRadius').value);
+            }
+            
+            render();
+        }
+        
+        function deleteObstacle() {
+            if (!selectedObstacle) return;
+            obstacles = obstacles.filter(obs => obs.id !== selectedObstacle.id);
+            selectedObstacle = null;
+            document.getElementById('obstacleProps').style.display = 'none';
+            render();
+        }
+        
+        function eraseAt(x, y) {
+            const worldPos = screenToWorld(x, y);
+            const eraseRadius = eraserSize;  // 直接使用米为单位
+            
+            obstacles = obstacles.filter(obs => {
+                if (obs.type === 'rectangle') {
+                    // 检查橡皮擦圆心是否在矩形的膨胀区域内
+                    const closestX = Math.max(obs.x, Math.min(worldPos.x, obs.x + obs.width));
+                    const closestY = Math.max(obs.y, Math.min(worldPos.y, obs.y + obs.height));
+                    const dist = Math.sqrt(Math.pow(worldPos.x - closestX, 2) + 
+                                          Math.pow(worldPos.y - closestY, 2));
+                    return dist > eraseRadius;
+                } else if (obs.type === 'circle') {
+                    // 检查橡皮擦圆心到障碍物圆心的距离
+                    const dist = Math.sqrt(Math.pow(worldPos.x - obs.x, 2) + 
+                                          Math.pow(worldPos.y - obs.y, 2));
+                    return dist > (eraseRadius + obs.radius);
+                } else if (obs.type === 'line') {
+                    // 检查点到线段的距离
+                    const dist = pointToLineDistance(worldPos.x, worldPos.y, 
+                                                    obs.x1, obs.y1, obs.x2, obs.y2);
+                    return dist > (eraseRadius + obs.thickness / 2);
+                }
+                return true;
+            });
+            
+            render();
+        }
+        
+        function addMarker(x, y) {
+            const worldPos = screenToWorld(x, y);
+            const type = document.getElementById('markerType').value;
+            
+            if (type === 'start' && markers.some(m => m.type === 'start')) {
+                alert('起点已存在');
+                return;
+            }
+            if (type === 'goal' && markers.some(m => m.type === 'goal')) {
+                alert('终点已存在');
+                return;
+            }
+            
+            markers.push({
+                id: Date.now(),
+                type: type,
+                x: worldPos.x,
+                y: worldPos.y
+            });
+            
+            updateMarkerList();
+            render();
+        }
+        
+        function updateMarkerList() {
+            const list = document.getElementById('markerList');
+            
+            if (markers.length === 0) {
+                list.innerHTML = '<div style="padding: 20px; text-align: center; color: #999; font-size: 12px;">暂无标记点</div>';
+                return;
+            }
+            
+            list.innerHTML = markers.map(m => {
+                const typeName = m.type === 'start' ? '起点' : (m.type === 'goal' ? '终点' : '路径点');
+                const dotClass = m.type === 'start' ? 'marker-start' : (m.type === 'goal' ? 'marker-goal' : 'marker-waypoint');
+                return `<div class="marker-item">
+                    <span><span class="marker-dot ${dotClass}"></span>${typeName}</span>
+                    <span style="color: #999; font-size: 11px;">(${m.x.toFixed(2)}, ${m.y.toFixed(2)})</span>
+                </div>`;
+            }).join('');
+        }
+        
+        function clearMarkers() {
+            markers = [];
+            updateMarkerList();
+            render();
+        }
+        
+        function connectWaypoints() {
+            render();
+        }
+        
+        // ==================== 地图操作 ====================
+        function newMap() {
+            document.getElementById('newMapModal').classList.add('show');
+        }
+        
+        function createNewMap() {
+            mapInfo.width = parseFloat(document.getElementById('newMapWidth').value);
+            mapInfo.height = parseFloat(document.getElementById('newMapHeight').value);
+            mapInfo.resolution = parseFloat(document.getElementById('newMapResolution').value);
+            
+            document.getElementById('mapWidth').value = mapInfo.width;
+            document.getElementById('mapHeight').value = mapInfo.height;
+            document.getElementById('mapResolution').value = mapInfo.resolution;
+            
+            obstacles = [];
+            markers = [];
+            backgroundImage = null;
+            selectedObstacle = null;
+            
+            closeModal('newMapModal');
+            resetZoom();
+            render();
+            updateMarkerList();
+        }
+        
+        function loadMap() {
+            // 第一步：选择 JSON 文件
+            const jsonInput = document.createElement('input');
+            jsonInput.type = 'file';
+            jsonInput.accept = '.json';
+            jsonInput.onchange = function(event) {
+                const jsonFile = event.target.files[0];
+                if (!jsonFile) return;
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        
+                        // 更新地图信息
+                        const mapInfoData = data.map_info || {};
+                        mapInfo.width = mapInfoData.width || 10.0;
+                        mapInfo.height = mapInfoData.height || 10.0;
+                        mapInfo.resolution = mapInfoData.resolution || 0.05;
+                        mapInfo.origin = mapInfoData.origin || [0.0, 0.0];
+                        mapInfo.inflationRadius = mapInfoData.inflation_radius || 0.4;
+                        
+                        // 更新UI
+                        document.getElementById('mapWidth').value = mapInfo.width.toFixed(1);
+                        document.getElementById('mapHeight').value = mapInfo.height.toFixed(1);
+                        document.getElementById('mapResolution').value = mapInfo.resolution.toFixed(3);
+                        document.getElementById('mapOriginX').value = mapInfo.origin[0].toFixed(1);
+                        document.getElementById('mapOriginY').value = mapInfo.origin[1].toFixed(1);
+                        document.getElementById('inflationRadius').value = mapInfo.inflationRadius.toFixed(2);
+                        
+                        // 加载障碍物
+                        obstacles = data.obstacles || [];
+                        markers = data.markers || [];
+                        
+                        // 检查是否有 PNG 引用
+                        const pngFile = data.image;
+                        if (pngFile) {
+                            // 提示用户选择 PNG 文件
+                            if (confirm(`This map references an image file: ${pngFile}\n\nWould you like to load the PNG file?`)) {
+                                const pngInput = document.createElement('input');
+                                pngInput.type = 'file';
+                                pngInput.accept = 'image/png';
+                                pngInput.onchange = function(pngEvent) {
+                                    const pngFileObj = pngEvent.target.files[0];
+                                    if (!pngFileObj) return;
+                                    
+                                    const pngReader = new FileReader();
+                                    pngReader.onload = function(pngE) {
+                                        const img = new Image();
+                                        img.onload = function() {
+                                            backgroundImage = img;
+                                            updateMarkerList();
+                                            fitView();
+                                            render();
+                                            alert('Map loaded successfully!');
+                                        };
+                                        img.src = pngE.target.result;
+                                    };
+                                    pngReader.readAsDataURL(pngFileObj);
+                                };
+                                pngInput.click();
+                            } else {
+                                // 不加载 PNG，仅加载 JSON 数据
+                                updateMarkerList();
+                                fitView();
+                                render();
+                                alert('Map data loaded (without image background).');
+                            }
+                        } else {
+                            // 没有 PNG 引用
+                            updateMarkerList();
+                            fitView();
+                            render();
+                            alert('Map loaded successfully!');
+                        }
+                        
+                    } catch (error) {
+                        alert('Error loading map: ' + error.message);
+                        console.error('Load error:', error);
+                    }
+                };
+                reader.readAsText(jsonFile);
+            };
+            jsonInput.click();
+        }
+        
+        function handleMapLoad(event) {
+            // 保留旧函数以防兼容性问题，但不再使用
+            console.warn('handleMapLoad is deprecated, use loadMap instead');
+        }
+        
+        function saveMap() {
+            // 生成文件名前缀（使用时间戳）
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const prefix = `map_${timestamp}`;
+            
+            // 1. 生成 SLAM 格式地图（灰度图 + 膨胀渐变）
+            const slamCanvas = document.createElement('canvas');
+            const slamCtx = slamCanvas.getContext('2d');
+            
+            // 计算地图尺寸（像素）
+            const mapWidthPixels = Math.round(mapInfo.width / mapInfo.resolution);
+            const mapHeightPixels = Math.round(mapInfo.height / mapInfo.resolution);
+            const inflationPixels = mapInfo.inflationRadius / mapInfo.resolution;
+            
+            slamCanvas.width = mapWidthPixels;
+            slamCanvas.height = mapHeightPixels;
+            
+            // 绘制背景（空闲区域 = 黑色 0）
+            slamCtx.fillStyle = '#000000';
+            slamCtx.fillRect(0, 0, mapWidthPixels, mapHeightPixels);
+            
+            // 绘制障碍物（占用区域 = 白色 255）
+            slamCtx.fillStyle = '#ffffff';
+            slamCtx.strokeStyle = '#ffffff';
+            
+            obstacles.forEach(obs => {
+                if (obs.type === 'rectangle') {
+                    // 矩形障碍物
+                    const x = (obs.x - mapInfo.origin[0]) / mapInfo.resolution;
+                    const y = (obs.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    const w = obs.width / mapInfo.resolution;
+                    const h = obs.height / mapInfo.resolution;
+                    slamCtx.fillRect(x, y, w, h);
+                
+                } else if (obs.type === 'circle') {
+                    // 圆形障碍物
+                    const x = (obs.x - mapInfo.origin[0]) / mapInfo.resolution;
+                    const y = (obs.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    const r = obs.radius / mapInfo.resolution;
+                    slamCtx.beginPath();
+                    slamCtx.arc(x, y, r, 0, Math.PI * 2);
+                    slamCtx.fill();
+                
+                } else if (obs.type === 'line') {
+                    // 直线障碍物
+                    const x1 = (obs.x1 - mapInfo.origin[0]) / mapInfo.resolution;
+                    const y1 = (obs.y1 - mapInfo.origin[1]) / mapInfo.resolution;
+                    const x2 = (obs.x2 - mapInfo.origin[0]) / mapInfo.resolution;
+                    const y2 = (obs.y2 - mapInfo.origin[1]) / mapInfo.resolution;
+                    const thickness = obs.thickness / mapInfo.resolution;
+                    
+                    slamCtx.lineWidth = thickness;
+                    slamCtx.lineCap = 'round';
+                    slamCtx.beginPath();
+                    slamCtx.moveTo(x1, y1);
+                    slamCtx.lineTo(x2, y2);
+                    slamCtx.stroke();
+                
+                } else if (obs.type === 'polygon' && obs.points.length > 0) {
+                    // 多边形障碍物
+                    slamCtx.beginPath();
+                    const firstPoint = obs.points[0];
+                    const fx = (firstPoint.x - mapInfo.origin[0]) / mapInfo.resolution;
+                    const fy = (firstPoint.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    slamCtx.moveTo(fx, fy);
+                    
+                    for (let i = 1; i < obs.points.length; i++) {
+                        const p = obs.points[i];
+                        const px = (p.x - mapInfo.origin[0]) / mapInfo.resolution;
+                        const py = (p.y - mapInfo.origin[1]) / mapInfo.resolution;
+                        slamCtx.lineTo(px, py);
+                    }
+                    slamCtx.closePath();
+                    slamCtx.fill();
+                }
+            });
+            
+            // 应用障碍物膨胀渐变效果
+            if (inflationPixels > 0) {
+                applyInflationGradient(slamCtx, mapWidthPixels, mapHeightPixels, inflationPixels);
+            }
+            
+            // 保存位图 (PNG)
+            const imageLink = document.createElement('a');
+            imageLink.download = `${prefix}.png`;
+            imageLink.href = slamCanvas.toDataURL('image/png');
+            imageLink.click();
+            
+            // 2. 保存地图元数据 (JSON)
+            const metadata = {
+                image: `${prefix}.png`,  // PNG 文件名
+                map_info: {
+                    resolution: mapInfo.resolution,
+                    width: mapInfo.width,
+                    height: mapInfo.height,
+                    origin: [mapInfo.origin[0], mapInfo.origin[1]],
+                    inflation_radius: mapInfo.inflationRadius
+                },
+                obstacles: obstacles.map(obs => {
+                    if (obs.type === 'rectangle') {
+                        return {type: 'rectangle', x: obs.x, y: obs.y, width: obs.width, height: obs.height};
+                    } else if (obs.type === 'circle') {
+                        return {type: 'circle', x: obs.x, y: obs.y, radius: obs.radius};
+                    } else if (obs.type === 'polygon') {
+                        return {type: 'polygon', points: obs.points};
+                    } else if (obs.type === 'line') {
+                        return {type: 'line', x1: obs.x1, y1: obs.y1, x2: obs.x2, y2: obs.y2, thickness: obs.thickness};
+                    }
+                }),
+                markers: markers
+            };
+            
+            setTimeout(() => {
+                downloadFile(new Blob([JSON.stringify(metadata, null, 2)], {type: 'application/json'}), `${prefix}.json`);
+            }, 500);
+        }
+        
+        function applyInflationGradient(ctx, width, height, inflationPixels) {
+            // 获取图像数据
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            
+            // 创建距离场缓存
+            const distanceField = new Float32Array(width * height);
+            
+            // 初始化距离场：障碍物为0，空闲区域为无穷大
+            for (let i = 0; i < width * height; i++) {
+                distanceField[i] = data[i * 4] > 127 ? 0 : Infinity;
+            }
+            
+            // 使用简化距离变换（8SSED算法）
+            // 前向扫描
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = y * width + x;
+                    
+                    if (distanceField[idx] === 0) continue;
+                    
+                    const neighbors = [];
+                    if (x > 0) neighbors.push(distanceField[idx - 1] + 1);
+                    if (y > 0) neighbors.push(distanceField[idx - width] + 1);
+                    if (x > 0 && y > 0) neighbors.push(distanceField[idx - width - 1] + 1.414);
+                    if (x < width - 1 && y > 0) neighbors.push(distanceField[idx - width + 1] + 1.414);
+                    
+                    if (neighbors.length > 0) {
+                        distanceField[idx] = Math.min(distanceField[idx], ...neighbors);
+                    }
+                }
+            }
+            
+            // 后向扫描
+            for (let y = height - 1; y >= 0; y--) {
+                for (let x = width - 1; x >= 0; x--) {
+                    const idx = y * width + x;
+                    
+                    if (distanceField[idx] === 0) continue;
+                    
+                    const neighbors = [distanceField[idx]];
+                    if (x < width - 1) neighbors.push(distanceField[idx + 1] + 1);
+                    if (y < height - 1) neighbors.push(distanceField[idx + width] + 1);
+                    if (x < width - 1 && y < height - 1) neighbors.push(distanceField[idx + width + 1] + 1.414);
+                    if (x > 0 && y < height - 1) neighbors.push(distanceField[idx + width - 1] + 1.414);
+                    
+                    distanceField[idx] = Math.min(...neighbors);
+                }
+            }
+            
+            // 根据距离场应用灰度渐变
+            for (let i = 0; i < width * height; i++) {
+                const distance = distanceField[i];
+                
+                if (distance === 0) {
+                    // 障碍物内部：白色（255）
+                    data[i * 4] = 255;
+                    data[i * 4 + 1] = 255;
+                    data[i * 4 + 2] = 255;
+                } else if (distance < inflationPixels) {
+                    // 膨胀区域：线性渐变（255 -> 0）
+                    const gradient = 255 * (1 - distance / inflationPixels);
+                    const clamped = Math.max(0, Math.min(255, Math.round(gradient)));
+                    data[i * 4] = clamped;
+                    data[i * 4 + 1] = clamped;
+                    data[i * 4 + 2] = clamped;
+                } else {
+                    // 膨胀半径之外：黑色（0）
+                    data[i * 4] = 0;
+                    data[i * 4 + 1] = 0;
+                    data[i * 4 + 2] = 0;
+                }
+                data[i * 4 + 3] = 255; // Alpha通道
+            }
+            
+            // 写回图像数据
+            ctx.putImageData(imageData, 0, 0);
+        }
+        
+        function exportPath() {
+            const start = markers.find(m => m.type === 'start');
+            const goal = markers.find(m => m.type === 'goal');
+            const waypoints = markers.filter(m => m.type === 'waypoint');
+            
+            if (!start || !goal) {
+                alert('请先添加起点和终点');
+                return;
+            }
+            
+            const data = {
+                start: [start.x, start.y],
+                goal: [goal.x, goal.y],
+                waypoints: waypoints.map(w => [w.x, w.y]),
+                path: [[start.x, start.y], ...waypoints.map(w => [w.x, w.y]), [goal.x, goal.y]]
+            };
+            
+            downloadFile(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}), 'navigation_path.json');
+        }
+        
+        
+        function downloadFile(blob, filename) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+        
+        // ==================== 视图控制 ====================
+        function zoomIn() {
+            scale *= 1.2;
+            if (scale > 10) scale = 10;
+            render();
+        }
+        
+        function zoomOut() {
+            scale /= 1.2;
+            if (scale < 0.1) scale = 0.1;
+            render();
+        }
+        
+        function resetZoom() {
+            scale = 1.0;
+            offsetX = canvas.width / 2;
+            offsetY = canvas.height / 2;
+            render();
+        }
+        
+        function fitView() {
+            // 计算地图区域的像素尺寸
+            const pixelWidth = mapInfo.width / mapInfo.resolution;
+            const pixelHeight = mapInfo.height / mapInfo.resolution;
+            
+            // 计算缩放比例，使地图适合窗口（留10%边距）
+            scale = Math.min(canvas.width / pixelWidth, canvas.height / pixelHeight) * 0.9;
+            
+            // 计算地图中心的世界坐标
+            const mapCenterWorldX = mapInfo.origin[0] + mapInfo.width / 2;
+            const mapCenterWorldY = mapInfo.origin[1] + mapInfo.height / 2;
+            
+            // 计算地图中心在屏幕上的理想位置（画布中心）
+            const targetScreenX = canvas.width / 2;
+            const targetScreenY = canvas.height / 2;
+            
+            // 反推需要的offset，使地图中心位于画布中心
+            // worldToScreen: x = (wx - origin[0]) / resolution * scale + offsetX
+            // => offsetX = x - (wx - origin[0]) / resolution * scale
+            offsetX = targetScreenX - (mapCenterWorldX - mapInfo.origin[0]) / mapInfo.resolution * scale;
+            offsetY = targetScreenY - (mapCenterWorldY - mapInfo.origin[1]) / mapInfo.resolution * scale;
+            
+            render();
+        }
+        
+        function toggleGrid() {
+            showGrid = !showGrid;
+            render();
+        }
+        
+        function toggleBackgroundImage() {
+            showBackgroundImage = !showBackgroundImage;
+            render();
+        }
+        
+        function clearAll() {
+            if (confirm('确定要清空所有内容吗？')) {
+                obstacles = [];
+                markers = [];
+                backgroundImage = null;
+                selectedObstacle = null;
+                updateMarkerList();
+                render();
+            }
+        }
+        
+        // ==================== 辅助函数 ====================
+        function updateMapInfo() {
+            mapInfo.width = parseFloat(document.getElementById('mapWidth').value);
+            mapInfo.height = parseFloat(document.getElementById('mapHeight').value);
+            mapInfo.resolution = parseFloat(document.getElementById('mapResolution').value);
+            mapInfo.origin[0] = parseFloat(document.getElementById('mapOriginX').value);
+            mapInfo.origin[1] = parseFloat(document.getElementById('mapOriginY').value);
+            mapInfo.inflationRadius = parseFloat(document.getElementById('inflationRadius').value);
+            render();
+        }
+        
+        function updateBrushSize() {
+            brushSize = parseFloat(document.getElementById('brushSize').value);
+            document.getElementById('brushSizeValue').textContent = `${brushSize.toFixed(2)} m`;
+        }
+        
+        function updateEraserSize() {
+            eraserSize = parseFloat(document.getElementById('eraserSize').value);
+            document.getElementById('eraserSizeValue').textContent = `${eraserSize.toFixed(2)} m`;
+        }
+        
+        function updateStats() {
+            document.getElementById('obstacleCount').textContent = obstacles.length;
+            document.getElementById('markerCount').textContent = markers.length;
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('show');
+        }
+        
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.remove('show');
+                }
+            });
+        });
+    </script>
+</body>
+</html>
