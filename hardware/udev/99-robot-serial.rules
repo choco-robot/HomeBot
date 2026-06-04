@@ -1,0 +1,13 @@
+# HomeBot 串口设备 udev 规则
+# 放置路径: /etc/udev/rules.d/99-robot-serial.rules
+# 生效命令: sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# 舵机驱动 (QinHeng CDC ACM, PID=0x55d3, Serial=5A7C121075)
+# macOS 对应: /dev/cu.usbmodem5A7C1210751
+# Linux  对应: /dev/ttyACM*
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5A7C121075", SYMLINK+="servobus", GROUP="dialout", MODE="0666"
+
+# 激光雷达 (QinHeng CH340, PID=0x7523, 无序列号)
+# macOS 对应: /dev/cu.usbserial-14210
+# Linux  对应: /dev/ttyUSB*
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="lidar", GROUP="dialout", MODE="0666"

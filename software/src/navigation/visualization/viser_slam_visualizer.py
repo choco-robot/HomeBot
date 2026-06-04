@@ -184,6 +184,7 @@ class ViserSLAMVisualizer:
         self._odom_cmd_addr = cfg.odom_cmd_addr
         self._slam_cmd_addr = cfg.slam_cmd_addr
         self._enable_vision = enable_vision
+        self._global_path_sub_addr = cfg.global_path_sub_addr
 
         self._max_traj_points = cfg.max_trajectory_points
         self._point_size = cfg.point_size
@@ -204,6 +205,7 @@ class ViserSLAMVisualizer:
         else:
             self._vision_sub = None
         self._map_sub = SLAMMapSubscriber(self._slam_map_addr)
+        self._path_sub = ZMQJsonSubscriber(self._global_path_sub_addr, required_keys=("path",))
 
         # ZeroMQ 发布者/请求者（导航控制）
         self._goal_pub = create_socket(zmq.PUB, bind=True, address=self._goal_pub_addr)
@@ -347,6 +349,7 @@ class ViserSLAMVisualizer:
             self._gui_show_slam_traj = g.add_checkbox("SLAM 轨迹", True)
             self._gui_show_camera = g.add_checkbox("摄像头图像", True)
             self._gui_show_odom_frame = g.add_checkbox("里程计坐标系", False)
+            self._gui_show_global_path = g.add_checkbox("全局路径", True)
 
         # 视角控制
         with g.add_folder("🎥 视角控制", expand_by_default=False):
@@ -380,6 +383,7 @@ class ViserSLAMVisualizer:
             self._gui_lidar_hz = g.add_number("Lidar 接收数", 0, disabled=True)
             self._gui_map_hz = g.add_number("Map 接收数", 0, disabled=True)
             self._gui_vision_hz = g.add_number("Vision 接收数", 0, disabled=True)
+            self._gui_path_hz = g.add_number("Path 接收数", 0, disabled=True)
 
         # 回调绑定
         self._gui_top_view.on_click(lambda _: self._set_top_view())
@@ -400,6 +404,7 @@ class ViserSLAMVisualizer:
         self._gui_show_slam_traj.on_update(lambda _: self._update_layer_visibility())
         self._gui_show_camera.on_update(lambda _: self._update_layer_visibility())
         self._gui_show_odom_frame.on_update(lambda _: self._update_layer_visibility())
+        self._gui_show_global_path.on_update(lambda _: self._update_layer_visibility())
 
         logger.info("GUI initialized")
 
@@ -504,6 +509,11 @@ class ViserSLAMVisualizer:
                     elif map_bytes is not None and map_meta is not None:
                         self._update_occupancy_map(map_meta, map_bytes)
 
+                # 读取并更新全局路径
+                path_msg = self._path_sub.read()
+                if path_msg is not None and self._gui_show_global_path.value:
+                    self._update_global_path(path_msg)
+
                 # 3. 更新 GUI 统计
                 self._update_stream_stats()
 
@@ -531,6 +541,7 @@ class ViserSLAMVisualizer:
         if self._vision_sub:
             self._vision_sub.close()
         self._map_sub.close()
+        self._path_sub.close()
         if self._goal_pub:
             self._goal_pub.close()
         if self._odom_cmd:
@@ -998,6 +1009,36 @@ class ViserSLAMVisualizer:
 
         self._draw_trajectory("/map/odom_trajectory", self._odom_traj, COLOR_YELLOW)
 
+    def _update_global_path(self, path_msg: dict) -> None:
+        """更新全局路径可视化（橙色线段）。"""
+        if not self._gui_show_global_path.value:
+            self._remove_node("/map/global_path")
+            return
+
+        path = path_msg.get("path", [])
+        if len(path) < 2:
+            return
+
+        pts = np.array(path, dtype=np.float32)
+        n_segments = len(pts) - 1
+
+        # Viser add_line_segments 需要 (N, 2, 3) 形状
+        segments = np.zeros((n_segments, 2, 3), dtype=np.float32)
+        segments[:, 0, :2] = pts[:-1]
+        segments[:, 1, :2] = pts[1:]
+        segments[:, :, 2] = 0.05  # 略高于地面
+
+        colors = np.zeros((n_segments, 2, 3), dtype=np.uint8)
+        colors[:, :, :] = COLOR_ORANGE
+
+        self._remove_node("/map/global_path")
+        self._handles["/map/global_path"] = self._server.scene.add_line_segments(
+            "/map/global_path",
+            points=segments,
+            colors=colors,
+            line_width=4.0,
+        )
+
     def _draw_trajectory(self, name: str, traj: Deque[Tuple[float, float]], color: np.ndarray) -> None:
         """使用点云绘制轨迹。"""
         pts = np.array(list(traj), dtype=np.float32)
@@ -1046,6 +1087,8 @@ class ViserSLAMVisualizer:
         self._gui_map_hz.value = self._map_sub.get_stats()["recv_count"]
         if self._vision_sub:
             self._gui_vision_hz.value = self._vision_sub.get_stats()["recv_count"]
+        if hasattr(self, '_path_sub') and self._path_sub:
+            self._gui_path_hz.value = self._path_sub.get_stats()["recv_count"]
 
     # --------------------------------------------------------------------------
     # 导航控制
@@ -1254,6 +1297,7 @@ def main():
     parser.add_argument("--goal-pub", default=None, help="目标点 PUB 地址 (默认 tcp://*:5566)")
     parser.add_argument("--odom-cmd", default=None, help="里程计命令 REQ 地址 (默认 tcp://localhost:5567)")
     parser.add_argument("--slam-cmd", default=None, help="SLAM 命令 REQ 地址 (默认 tcp://localhost:5568)")
+    parser.add_argument("--global-path", default=None, help="全局路径 SUB 地址 (默认 tcp://localhost:5569)")
     args = parser.parse_args()
 
     # 用命令行参数覆盖配置
@@ -1271,6 +1315,8 @@ def main():
         cfg.viser.odom_cmd_addr = args.odom_cmd
     if args.slam_cmd:
         cfg.viser.slam_cmd_addr = args.slam_cmd
+    if args.global_path:
+        cfg.viser.global_path_sub_addr = args.global_path
 
     visualizer = ViserSLAMVisualizer(enable_vision=not args.no_vision)
     visualizer.start()
