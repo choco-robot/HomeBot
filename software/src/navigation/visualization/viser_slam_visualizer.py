@@ -24,11 +24,13 @@
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Optional, Tuple
+from typing import Any, Deque, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -40,6 +42,13 @@ from common.logging import get_logger
 from common.zmq_helper import create_socket
 from common.zmq_subscriber import ZMQJsonSubscriber, ZMQMultipartImageSubscriber
 from configs import get_config
+from navigation.core.occupancy_grid import (
+    OccupancyGrid,
+    COST_FREE,
+    COST_UNKNOWN,
+    COST_OCCUPIED,
+    COST_LETHAL,
+)
 
 logger = get_logger(__name__)
 
@@ -59,6 +68,39 @@ def yaw_to_wxyz(yaw: float) -> Tuple[float, float, float, float]:
     """将 2D 航向角转为 viser 四元数 wxyz (绕 z 轴旋转)。"""
     q = tf.SO3.from_z_radians(yaw)
     return tuple(q.wxyz)
+
+
+def _slam_bytes_to_occupancy_grid(
+    map_bytes: bytes, size_pixels: int, size_meters: float
+) -> OccupancyGrid:
+    """将 BreezySLAM 地图字节数组转换为 OccupancyGrid。
+
+    BreezySLAM 地图字节含义：
+    - 0   ~ 50  : 空闲
+    - 50  ~ 200 : 未知
+    - 200 ~ 255 : 占用
+    """
+    resolution = size_meters / size_pixels
+    origin = (-size_meters / 2, -size_meters / 2)
+
+    grid = OccupancyGrid(
+        width=size_pixels,
+        height=size_pixels,
+        resolution=resolution,
+        origin=origin,
+        default_cost=COST_UNKNOWN,
+    )
+
+    arr = np.frombuffer(map_bytes, dtype=np.uint8).reshape((size_pixels, size_pixels))
+
+    # 阈值映射为 OccupancyGrid 代价值
+    grid.data = np.where(
+        arr < 50,
+        COST_FREE,
+        np.where(arr > 200, COST_LETHAL, COST_UNKNOWN),
+    ).astype(np.int16)
+
+    return grid
 
 
 # ------------------------------------------------------------------------------
@@ -131,7 +173,7 @@ class SLAMMapSubscriber:
 class ViserSLAMVisualizer:
     """Viser SLAM 实时可视化器。"""
 
-    def __init__(self):
+    def __init__(self, enable_vision: bool = True):
         cfg = get_config().viser
         self._odom_addr = cfg.odom_sub_addr
         self._slam_pose_addr = cfg.slam_pose_sub_addr
@@ -141,6 +183,7 @@ class ViserSLAMVisualizer:
         self._goal_pub_addr = cfg.goal_pub_addr
         self._odom_cmd_addr = cfg.odom_cmd_addr
         self._slam_cmd_addr = cfg.slam_cmd_addr
+        self._enable_vision = enable_vision
 
         self._max_traj_points = cfg.max_trajectory_points
         self._point_size = cfg.point_size
@@ -156,7 +199,10 @@ class ViserSLAMVisualizer:
         self._odom_sub = ZMQJsonSubscriber(self._odom_addr, required_keys=("x", "y", "yaw"))
         self._slam_pose_sub = ZMQJsonSubscriber(self._slam_pose_addr, required_keys=("x", "y", "theta"))
         self._lidar_scan_sub = ZMQJsonSubscriber(self._lidar_scan_addr, required_keys=("angles_deg", "distances_m"))
-        self._vision_sub = ZMQMultipartImageSubscriber(self._vision_addr)
+        if enable_vision:
+            self._vision_sub = ZMQMultipartImageSubscriber(self._vision_addr)
+        else:
+            self._vision_sub = None
         self._map_sub = SLAMMapSubscriber(self._slam_map_addr)
 
         # ZeroMQ 发布者/请求者（导航控制）
@@ -177,6 +223,15 @@ class ViserSLAMVisualizer:
         self._running = False
         self._last_map_update_time = 0.0
         self._last_lidar_time = 0.0
+
+        # 地图管理
+        self._loaded_grid: Optional[OccupancyGrid] = None
+        self._use_loaded_grid: bool = False
+        self._force_map_update: bool = False
+        self._loaded_obstacles: List[dict] = []
+        self._loaded_markers: List[dict] = []
+        self._pending_png: Optional[Any] = None  # 缓存待加载的 PNG
+        self._pending_json: Optional[dict] = None  # 缓存待加载的 JSON 元信息
 
         # 目标点状态
         self._goal_x = 0.0
@@ -300,6 +355,14 @@ class ViserSLAMVisualizer:
             self._gui_reset_view = g.add_button("🔄 重置视角")
             self._gui_clear_traj = g.add_button("🗑️ 清除轨迹")
 
+        # 地图管理
+        with g.add_folder("🗺️ 地图管理", expand_by_default=True):
+            self._gui_load_png = g.add_upload_button("📂 上传地图图片", mime_type=".png")
+            self._gui_load_json = g.add_upload_button("📂 上传地图元数据", mime_type=".json")
+            self._gui_save_map = g.add_button("💾 保存地图")
+            self._gui_use_slam_map = g.add_button("↩️ 恢复 SLAM 实时地图")
+            self._gui_map_status = g.add_text("地图状态", "使用 SLAM 实时地图")
+
         # 导航控制
         with g.add_folder("🎯 导航控制", expand_by_default=True):
             self._gui_goal_x = g.add_number("目标 X (m)", 0.0, step=0.1)
@@ -322,6 +385,10 @@ class ViserSLAMVisualizer:
         self._gui_top_view.on_click(lambda _: self._set_top_view())
         self._gui_reset_view.on_click(lambda _: self._reset_view())
         self._gui_clear_traj.on_click(lambda _: self._clear_trajectories())
+        self._gui_load_png.on_upload(self._on_upload_png)
+        self._gui_load_json.on_upload(self._on_upload_json)
+        self._gui_save_map.on_click(lambda _: self._on_save_map())
+        self._gui_use_slam_map.on_click(lambda _: self._on_use_slam_map())
         self._gui_set_goal.on_click(lambda _: self._on_set_goal())
         self._gui_reset_odom.on_click(lambda _: self._on_reset_odom())
         self._gui_reset_slam.on_click(lambda _: self._on_reset_slam())
@@ -408,7 +475,11 @@ class ViserSLAMVisualizer:
                 odom = self._odom_sub.read()
                 slam_pose = self._slam_pose_sub.read()
                 lidar_scan = self._lidar_scan_sub.read()
-                vision_frame_id, vision_img = self._vision_sub.read_frame()
+                vision_frame_id, vision_img = (
+                    self._vision_sub.read_frame()
+                    if self._vision_sub
+                    else (None, None)
+                )
                 map_meta, map_bytes = self._map_sub.read()
 
                 # 2. 更新可视化
@@ -427,8 +498,11 @@ class ViserSLAMVisualizer:
                 if vision_img is not None and self._gui_show_camera.value:
                     self._update_camera_image(vision_img)
 
-                if map_bytes is not None and map_meta is not None and self._gui_show_map.value:
-                    self._update_occupancy_map(map_meta, map_bytes)
+                if self._gui_show_map.value:
+                    if self._use_loaded_grid:
+                        self._update_occupancy_map(None, None)
+                    elif map_bytes is not None and map_meta is not None:
+                        self._update_occupancy_map(map_meta, map_bytes)
 
                 # 3. 更新 GUI 统计
                 self._update_stream_stats()
@@ -454,7 +528,8 @@ class ViserSLAMVisualizer:
         self._odom_sub.close()
         self._slam_pose_sub.close()
         self._lidar_scan_sub.close()
-        self._vision_sub.close()
+        if self._vision_sub:
+            self._vision_sub.close()
         self._map_sub.close()
         if self._goal_pub:
             self._goal_pub.close()
@@ -561,43 +636,127 @@ class ViserSLAMVisualizer:
             )
         self._last_lidar_time = time.time()
 
-    def _update_occupancy_map(self, meta: dict, map_bytes: bytes) -> None:
+    def _update_occupancy_map(self, meta: Optional[dict], map_bytes: Optional[bytes]) -> None:
         """将栅格地图渲染为场景中的纹理图像。"""
         if not self._gui_show_map.value:
             self._remove_node("/map/occupancy_map")
             return
 
         now = time.time()
-        if now - self._last_map_update_time < self._map_update_interval:
+        if (now - self._last_map_update_time < self._map_update_interval) and not self._force_map_update:
             return
+
+        grid: Optional[OccupancyGrid] = None
+        if self._use_loaded_grid and self._loaded_grid is not None:
+            grid = self._loaded_grid
+        elif meta is not None and map_bytes is not None:
+            size_pixels = meta.get("size_pixels", 800)
+            size_meters = meta.get("size_meters", 20.0)
+            if len(map_bytes) >= size_pixels * size_pixels:
+                grid = _slam_bytes_to_occupancy_grid(map_bytes, size_pixels, size_meters)
+
+        if grid is None:
+            return
+
         self._last_map_update_time = now
+        self._force_map_update = False
+        self._draw_occupancy_grid(grid)
 
-        size_pixels = meta.get("size_pixels", 800)
-        size_meters = meta.get("size_meters", 20.0)
+    def _draw_occupancy_grid(self, grid: OccupancyGrid) -> None:
+        """将 OccupancyGrid 渲染为场景中的纹理图像。"""
+        size_pixels = grid.width
+        size_meters = grid.width * grid.resolution
 
-        if len(map_bytes) < size_pixels * size_pixels:
-            return
-
-        # 转为 numpy 并 reshape
-        grid = np.frombuffer(map_bytes, dtype=np.uint8).reshape((size_pixels, size_pixels))
-
-        # 渲染为 RGB 图像：
-        # 0(空闲)=白, 127(未知)=灰, 255(占据)=黑
         img = np.zeros((size_pixels, size_pixels, 3), dtype=np.uint8)
-        img[grid < 50] = [255, 255, 255]       # 空闲 -> 白
-        img[(grid >= 50) & (grid < 200)] = [180, 180, 180]  # 未知 -> 灰
-        img[grid >= 200] = [40, 40, 40]        # 占据 -> 深灰
+        data = grid.data
+        img[data == COST_FREE] = [255, 255, 255]
+        img[data == COST_UNKNOWN] = [180, 180, 180]
+        img[data >= COST_OCCUPIED] = [40, 40, 40]
 
-        if self._handles.get("/map/occupancy_map") is not None:
-            self._handles.get("/map/occupancy_map").image = img
+        h = self._handles.get("/map/occupancy_map")
+        if h is not None and hasattr(h, "image"):
+            h.image = img
+        else:
+            center_x = grid.origin[0] + size_meters / 2
+            center_y = grid.origin[1] + size_meters / 2
+            self._handles["/map/occupancy_map"] = self._server.scene.add_image(
+                "/map/occupancy_map",
+                image=img,
+                render_width=size_meters,
+                render_height=size_meters,
+                position=(center_x, center_y, -0.1),
+            )
+
+        # 渲染障碍物和标记点覆盖层
+        self._render_map_overlays()
+
+    def _render_map_overlays(self) -> None:
+        """在地图上渲染障碍物和标记点（来自 JSON 元信息）。"""
+        # 先清除旧的覆盖层
+        self._remove_node("/map/overlays")
+
+        if not self._use_loaded_grid:
             return
-        self._handles["/map/occupancy_map"] = self._server.scene.add_image(
-            "/map/occupancy_map",
-            image=img,
-            render_width=size_meters,
-            render_height=size_meters,
-            position=(0.0, 0.0, -0.1),  # 略低于地面
-        )
+
+        s = self._server.scene
+        overlays = s.add_frame("/map/overlays", show_axes=False)
+        self._handles["/map/overlays"] = overlays
+
+        # 渲染障碍物
+        for i, obs in enumerate(self._loaded_obstacles):
+            obs_type = obs.get("type", "")
+            base = f"/map/overlays/obs_{i}"
+
+            if obs_type == "rectangle":
+                x = obs.get("x", 0.0)
+                y = obs.get("y", 0.0)
+                w = obs.get("width", 1.0)
+                h = obs.get("height", 1.0)
+                s.add_box(
+                    base,
+                    dimensions=(w, h, 0.05),
+                    position=(x + w / 2, y + h / 2, 0.025),
+                    color=(255, 80, 80),
+                )
+            elif obs_type == "circle":
+                x = obs.get("x", 0.0)
+                y = obs.get("y", 0.0)
+                r = obs.get("radius", 0.5)
+                s.add_cylinder(
+                    base,
+                    radius=r,
+                    height=0.05,
+                    position=(x, y, 0.025),
+                    color=(255, 80, 80),
+                )
+            elif obs_type == "line":
+                x1, y1 = obs.get("x1", 0.0), obs.get("y1", 0.0)
+                x2, y2 = obs.get("x2", 0.0), obs.get("y2", 0.0)
+                thickness = obs.get("thickness", 0.1)
+                mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+                length = math.hypot(x2 - x1, y2 - y1)
+                angle = math.atan2(y2 - y1, x2 - x1)
+                s.add_box(
+                    base,
+                    dimensions=(length, thickness, 0.05),
+                    position=(mid_x, mid_y, 0.025),
+                    wxyz=yaw_to_wxyz(angle),
+                    color=(255, 80, 80),
+                )
+
+        # 渲染标记点
+        for i, marker in enumerate(self._loaded_markers):
+            mtype = marker.get("type", "")
+            x = marker.get("x", 0.0)
+            y = marker.get("y", 0.0)
+            base = f"/map/overlays/marker_{i}"
+
+            if mtype == "start":
+                s.add_sphere(base, radius=0.12, position=(x, y, 0.12), color=(0, 255, 0))
+                s.add_label(f"{base}/label", text="Start", position=(x, y, 0.35))
+            elif mtype == "goal":
+                s.add_sphere(base, radius=0.12, position=(x, y, 0.12), color=(255, 0, 0))
+                s.add_label(f"{base}/label", text="Goal", position=(x, y, 0.35))
 
     def _update_camera_image(self, img_bgr: np.ndarray) -> None:
         """更新摄像头视锥中的图像。"""
@@ -609,6 +768,203 @@ class ViserSLAMVisualizer:
         h = self._handles.get("/map/base_link/camera/frustum")
         if h is not None and hasattr(h, "image"):
             h.image = img_rgb
+
+    # ------------------------------------------------------------------
+    # 地图管理回调
+    # ------------------------------------------------------------------
+    def _on_upload_png(self, event) -> None:
+        """接收上传的 PNG 地图图片，缓存并尝试加载。"""
+        uploaded = event.target.value
+        if uploaded is None:
+            return
+        self._pending_png = uploaded
+        self._gui_map_status.value = f"已接收图片: {uploaded.name}，等待上传 JSON 元数据..."
+        logger.info(f"地图图片已缓存: {uploaded.name}")
+        self._try_load_pending_map()
+
+    def _on_upload_json(self, event) -> None:
+        """接收上传的 JSON 元信息，解析并尝试加载。"""
+        uploaded = event.target.value
+        if uploaded is None:
+            return
+        try:
+            meta = json.loads(uploaded.content.decode("utf-8"))
+            if "map_info" not in meta:
+                raise ValueError("JSON 中缺少 'map_info' 字段")
+            self._pending_json = meta
+            self._gui_map_status.value = f"已接收元数据: {uploaded.name}，等待上传 PNG 图片..."
+            logger.info(f"地图元数据已缓存: {uploaded.name}")
+            self._try_load_pending_map()
+        except Exception as e:
+            self._gui_map_status.value = f"元数据解析失败: {e}"
+            logger.error(f"地图元数据解析失败: {e}")
+
+    def _try_load_pending_map(self) -> None:
+        """结合缓存的 PNG 和 JSON 加载地图。"""
+        if self._pending_png is None or self._pending_json is None:
+            return
+
+        try:
+            png = self._pending_png
+            meta = self._pending_json
+
+            # 1. 解码 PNG
+            arr = cv2.imdecode(
+                np.frombuffer(png.content, np.uint8),
+                cv2.IMREAD_GRAYSCALE,
+            )
+            if arr is None:
+                raise ValueError("无法解码 PNG 图片")
+            img_h, img_w = arr.shape
+
+            # 2. 解析 JSON 元信息
+            map_info = meta["map_info"]
+            resolution = float(map_info.get("resolution", 0.05))
+            width_m = float(map_info.get("width", 10.0))
+            height_m = float(map_info.get("height", 10.0))
+            origin = tuple(map_info.get("origin", [0.0, 0.0]))
+
+            # 3. 计算期望栅格数并校验
+            expected_w = int(round(width_m / resolution))
+            expected_h = int(round(height_m / resolution))
+            if img_w != expected_w or img_h != expected_h:
+                raise ValueError(
+                    f"PNG 图片尺寸 ({img_w}x{img_h}) 与 JSON 元信息计算出的栅格数 "
+                    f"({expected_w}x{expected_h}) 不匹配。"
+                    f"请检查 map_info 中的 resolution={resolution}、width={width_m}、height={height_m}"
+                )
+
+            # 4. 构建 OccupancyGrid
+            grid = OccupancyGrid(
+                width=expected_w,
+                height=expected_h,
+                resolution=resolution,
+                origin=origin,
+                default_cost=COST_UNKNOWN,
+            )
+            grid.data = np.where(
+                arr < 50,
+                COST_FREE,
+                np.where(arr > 200, COST_LETHAL, COST_UNKNOWN),
+            ).astype(np.int16)
+
+            # 5. 提取障碍物和标记点
+            self._loaded_obstacles = meta.get("obstacles", [])
+            self._loaded_markers = meta.get("markers", [])
+
+            # 6. 应用地图
+            self._loaded_grid = grid
+            self._use_loaded_grid = True
+            self._force_map_update = True
+
+            # 7. 清空缓存
+            self._pending_png = None
+            self._pending_json = None
+
+            self._gui_map_status.value = (
+                f"已加载: {png.name} ({img_w}x{img_h}), "
+                f"障碍物={len(self._loaded_obstacles)}, 标记={len(self._loaded_markers)}"
+            )
+            logger.info(
+                f"地图已加载: {png.name} ({img_w}x{img_h}), "
+                f"障碍物={len(self._loaded_obstacles)}, 标记={len(self._loaded_markers)}"
+            )
+        except Exception as e:
+            self._gui_map_status.value = f"加载失败: {e}"
+            logger.error(f"加载地图失败: {e}")
+            # 出错时清空缓存，让用户重新上传
+            self._pending_png = None
+            self._pending_json = None
+
+    def _on_save_map(self) -> None:
+        """保存当前地图到文件。"""
+        try:
+            # 获取要保存的地图
+            grid: Optional[OccupancyGrid] = None
+            if self._use_loaded_grid and self._loaded_grid is not None:
+                grid = self._loaded_grid
+            else:
+                meta, map_bytes = self._map_sub.read()
+                if meta is None or map_bytes is None:
+                    self._gui_map_status.value = "没有可用地图"
+                    return
+                size_pixels = meta.get("size_pixels", 800)
+                size_meters = meta.get("size_meters", 20.0)
+                grid = _slam_bytes_to_occupancy_grid(map_bytes, size_pixels, size_meters)
+
+            # 尝试使用 tkinter 文件对话框
+            save_path: Optional[str] = None
+            try:
+                import tkinter.filedialog as filedialog
+                import tkinter as tk
+
+                root = tk.Tk()
+                root.withdraw()
+                save_path = filedialog.asksaveasfilename(
+                    defaultextension=".png",
+                    filetypes=[("PNG 地图", "*.png"), ("所有文件", "*.*")],
+                    title="保存地图",
+                )
+                root.destroy()
+            except Exception:
+                pass
+
+            if save_path:
+                png_path = save_path if save_path.endswith(".png") else save_path + ".png"
+            else:
+                # 回退：保存到默认路径
+                default_dir = os.path.join(os.getcwd(), "maps")
+                os.makedirs(default_dir, exist_ok=True)
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                png_path = os.path.join(default_dir, f"map_{timestamp}.png")
+
+            # 获取原始灰度数组（BreezySLAM 地图字节直接就是灰度图）
+            size_pixels = grid.width
+            arr = grid.data.astype(np.uint8)
+            # OccupancyGrid cost 值范围可能是 0, -1, 100, 255
+            # 保存前映射回 BreezySLAM 灰度约定
+            gray = np.zeros((grid.height, grid.width), dtype=np.uint8)
+            gray[grid.data == COST_FREE] = 0
+            gray[grid.data == COST_UNKNOWN] = 127
+            gray[grid.data >= COST_OCCUPIED] = 255
+            # reshape 为 (H, W)
+            gray = gray.reshape((grid.height, grid.width))
+
+            cv2.imwrite(png_path, gray)
+
+            # 同时保存元信息 JSON（同名，使用用户指定的新格式）
+            meta_path = png_path.replace(".png", ".json")
+            meta = {
+                "map_info": {
+                    "resolution": float(grid.resolution),
+                    "width": float(grid.width * grid.resolution),
+                    "height": float(grid.height * grid.resolution),
+                    "origin": list(grid.origin),
+                    "inflation_radius": 0.25,
+                },
+                "obstacles": [],
+                "markers": [],
+            }
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+            self._gui_map_status.value = f"已保存: {png_path}"
+            logger.info(f"地图已保存: {png_path} (元信息: {meta_path})")
+
+        except Exception as e:
+            self._gui_map_status.value = f"保存失败: {e}"
+            logger.error(f"保存地图失败: {e}")
+
+    def _on_use_slam_map(self) -> None:
+        """恢复使用 SLAM 实时地图。"""
+        self._use_loaded_grid = False
+        self._loaded_grid = None
+        self._loaded_obstacles = []
+        self._loaded_markers = []
+        self._force_map_update = True
+        self._remove_node("/map/overlays")
+        self._gui_map_status.value = "使用 SLAM 实时地图"
+        logger.info("已恢复 SLAM 实时地图")
 
     def _update_slam_trajectory(self, slam_pose: dict) -> None:
         """更新 SLAM 轨迹。"""
@@ -688,7 +1044,8 @@ class ViserSLAMVisualizer:
         self._gui_slam_hz.value = self._slam_pose_sub.get_stats()["recv_count"]
         self._gui_lidar_hz.value = self._lidar_scan_sub.get_stats()["recv_count"]
         self._gui_map_hz.value = self._map_sub.get_stats()["recv_count"]
-        self._gui_vision_hz.value = self._vision_sub.get_stats()["recv_count"]
+        if self._vision_sub:
+            self._gui_vision_hz.value = self._vision_sub.get_stats()["recv_count"]
 
     # --------------------------------------------------------------------------
     # 导航控制
@@ -893,6 +1250,7 @@ def main():
     parser.add_argument("--slam-map", default="tcp://localhost:5564", help="SLAM 地图 SUB 地址")
     parser.add_argument("--lidar-scan", default="tcp://localhost:5565", help="激光雷达扫描 SUB 地址")
     parser.add_argument("--vision", default="tcp://localhost:5560", help="摄像头图像 SUB 地址")
+    parser.add_argument("--no-vision", action="store_true", help="禁用摄像头图像订阅（无 VisionService 时使用）")
     parser.add_argument("--goal-pub", default=None, help="目标点 PUB 地址 (默认 tcp://*:5566)")
     parser.add_argument("--odom-cmd", default=None, help="里程计命令 REQ 地址 (默认 tcp://localhost:5567)")
     parser.add_argument("--slam-cmd", default=None, help="SLAM 命令 REQ 地址 (默认 tcp://localhost:5568)")
@@ -914,7 +1272,7 @@ def main():
     if args.slam_cmd:
         cfg.viser.slam_cmd_addr = args.slam_cmd
 
-    visualizer = ViserSLAMVisualizer()
+    visualizer = ViserSLAMVisualizer(enable_vision=not args.no_vision)
     visualizer.start()
 
 

@@ -68,6 +68,17 @@ class OccupancyGrid:
         wy = self.origin[1] + (gy + 0.5) * self.resolution
         return wx, wy
 
+    def copy(self) -> "OccupancyGrid":
+        """深拷贝栅格地图"""
+        grid = OccupancyGrid(
+            width=self.width,
+            height=self.height,
+            resolution=self.resolution,
+            origin=self.origin,
+        )
+        grid.data = self.data.copy()
+        return grid
+
     # ------------------------------------------------------------------
     # 数据访问
     # ------------------------------------------------------------------
