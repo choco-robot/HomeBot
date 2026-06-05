@@ -577,10 +577,26 @@ class ViserSLAMVisualizer:
             label.text = f"x: {x:.2f}, y: {y:.2f}, θ: {theta_deg:.1f}°"
             label.position = np.array([x, y, 0.35])
 
-        # 跟随机器人模式：更新相机 look_at
+        # 跟随机器人模式：第三人称背后视角
+        # 相机始终位于机器人后方，朝向机器人前方
         if self._gui_follow_robot.value:
+            follow_dist = 2.0    # 相机在机器人后方的水平距离（米）
+            follow_height = 1.5  # 相机高度（米）
+            look_ahead = 3.0     # 看向机器人前方多远（米）
+
+            # 相机位置：机器人后方
+            cam_x = x - follow_dist * math.cos(theta)
+            cam_y = y - follow_dist * math.sin(theta)
+            cam_z = follow_height
+
+            # 看向机器人前方某点，而非机器人本身
+            look_x = x + look_ahead * math.cos(theta)
+            look_y = y + look_ahead * math.sin(theta)
+            look_z = 0.0
+
             for client in self._server.get_clients().values():
-                client.camera.look_at = np.array([x, y, 0.0])
+                client.camera.position = np.array([cam_x, cam_y, cam_z])
+                client.camera.look_at = np.array([look_x, look_y, look_z])
 
     def _update_odom_frame(self, odom: dict) -> None:
         """更新里程计坐标系位置。"""

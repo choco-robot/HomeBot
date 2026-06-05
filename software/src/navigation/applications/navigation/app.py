@@ -31,6 +31,7 @@ from common.logging import get_logger
 from common.transform import world_to_robot2
 from common.zmq_helper import create_socket
 from common.zmq_subscriber import ZMQJsonSubscriber, ZMQMultipartJsonSubscriber
+from configs import get_config
 from navigation.core.occupancy_grid import (
     COST_FREE,
     COST_LETHAL,
@@ -42,6 +43,10 @@ from navigation.core.astar_planner import AStarPlanner
 from navigation.planning.local_planner import LocalPlannerConfig, VFHLocalPlanner
 
 logger = get_logger(__name__)
+
+def _nav_cfg():
+    """获取导航配置快捷方式"""
+    return get_config().navigation
 
 DEFAULT_SLAM_POSE_ADDR = "tcp://localhost:5563"
 DEFAULT_SLAM_MAP_ADDR = "tcp://localhost:5564"
@@ -106,21 +111,22 @@ class NavigationApp:
         path_pub_addr: str = DEFAULT_PATH_PUB_ADDR,
         goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
-        arrival_threshold_m: float = 0.15,
-        lookahead_distance_m: float = 0.4,
-        replan_interval_s: float = 3.0,
-        control_rate: float = 10.0,
-        inflation_radius_m: float = 0.2,
-        max_path_deviation_m: float = 0.5,
-        use_depth: bool = True,
+        arrival_threshold_m: Optional[float] = None,
+        lookahead_distance_m: Optional[float] = None,
+        replan_interval_s: Optional[float] = None,
+        control_rate: Optional[float] = None,
+        inflation_radius_m: Optional[float] = None,
+        max_path_deviation_m: Optional[float] = None,
+        use_depth: Optional[bool] = None,
     ):
+        nav = _nav_cfg()
         self._goal: Tuple[float, float] = (goal_x, goal_y)
-        self._arrival_threshold = arrival_threshold_m
-        self._lookahead = lookahead_distance_m
-        self._replan_interval = replan_interval_s
-        self._control_interval = 1.0 / control_rate if control_rate > 0 else 0.1
-        self._inflation_radius = inflation_radius_m
-        self._max_deviation = max_path_deviation_m
+        self._arrival_threshold = arrival_threshold_m if arrival_threshold_m is not None else nav.arrival_distance_threshold_m
+        self._lookahead = lookahead_distance_m if lookahead_distance_m is not None else nav.lookahead_distance_m
+        self._replan_interval = replan_interval_s if replan_interval_s is not None else nav.replan_interval_s
+        self._control_interval = 1.0 / (control_rate if control_rate is not None else nav.control_rate_hz) if (control_rate if control_rate is not None else nav.control_rate_hz) > 0 else 0.1
+        self._inflation_radius = inflation_radius_m if inflation_radius_m is not None else nav.inflation_radius_m
+        self._max_deviation = max_path_deviation_m if max_path_deviation_m is not None else nav.max_path_deviation_m
 
         # 数据订阅（直接复用 common.zmq_subscriber 提供的类）
         self._slam_pose_sub = ZMQJsonSubscriber(
@@ -128,7 +134,7 @@ class NavigationApp:
         )
         self._slam_map_sub = SLAMMapSubscriber(slam_map_addr)
         # DepthService 发布 multipart: [topic, json]，json_frame_index=1
-        self._use_depth = use_depth
+        self._use_depth = use_depth if use_depth is not None else nav.use_depth_obstacle
         if self._use_depth:
             self._obstacle_sub = ZMQMultipartJsonSubscriber(
                 obstacle_addr, required_keys=("histogram",), json_frame_index=1

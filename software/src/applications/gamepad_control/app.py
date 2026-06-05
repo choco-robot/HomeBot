@@ -607,8 +607,8 @@ class GamepadControlApp:
             try:
                 self.chassis_client.send_command(
                     vx=0.0, vy=0.0, vz=0.0,
-                    source="gamepad",
-                    priority=PRIORITIES.get("gamepad", 3)
+                    source="home",
+                    priority=PRIORITIES.get("home", 3)
                 )
             except Exception as e:
                 logger.error(f"复位底盘失败: {e}")
@@ -618,8 +618,8 @@ class GamepadControlApp:
             try:
                 response = self.arm_client.send_joint_dict(
                     joints_dict={},  # 空字典表示归位
-                    source="gamepad",
-                    priority=PRIORITIES.get("gamepad", 3),
+                    source="home",
+                    priority=PRIORITIES.get("home", 3),
                     speed=self.config.arm_speed
                 )
                 if response and response.success:

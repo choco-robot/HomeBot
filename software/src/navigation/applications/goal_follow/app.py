@@ -44,8 +44,13 @@ from navigation.core.occupancy_grid import (
     COST_LETHAL,
 )
 from navigation.perception.obstacle_detector import DepthObstacle
+from configs import get_config
 
 logger = get_logger(__name__)
+
+def _nav_cfg():
+    """获取导航配置快捷方式"""
+    return get_config().navigation
 
 DEFAULT_ODOM_ADDR = "tcp://localhost:5559"
 DEFAULT_OBSTACLE_ADDR = "tcp://localhost:5562"
@@ -393,18 +398,19 @@ class GoalFollowApp:
         map_addr: str = DEFAULT_MAP_ADDR,
         chassis_addr: str = DEFAULT_CHASSIS_ADDR,
         goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
-        arrival_threshold_m: float = 0.1,
-        control_rate: float = 10.0,
-        use_depth: bool = True,
+        arrival_threshold_m: Optional[float] = None,
+        control_rate: Optional[float] = None,
+        use_depth: Optional[bool] = None,
     ):
+        nav = _nav_cfg()
         self.goal_x = goal_x
         self.goal_y = goal_y
-        self.arrival_threshold = arrival_threshold_m
-        self._use_depth = use_depth
+        self.arrival_threshold = arrival_threshold_m if arrival_threshold_m is not None else nav.arrival_distance_threshold_m
+        self._use_depth = use_depth if use_depth is not None else nav.use_depth_obstacle
 
         # 数据订阅
         self._odom_sub = OdomSubscriber(odom_addr)
-        if use_depth:
+        if self._use_depth:
             self._obstacle_sub = HistogramSubscriber(obstacle_addr)
             self._lidar_sub = None
             logger.info("障碍物检测模式: 深度感知 (DepthService)")
@@ -423,13 +429,14 @@ class GoalFollowApp:
         # 导航协调器
         self._coordinator = NavigationCoordinator(
             {
-                "goal_reached_distance": arrival_threshold_m,
-                "control_frequency": control_rate,
-                "max_replan_attempts": 5,
-                "obstacle_emergency_distance": 0.3,
-                "replan_distance_threshold": 0.5,
-                "inflation_radius": 0.15,
-                "robot_radius": 0.15,
+                "goal_reached_distance": self.arrival_threshold,
+                "goal_reached_angle": nav.arrival_angle_threshold_rad,
+                "control_frequency": control_rate if control_rate is not None else nav.control_rate_hz,
+                "max_replan_attempts": nav.max_replan_attempts,
+                "obstacle_emergency_distance": nav.emergency_obstacle_distance_m,
+                "replan_distance_threshold": nav.max_path_deviation_m,
+                "inflation_radius": nav.inflation_radius_m,
+                "robot_radius": nav.robot_radius_m,
             }
         )
 

@@ -271,6 +271,37 @@ class VisionConfig:
 
 
 @dataclass
+class NavigationConfig:
+    """导航配置（全局路径规划 + 局部避障）"""
+    # 速度限制
+    max_linear_speed: float = 0.3        # 导航时最大线速度 (m/s)
+    max_angular_speed: float = 0.8       # 导航时最大角速度 (rad/s)
+    
+    # 到达判断阈值
+    arrival_distance_threshold_m: float = 0.15   # 到达目标点的距离阈值（米）
+    arrival_angle_threshold_rad: float = 0.15    # 到达目标点的角度阈值（弧度）
+    
+    # 避障配置
+    use_depth_obstacle: bool = True      # 是否启用基于深度视觉的避障
+    emergency_obstacle_distance_m: float = 0.3   # 紧急避障距离（米）
+    safety_distance_m: float = 0.5       # VFH 安全距离（米）
+    
+    # 规划配置
+    max_replan_attempts: int = 5         # 全局路径规划最大重试次数
+    replan_interval_s: float = 3.0       # 重规划间隔（秒）
+    lookahead_distance_m: float = 0.4    # 路径跟踪前瞻距离（米）
+    max_path_deviation_m: float = 0.5    # 允许偏离全局路径的最大距离（米）
+    inflation_radius_m: float = 0.2      # 障碍物膨胀半径（米）
+    robot_radius_m: float = 0.15         # 机器人半径（米）
+    
+    # 功能开关
+    enable_apriltag: bool = False        # 是否启用 AprilTag 检测（用于视觉定位校正）
+    
+    # 控制频率
+    control_rate_hz: float = 10.0        # 导航控制循环频率（Hz）
+
+
+@dataclass
 class SLAMConfig:
     """SLAM 与视觉定位配置"""
     # 雷达配置
@@ -425,6 +456,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     gamepad: GamepadConfig = field(default_factory=GamepadConfig)
+    navigation: NavigationConfig = field(default_factory=NavigationConfig)
     slam: SLAMConfig = field(default_factory=SLAMConfig)
     viser: ViserConfig = field(default_factory=ViserConfig)
     
@@ -447,7 +479,10 @@ class Config:
             tts=TTSConfig(**data.get("tts", {})),
             llm=LLMConfig(**data.get("llm", {})),
             vision=VisionConfig(**data.get("vision", {})),
-            gamepad=GamepadConfig(**data.get("gamepad", {}))
+            gamepad=GamepadConfig(**data.get("gamepad", {})),
+            navigation=NavigationConfig(**data.get("navigation", {})),
+            slam=SLAMConfig(**data.get("slam", {})),
+            viser=ViserConfig(**data.get("viser", {})),
         )
 
 
