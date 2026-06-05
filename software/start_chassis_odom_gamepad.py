@@ -16,6 +16,7 @@ import sys
 import socket
 import subprocess
 import signal
+import shlex
 import time
 import platform
 from pathlib import Path
@@ -169,22 +170,24 @@ def start_service(svc, src_dir):
     """在新窗口中启动单个服务"""
     print(f"[启动] {svc['name']}...")
 
-    cmd_parts = [f'"{sys.executable}"', "-m", svc["module"]]
+    cmd_list = [sys.executable, "-m", svc["module"]]
     if "args" in svc:
-        cmd_parts.extend(svc["args"])
-    cmd_str = " ".join(cmd_parts)
+        cmd_list.extend(svc["args"])
+
+    cmd_str_win = " ".join([f'"{sys.executable}"'] + cmd_list[1:])
 
     system = platform.system()
 
     if system == "Windows":
         subprocess.Popen(
-            f'start "{svc["name"]}" cmd /k "cd /d \"{src_dir}\" && {cmd_str}"',
+            f'start "{svc["name"]}" cmd /k "cd /d \"{src_dir}\" && {cmd_str_win}"',
             shell=True
         )
     elif system == "Darwin":
+        cmd_quoted = " ".join(shlex.quote(str(arg)) for arg in cmd_list)
         script = f'''
         tell application "Terminal"
-            do script "cd {src_dir} && {cmd_str}"
+            do script "cd {shlex.quote(str(src_dir))} && {cmd_quoted}"
             set custom title of front window to "{svc["name"]}"
         end tell
         '''
@@ -194,7 +197,7 @@ def start_service(svc, src_dir):
             stderr=subprocess.DEVNULL
         )
     else:
-        cmd_full = f"cd {src_dir} && {cmd_str}"
+        cmd_full = f"cd {shlex.quote(str(src_dir))} && {' '.join(shlex.quote(str(arg)) for arg in cmd_list)}"
         terminals = [
             ("gnome-terminal", ["--title", svc["name"], "--", "bash", "-c", f"{cmd_full}; exec bash"]),
             ("konsole", ["--new-tab", "-p", f"tabtitle={svc['name']}", "-e", "bash", "-c", f"{cmd_full}; exec bash"]),
@@ -208,7 +211,7 @@ def start_service(svc, src_dir):
                 break
         if not started:
             print(f"    [提示] 未找到终端模拟器，后台运行 {svc['name']}...")
-            subprocess.Popen(cmd_parts[1:], cwd=src_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(cmd_list, cwd=src_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
