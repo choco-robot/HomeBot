@@ -42,7 +42,7 @@ PRIORITIES = {
     "emergency": 4,   # 紧急停止（最高）
     "teleop": 3,      # 机械臂 WLAN 遥操作
     "gamepad": 3,     # 游戏手柄控制
-    "auto": 3,        # 自动模式（人体跟随等）
+    "auto": 2,        # 自动模式（人体跟随等）
     "voice": 2,       # 语音控制
     "web": 1,         # Web 遥控（最低）
 }
