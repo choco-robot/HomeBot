@@ -49,7 +49,7 @@ print("=" * 70)
 # 外部地图配置（JSON 格式，支持 PNG 引用或障碍物列表重建）
 # 示例：EXTERNAL_MAP_JSON = "maps/my_map.json"
 # 如果设为 None 或文件不存在，则回退到内置地图
-EXTERNAL_MAP_JSON = None  # type: Optional[str]
+EXTERNAL_MAP_JSON = 'E:\\develop\\HomeBot\\homebot\\software\\maps\\map_2026-06-05T08-22-35.json'  # type: Optional[str]
 
 # 地图类型：'maze', 'simple_room', 'cluttered'
 # 仅在没有配置外部地图时生效

@@ -446,6 +446,11 @@
                     <label class="property-label">膨胀半径 (m)</label>
                     <input type="number" class="property-input" id="inflationRadius" value="0.4" step="0.1" min="0">
                 </div>
+                
+                <div class="property-group">
+                    <label class="property-label">边框障碍物宽度 (m)</label>
+                    <input type="number" class="property-input" id="borderObstacleWidth" value="0.05" step="0.01" min="0" onchange="updateMapInfo()">
+                </div>
             </div>
             
             <div class="panel-section" id="obstacleProps" style="display:none;">
@@ -568,7 +573,8 @@
             height: 10.0,
             resolution: 0.05,
             origin: [0.0, 0.0],
-            inflationRadius: 0.4
+            inflationRadius: 0.4,
+            borderObstacleWidth: 0.05
         };
         
         let backgroundImage = null;
@@ -624,13 +630,13 @@
             
             // 绘制背景图片
             if (backgroundImage && showBackgroundImage) {
-                const imgX = worldToScreen(mapInfo.origin[0], mapInfo.origin[1]);
+                const imgTopLeft = worldToScreen(mapInfo.origin[0], mapInfo.origin[1] + mapInfo.height);
                 const imgWidth = mapInfo.width / mapInfo.resolution * scale;
                 const imgHeight = mapInfo.height / mapInfo.resolution * scale;
                 
                 // 保存当前状态
                 ctx.save();
-                ctx.translate(imgX.x, imgX.y);
+                ctx.translate(imgTopLeft.x, imgTopLeft.y);
                 ctx.drawImage(backgroundImage, 0, 0, imgWidth, imgHeight);
                 // 恢复状态
                 ctx.restore();
@@ -663,17 +669,21 @@
         }
         
         // ==================== 坐标转换 ====================
+        // 世界坐标系：X 向右为正，Y 向上为正（与 Viser 一致）
+        // Canvas 坐标系：Y 向下为正，需在此处翻转
         function screenToWorld(sx, sy) {
+            const metersPerPixel = mapInfo.resolution / scale;
             return {
-                x: (sx - offsetX) / scale * mapInfo.resolution + mapInfo.origin[0],
-                y: (sy - offsetY) / scale * mapInfo.resolution + mapInfo.origin[1]
+                x: (sx - offsetX) * metersPerPixel + mapInfo.origin[0],
+                y: mapInfo.origin[1] + mapInfo.height - (sy - offsetY) * metersPerPixel
             };
         }
         
         function worldToScreen(wx, wy) {
+            const pixelsPerMeter = 1 / mapInfo.resolution * scale;
             return {
-                x: (wx - mapInfo.origin[0]) / mapInfo.resolution * scale + offsetX,
-                y: (wy - mapInfo.origin[1]) / mapInfo.resolution * scale + offsetY
+                x: (wx - mapInfo.origin[0]) * pixelsPerMeter + offsetX,
+                y: (mapInfo.origin[1] + mapInfo.height - wy) * pixelsPerMeter + offsetY
             };
         }
         
@@ -707,15 +717,18 @@
                 
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
                 const textWidth = ctx.measureText(text).width;
-                ctx.fillRect(pos.x - textWidth/2 - 3, pos.y - 18, textWidth + 6, 16);
+                // 根据角点位置调整标签偏移，避免被边界遮挡
+                const dy = corner.label.startsWith('top') ? 20 : -10;
+                ctx.fillRect(pos.x - textWidth/2 - 3, pos.y + dy - 14, textWidth + 6, 16);
                 
                 ctx.fillStyle = '#0066cc';
                 ctx.textAlign = 'center';
-                ctx.fillText(text, pos.x, pos.y - 6);
+                ctx.fillText(text, pos.x, pos.y + dy);
             });
         }
         
         function drawOrigin() {
+            // 绘制地图原点标记在地图边框左下角
             const originScreen = worldToScreen(mapInfo.origin[0], mapInfo.origin[1]);
             
             // 绘制原点圆圈
@@ -739,22 +752,20 @@
         
         function drawRulers() {
             const rulerSize = 30;
+            const ppm = 1 / mapInfo.resolution * scale; // pixels per meter
+            const mpp = mapInfo.resolution / scale;      // meters per pixel
             
-            // 计算可见范围
-            const visibleLeft = -offsetX / scale;
-            const visibleTop = -offsetY / scale;
-            const visibleRight = (canvas.width - offsetX) / scale;
-            const visibleBottom = (canvas.height - offsetY) / scale;
+            // 计算可见的世界坐标范围
+            const visibleLeft   = -offsetX * mpp + mapInfo.origin[0];
+            const visibleRight  = (canvas.width - offsetX) * mpp + mapInfo.origin[0];
+            const visibleTop    = mapInfo.origin[1] + mapInfo.height + offsetY * mpp;
+            const visibleBottom = mapInfo.origin[1] + mapInfo.height - (canvas.height - offsetY) * mpp;
             
             // 计算刻度间隔
-            const metersPerPixel = mapInfo.resolution;
             let tickInterval = 1.0; // 默认1米
-            
             if (scale < 0.5) tickInterval = 5.0;
             else if (scale < 1) tickInterval = 2.0;
             else if (scale > 3) tickInterval = 0.5;
-            
-            const tickPixels = tickInterval / metersPerPixel * scale;
             
             // 绘制顶部标尺（X轴）
             ctx.fillStyle = 'rgba(240, 240, 240, 0.95)';
@@ -768,9 +779,9 @@
             ctx.stroke();
             
             // X轴刻度
-            const startX_world = Math.floor(visibleLeft * metersPerPixel / tickInterval) * tickInterval;
-            for (let x = startX_world; x < (visibleRight * metersPerPixel); x += tickInterval) {
-                const screenX = x / metersPerPixel * scale + offsetX;
+            const startX_world = Math.floor(visibleLeft / tickInterval) * tickInterval;
+            for (let x = startX_world; x <= visibleRight; x += tickInterval) {
+                const screenX = (x - mapInfo.origin[0]) * ppm + offsetX;
                 
                 if (screenX < 0 || screenX > canvas.width) continue;
                 
@@ -800,10 +811,10 @@
             ctx.lineTo(rulerSize, canvas.height);
             ctx.stroke();
             
-            // Y轴刻度
-            const startY_world = Math.floor(visibleTop * metersPerPixel / tickInterval) * tickInterval;
-            for (let y = startY_world; y < (visibleBottom * metersPerPixel); y += tickInterval) {
-                const screenY = y / metersPerPixel * scale + offsetY;
+            // Y轴刻度（世界Y向上，screenY向下）
+            const startY_world = Math.floor(visibleBottom / tickInterval) * tickInterval;
+            for (let y = startY_world; y <= visibleTop; y += tickInterval) {
+                const screenY = (mapInfo.origin[1] + mapInfo.height - y) * ppm + offsetY;
                 
                 if (screenY < 0 || screenY > canvas.height) continue;
                 
@@ -843,12 +854,12 @@
             ctx.lineWidth = selectedObstacle === obs ? 3 : 1;
             
             if (obs.type === 'rectangle') {
-                ctx.fillRect(screenPos.x, screenPos.y,
-                            obs.width / mapInfo.resolution * scale,
-                            obs.height / mapInfo.resolution * scale);
-                ctx.strokeRect(screenPos.x, screenPos.y,
-                              obs.width / mapInfo.resolution * scale,
-                              obs.height / mapInfo.resolution * scale);
+                // 世界坐标Y向上，Canvas Y向下，需计算屏幕左上角
+                const topLeft = worldToScreen(obs.x, obs.y + obs.height);
+                const w = obs.width / mapInfo.resolution * scale;
+                const h = obs.height / mapInfo.resolution * scale;
+                ctx.fillRect(topLeft.x, topLeft.y, w, h);
+                ctx.strokeRect(topLeft.x, topLeft.y, w, h);
             } else if (obs.type === 'circle') {
                 const screenRadius = obs.radius / mapInfo.resolution * scale;
                 ctx.beginPath();
@@ -1415,6 +1426,9 @@
             document.getElementById('mapHeight').value = mapInfo.height;
             document.getElementById('mapResolution').value = mapInfo.resolution;
             
+            mapInfo.borderObstacleWidth = 0.05;
+            document.getElementById('borderObstacleWidth').value = mapInfo.borderObstacleWidth.toFixed(2);
+            
             obstacles = [];
             markers = [];
             backgroundImage = null;
@@ -1447,6 +1461,7 @@
                         mapInfo.resolution = mapInfoData.resolution || 0.05;
                         mapInfo.origin = mapInfoData.origin || [0.0, 0.0];
                         mapInfo.inflationRadius = mapInfoData.inflation_radius || 0.4;
+                        mapInfo.borderObstacleWidth = (mapInfoData.border_obstacle_width !== undefined) ? mapInfoData.border_obstacle_width : 0.05;
                         
                         // 更新UI
                         document.getElementById('mapWidth').value = mapInfo.width.toFixed(1);
@@ -1455,6 +1470,7 @@
                         document.getElementById('mapOriginX').value = mapInfo.origin[0].toFixed(1);
                         document.getElementById('mapOriginY').value = mapInfo.origin[1].toFixed(1);
                         document.getElementById('inflationRadius').value = mapInfo.inflationRadius.toFixed(2);
+                        document.getElementById('borderObstacleWidth').value = mapInfo.borderObstacleWidth.toFixed(2);
                         
                         // 加载障碍物
                         obstacles = data.obstacles || [];
@@ -1594,6 +1610,18 @@
                 }
             });
             
+            // 绘制边框障碍物（在 PNG 外围加一圈白边，默认视为障碍物）
+            const borderPixelsRaw = Math.max(0, Math.round(mapInfo.borderObstacleWidth / mapInfo.resolution));
+            const borderPixelsX = Math.min(borderPixelsRaw, Math.floor(mapWidthPixels / 2));
+            const borderPixelsY = Math.min(borderPixelsRaw, Math.floor(mapHeightPixels / 2));
+            if (borderPixelsX > 0 && borderPixelsY > 0) {
+                slamCtx.fillStyle = '#ffffff';
+                slamCtx.fillRect(0, 0, mapWidthPixels, borderPixelsY);
+                slamCtx.fillRect(0, mapHeightPixels - borderPixelsY, mapWidthPixels, borderPixelsY);
+                slamCtx.fillRect(0, borderPixelsY, borderPixelsX, mapHeightPixels - 2 * borderPixelsY);
+                slamCtx.fillRect(mapWidthPixels - borderPixelsX, borderPixelsY, borderPixelsX, mapHeightPixels - 2 * borderPixelsY);
+            }
+            
             // 应用障碍物膨胀渐变效果
             if (inflationPixels > 0) {
                 applyInflationGradient(slamCtx, mapWidthPixels, mapHeightPixels, inflationPixels);
@@ -1613,7 +1641,8 @@
                     width: mapInfo.width,
                     height: mapInfo.height,
                     origin: [mapInfo.origin[0], mapInfo.origin[1]],
-                    inflation_radius: mapInfo.inflationRadius
+                    inflation_radius: mapInfo.inflationRadius,
+                    border_obstacle_width: mapInfo.borderObstacleWidth
                 },
                 obstacles: obstacles.map(obs => {
                     if (obs.type === 'rectangle') {
@@ -1757,8 +1786,9 @@
         
         function resetZoom() {
             scale = 1.0;
-            offsetX = canvas.width / 2;
-            offsetY = canvas.height / 2;
+            const pixelsPerMeter = 1 / mapInfo.resolution * scale;
+            offsetX = canvas.width / 2 - mapInfo.width / 2 * pixelsPerMeter;
+            offsetY = canvas.height / 2 - mapInfo.height / 2 * pixelsPerMeter;
             render();
         }
         
@@ -1816,6 +1846,7 @@
             mapInfo.origin[0] = parseFloat(document.getElementById('mapOriginX').value);
             mapInfo.origin[1] = parseFloat(document.getElementById('mapOriginY').value);
             mapInfo.inflationRadius = parseFloat(document.getElementById('inflationRadius').value);
+            mapInfo.borderObstacleWidth = parseFloat(document.getElementById('borderObstacleWidth').value);
             render();
         }
         

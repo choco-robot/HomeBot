@@ -90,3 +90,8 @@ secrets.json
 
 push-main.*
 requirements-gui.txt
+
+# Maps and generated artifacts
+software/maps/
+*.npz
+*.gif
