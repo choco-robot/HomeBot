@@ -10,6 +10,7 @@ import sys
 import socket
 import subprocess
 import signal
+import shlex
 import time
 import platform
 from pathlib import Path
@@ -201,43 +202,33 @@ def start_service(svc, src_dir):
     print(f"[Start] Starting {svc['name']}...")
     
     cmd = [sys.executable, "-m", svc["module"]]
-    
-    # 添加额外参数（如果有）
     if "args" in svc:
         cmd.extend(svc["args"])
     
-    # 在新窗口中启动（跨平台）
-    if platform.system() == "Windows":
-        # Windows: 使用 start 命令
-        # 构建完整的命令
-        cmd_parts = [f'"{sys.executable}"', "-m", svc["module"]]
-        if "args" in svc:
-            cmd_parts.extend(svc["args"])
-        cmd_str = " ".join(cmd_parts)
-        
-        # 使用 start 命令在新窗口中运行
-        # start "标题" cmd /k "命令" - 第一个引号是窗口标题
+    system = platform.system()
+
+    if system == "Windows":
+        cmd_str = " ".join([f'"{sys.executable}"'] + cmd[1:])
         subprocess.Popen(
             f'start "{svc["name"]}" cmd /k "cd /d \"{src_dir}\" && {cmd_str}"',
             shell=True
         )
-    elif platform.system() == "Darwin":
-        # macOS: 使用 osascript
+    elif system == "Darwin":
+        cmd_quoted = " ".join(shlex.quote(str(arg)) for arg in cmd)
         script = f'''
         tell application "Terminal"
-            do script "cd {src_dir} && {sys.executable} -m {svc['module']}"
+            do script "cd {shlex.quote(str(src_dir))} && {cmd_quoted}"
             set custom title of front window to "{svc['name']}"
         end tell
         '''
         subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        # Linux: 尝试使用各种终端
-        cmd_str = f"cd {src_dir} && {sys.executable} -m {svc['module']}"
+        cmd_full = f"cd {shlex.quote(str(src_dir))} && {' '.join(shlex.quote(str(arg)) for arg in cmd)}"
         
         terminals = [
-            ("gnome-terminal", ["--title", svc["name"], "--", "bash", "-c", f"{cmd_str}; exec bash"]),
-            ("konsole", ["--new-tab", "-p", f"tabtitle={svc['name']}", "-e", "bash", "-c", f"{cmd_str}; exec bash"]),
-            ("xterm", ["-T", svc["name"], "-e", "bash", "-c", f"{cmd_str}; exec bash"]),
+            ("gnome-terminal", ["--title", svc["name"], "--", "bash", "-c", f"{cmd_full}; exec bash"]),
+            ("konsole", ["--new-tab", "-p", f"tabtitle={svc['name']}", "-e", "bash", "-c", f"{cmd_full}; exec bash"]),
+            ("xterm", ["-T", svc["name"], "-e", "bash", "-c", f"{cmd_full}; exec bash"]),
         ]
         
         started = False
@@ -248,7 +239,6 @@ def start_service(svc, src_dir):
                 break
         
         if not started:
-            # 没有可用的终端模拟器，后台运行
             print(f"   [Note] No terminal emulator found, running {svc['name']} in background...")
             subprocess.Popen(cmd, cwd=src_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

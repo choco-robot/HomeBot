@@ -18,6 +18,7 @@ import os
 import sys
 import time
 import signal
+import shlex
 import subprocess
 import platform
 from pathlib import Path
@@ -111,17 +112,17 @@ def start_service(service_key: str, src_dir: Path, wait: bool = False):
     
     # 在新窗口中启动
     if platform.system() == "Windows":
-        cmd_parts = [f'"{sys.executable}"', "-m", svc["module"]] + svc["args"]
-        cmd_str = " ".join(cmd_parts)
+        cmd_str = " ".join([f'"{sys.executable}"'] + cmd[1:])
         
         subprocess.Popen(
             f'start "{svc["name"]}" cmd /k "cd /d "{src_dir}" && {cmd_str}"',
             shell=True
         )
     elif platform.system() == "Darwin":
+        cmd_quoted = " ".join(shlex.quote(str(arg)) for arg in cmd)
         script = f'''
         tell application "Terminal"
-            do script "cd {src_dir} && {sys.executable} -m {svc["module"]} {' '.join(svc["args"])}"
+            do script "cd {shlex.quote(str(src_dir))} && {cmd_quoted}"
             set custom title of front window to "{svc["name"]}"
         end tell
         '''
@@ -130,7 +131,7 @@ def start_service(service_key: str, src_dir: Path, wait: bool = False):
                         stderr=subprocess.DEVNULL)
     else:
         # Linux
-        cmd_str = f"cd {src_dir} && {sys.executable} -m {svc['module']} {' '.join(svc['args'])}"
+        cmd_str = f"cd {shlex.quote(str(src_dir))} && {' '.join(shlex.quote(str(arg)) for arg in cmd)}"
         
         terminals = [
             ("gnome-terminal", ["--title", svc["name"], "--", "bash", "-c", f"{cmd_str}; exec bash"]),
