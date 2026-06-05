@@ -17,23 +17,39 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 
 from common.logging import get_logger
+from configs import get_config
 from navigation.perception.obstacle_detector import DepthObstacle
 
 logger = get_logger(__name__)
 
 
+def _nav_cfg():
+    """获取导航配置快捷方式"""
+    return get_config().navigation
+
+
 @dataclass
 class LocalPlannerConfig:
     """VFH 局部规划器配置"""
-    max_linear_speed: float = 0.1       # 最大线速度 (m/s)
-    max_angular_speed: float = 1.0      # 最大角速度 (rad/s)
+    max_linear_speed: float = None      # 最大线速度 (m/s)，None 时从全局配置读取
+    max_angular_speed: float = None     # 最大角速度 (rad/s)，None 时从全局配置读取
     num_sectors: int = 21               # 扇区数量（默认与深度条带数一致）
     fov_deg: float = 66.0               # 相机水平视场角（度）fov_deg/num_sectors = 每个扇区的角度范围
-    safety_distance_m: float = 0.5      # 安全距离（小于此距离视为阻挡）
+    safety_distance_m: float = None     # 安全距离（小于此距离视为阻挡），None 时从全局配置读取
     goal_weight: float = 0.8            # 目标方向权重（用于选择最佳谷）数值越接近1，越倾向于选择接近目标方向的谷，越接近0，越倾向于选择宽阔的谷
     smooth_weight: float = 0.15          # 当前方向平滑权重
     min_valley_width: int = 2           # 最小可通行谷宽度（扇区数）
     sector_diff_weight: float = 0.2     # sector_diff 系数（用于角速度计算）
+
+    def __post_init__(self):
+        """从全局配置补全默认值"""
+        nav = _nav_cfg()
+        if self.max_linear_speed is None:
+            self.max_linear_speed = nav.max_linear_speed
+        if self.max_angular_speed is None:
+            self.max_angular_speed = nav.max_angular_speed
+        if self.safety_distance_m is None:
+            self.safety_distance_m = nav.safety_distance_m
 
 
 class VFHLocalPlanner:

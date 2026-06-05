@@ -39,8 +39,14 @@ import numpy as np
 
 from common.logging import get_logger
 from navigation.core.occupancy_grid import OccupancyGrid, COST_LETHAL
+from configs import get_config
 
 logger = get_logger(__name__)
+
+
+def _nav_cfg():
+    """获取导航配置快捷方式"""
+    return get_config().navigation
 
 
 # ------------------------------------------------------------------------------
@@ -768,8 +774,9 @@ class NavigationCoordinator:
         angle_error = self._normalize_angle(target_angle - current_pose[2])
 
         # 角速度：简单的 P 控制器
+        nav = _nav_cfg()
         angular_vel = 1.5 * angle_error  # Kp = 1.5 (降低增益，使转向更平滑)
-        angular_vel = np.clip(angular_vel, -0.8, 0.8)  # 限制角速度
+        angular_vel = np.clip(angular_vel, -nav.max_angular_speed, nav.max_angular_speed)  # 限制角速度
 
         # 线速度：根据角度误差和障碍物距离调整
         if abs(angle_error) > math.pi / 3:  # 60度（放宽阈值）
@@ -777,7 +784,7 @@ class NavigationCoordinator:
             linear_vel = 0.0
         else:
             # 根据角度误差和障碍物距离调整速度
-            max_linear = 0.4  # 降低最大线速度到 0.4 m/s
+            max_linear = nav.max_linear_speed  # 从全局配置读取最大线速度
 
             # 角度因子：角度误差越小，速度越快
             angle_factor = 1.0 - abs(angle_error) / (math.pi / 3)
