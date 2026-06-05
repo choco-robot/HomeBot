@@ -393,7 +393,7 @@ class GoalFollowApp:
         map_addr: str = DEFAULT_MAP_ADDR,
         chassis_addr: str = DEFAULT_CHASSIS_ADDR,
         goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
-        arrival_threshold_m: float = 0.1,
+        arrival_threshold_m: float = 0.2,
         control_rate: float = 10.0,
         use_depth: bool = True,
     ):
@@ -429,7 +429,7 @@ class GoalFollowApp:
                 "obstacle_emergency_distance": 0.3,
                 "replan_distance_threshold": 0.5,
                 "inflation_radius": 0.15,
-                "robot_radius": 0.15,
+                "robot_radius": 0.25,
             }
         )
 

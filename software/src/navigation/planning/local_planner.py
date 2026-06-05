@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 @dataclass
 class LocalPlannerConfig:
     """VFH 局部规划器配置"""
-    max_linear_speed: float = 0.1       # 最大线速度 (m/s)
+    max_linear_speed: float = 0.5       # 最大线速度 (m/s)
     max_angular_speed: float = 1.0      # 最大角速度 (rad/s)
     num_sectors: int = 21               # 扇区数量（默认与深度条带数一致）
     fov_deg: float = 66.0               # 相机水平视场角（度）fov_deg/num_sectors = 每个扇区的角度范围

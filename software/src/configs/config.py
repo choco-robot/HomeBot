@@ -69,7 +69,7 @@ class ChassisConfig:
     chassis_type: str = "diff"
     
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "COM9"
+    serial_port: str = "/dev/tty.usbmodem5B3D0418361"
     baudrate: int = 1000000
     
     # 三轮全向轮参数（chassis_type="omni" 时有效）
@@ -274,9 +274,10 @@ class VisionConfig:
 class SLAMConfig:
     """SLAM 与视觉定位配置"""
     # 雷达配置
-    lidar_port: str = "COM5"                     # Windows COM 端口
+    lidar_port: str = "/dev/tty.usbserial-14130"                     # Windows COM 端口
     lidar_scan_size: int = 360                   # 扫描分辨率（点数）
     lidar_max_distance_m: float = 12.0           # 最大检测距离
+    lidar_min_distance_m: float = 0.2            # 最小检测距离
     
     # 地图配置
     map_size_pixels: int = 800                   # 栅格地图像素尺寸
