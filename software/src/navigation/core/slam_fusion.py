@@ -74,15 +74,16 @@ class BreezySLAMWrapper:
         )
         self._map_size_meters = map_size_meters
 
-    def update(self, scans_mm: List[float], pose_change: Tuple[float, float, float], scan_angles_degrees: Optional[List[float]] = None):
+    def update(self, scans_mm: List[float], pose_change: Tuple[float, float, float], scan_angles_degrees: Optional[List[float]] = None, update_map: bool = True):
         """更新 SLAM。
 
         Args:
             scans_mm: 扫描距离列表（毫米）
             pose_change: (dxy_mm, dtheta_degrees, dt_seconds)
             scan_angles_degrees: 可选的角度列表
+            update_map: 是否更新地图，False 时只进行位姿估计（纯定位模式）
         """
-        self._slam.update(scans_mm, pose_change, scan_angles_degrees)
+        self._slam.update(scans_mm, pose_change, scan_angles_degrees, should_update_map=update_map)
 
     def getpos(self) -> Tuple[float, float, float]:
         """返回当前位姿 (x_mm, y_mm, theta_degrees)。"""
@@ -171,6 +172,7 @@ class SLAMFusion:
         angles_deg: List[float],
         distances_mm: List[float],
         odom: Optional[Tuple[float, float, float, float]] = None,
+        update_map: bool = True,
     ) -> None:
         """传入一圈激光扫描数据和最新里程计，更新 SLAM。
 
@@ -178,6 +180,7 @@ class SLAMFusion:
             angles_deg: 扫描角度列表（度）
             distances_mm: 扫描距离列表（毫米）
             odom: 可选的当前里程计 (x_m, y_m, theta_rad, timestamp_s)
+            update_map: 是否更新地图，False 时只进行位姿估计（纯定位模式）
         """
         # 1. 计算 pose_change for BreezySLAM
         dx,dy,dtheta,dt = self._compute_pose_change(odom)
@@ -185,7 +188,7 @@ class SLAMFusion:
         pose_change = (dxy, math.degrees(dtheta), dt)
 
         # 2. BreezySLAM 更新
-        self.slam.update(distances_mm, pose_change, angles_deg)
+        self.slam.update(distances_mm, pose_change, angles_deg, update_map=update_map)
 
         # 3. 获取 SLAM 相对位姿
         x_mm, y_mm, theta_deg = self.slam.getpos()
