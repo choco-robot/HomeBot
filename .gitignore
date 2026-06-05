@@ -87,3 +87,8 @@ secrets.json
 *.phone
 
 *.stp
+
+# Maps and generated artifacts
+software/maps/
+*.npz
+*.gif

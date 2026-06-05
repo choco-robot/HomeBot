@@ -317,6 +317,8 @@ class ViserConfig:
     goal_pub_addr: str = "tcp://*:5566"          # 目标点 PUB 地址
     odom_cmd_addr: str = "tcp://localhost:5567"  # 里程计命令 REQ 地址
     slam_cmd_addr: str = "tcp://localhost:5568"  # SLAM 命令 REQ 地址
+    global_path_sub_addr: str = "tcp://localhost:5569"  # 全局路径 SUB 地址
+    maps_dir: str = ""  # 地图文件夹路径（空则自动探测 software/maps）
     # 可视化参数
     max_trajectory_points: int = 5000   # 最大轨迹点数
     point_size: float = 0.03            # 激光点大小

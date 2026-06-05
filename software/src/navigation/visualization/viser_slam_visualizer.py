@@ -191,10 +191,16 @@ class ViserSLAMVisualizer:
         self._map_update_interval = cfg.map_update_interval
         self._follow_robot = cfg.follow_robot
 
+        # 地图目录：支持命令行/配置指定，否则自动探测 software/maps
+        self._maps_dir = self._resolve_maps_dir(cfg.maps_dir)
+
         # Viser 服务器
         self._server = viser.ViserServer(host=cfg.host, port=cfg.port)
         self._server.gui.configure_theme(dark_mode=True)
         logger.info(f"Viser server started at http://{cfg.host}:{cfg.port}")
+
+        # 新客户端连接时自动重置为默认视角
+        self._server.on_client_connect(lambda _: self._reset_view())
 
         # ZeroMQ 订阅者
         self._odom_sub = ZMQJsonSubscriber(self._odom_addr, required_keys=("x", "y", "yaw"))
@@ -414,15 +420,15 @@ class ViserSLAMVisualizer:
     def _set_top_view(self) -> None:
         """切换到顶视图。"""
         for client in self._server.get_clients().values():
-            client.camera.wxyz = (0.707, 0.707, 0.0, 0.0)  # 俯视角
+            client.camera.wxyz = (0.0, 0.0, 0.0, 1.0)  # 俯视角
             client.camera.position = (0.0, 0.0, 15.0)
             client.camera.look_at = (0.0, 0.0, 0.0)
 
     def _reset_view(self) -> None:
         """重置到默认视角。"""
         for client in self._server.get_clients().values():
-            client.camera.wxyz = (0.624, 0.331, 0.412, 0.586)
-            client.camera.position = (5.0, -5.0, 5.0)
+            client.camera.wxyz = (0.0, 0.0, 0.0, 1.0)
+            client.camera.position = (0.0, -5.5, 5.5)
             client.camera.look_at = (0.0, 0.0, 0.0)
 
     def _clear_trajectories(self) -> None:
@@ -657,6 +663,34 @@ class ViserSLAMVisualizer:
         if (now - self._last_map_update_time < self._map_update_interval) and not self._force_map_update:
             return
 
+        # 若元数据包含 image 字段，优先尝试加载对应 PNG 地图
+        if meta is not None and meta.get("image"):
+            png_path = self._resolve_map_image_path(meta["image"])
+            try:
+                png_img = cv2.imread(png_path, cv2.IMREAD_UNCHANGED)
+                if png_img is not None:
+                    if len(png_img.shape) == 2:
+                        png_rgb = cv2.cvtColor(png_img, cv2.COLOR_GRAY2RGB)
+                    elif png_img.shape[2] == 4:
+                        png_rgb = cv2.cvtColor(png_img, cv2.COLOR_BGRA2RGB)
+                    else:
+                        png_rgb = cv2.cvtColor(png_img, cv2.COLOR_BGR2RGB)
+
+                    resolution = meta.get("resolution")
+                    if resolution is None:
+                        resolution = meta.get("size_meters", 20.0) / png_rgb.shape[1]
+                    size_meters = png_rgb.shape[1] * resolution
+                    origin = meta.get("origin", [0.0, 0.0])
+
+                    self._last_map_update_time = now
+                    self._force_map_update = False
+                    self._show_map_image(png_rgb, size_meters, origin)
+                    return
+                else:
+                    logger.warning(f"无法加载地图 PNG: {png_path}（maps_dir: {self._maps_dir}）")
+            except Exception as e:
+                logger.warning(f"加载地图 PNG 异常: {e}")
+
         grid: Optional[OccupancyGrid] = None
         if self._use_loaded_grid and self._loaded_grid is not None:
             grid = self._loaded_grid
@@ -673,6 +707,25 @@ class ViserSLAMVisualizer:
         self._force_map_update = False
         self._draw_occupancy_grid(grid)
 
+    def _show_map_image(self, img_rgb: np.ndarray, size_meters: float, origin: Tuple[float, ...]) -> None:
+        """在场景中显示地图图像（RGB）。"""
+        h = self._handles.get("/map/occupancy_map")
+        if h is not None and hasattr(h, "image"):
+            h.image = img_rgb
+        else:
+            center_x = origin[0] + size_meters / 2
+            center_y = origin[1] + size_meters / 2
+            self._handles["/map/occupancy_map"] = self._server.scene.add_image(
+                "/map/occupancy_map",
+                image=img_rgb,
+                render_width=size_meters,
+                render_height=size_meters,
+                position=(center_x, center_y, -0.1),
+            )
+
+        # 渲染障碍物和标记点覆盖层
+        self._render_map_overlays()
+
     def _draw_occupancy_grid(self, grid: OccupancyGrid) -> None:
         """将 OccupancyGrid 渲染为场景中的纹理图像。"""
         size_pixels = grid.width
@@ -684,22 +737,7 @@ class ViserSLAMVisualizer:
         img[data == COST_UNKNOWN] = [180, 180, 180]
         img[data >= COST_OCCUPIED] = [40, 40, 40]
 
-        h = self._handles.get("/map/occupancy_map")
-        if h is not None and hasattr(h, "image"):
-            h.image = img
-        else:
-            center_x = grid.origin[0] + size_meters / 2
-            center_y = grid.origin[1] + size_meters / 2
-            self._handles["/map/occupancy_map"] = self._server.scene.add_image(
-                "/map/occupancy_map",
-                image=img,
-                render_width=size_meters,
-                render_height=size_meters,
-                position=(center_x, center_y, -0.1),
-            )
-
-        # 渲染障碍物和标记点覆盖层
-        self._render_map_overlays()
+        self._show_map_image(img, size_meters, grid.origin)
 
     def _render_map_overlays(self) -> None:
         """在地图上渲染障碍物和标记点（来自 JSON 元信息）。"""
@@ -763,10 +801,10 @@ class ViserSLAMVisualizer:
             base = f"/map/overlays/marker_{i}"
 
             if mtype == "start":
-                s.add_sphere(base, radius=0.12, position=(x, y, 0.12), color=(0, 255, 0))
+                s.add_icosphere(base, radius=0.12, position=(x, y, 0.12), color=(0, 255, 0))
                 s.add_label(f"{base}/label", text="Start", position=(x, y, 0.35))
             elif mtype == "goal":
-                s.add_sphere(base, radius=0.12, position=(x, y, 0.12), color=(255, 0, 0))
+                s.add_icosphere(base, radius=0.12, position=(x, y, 0.12), color=(255, 0, 0))
                 s.add_label(f"{base}/label", text="Goal", position=(x, y, 0.35))
 
     def _update_camera_image(self, img_bgr: np.ndarray) -> None:
@@ -793,6 +831,44 @@ class ViserSLAMVisualizer:
         logger.info(f"地图图片已缓存: {uploaded.name}")
         self._try_load_pending_map()
 
+    def _resolve_maps_dir(self, cfg_maps_dir: str) -> str:
+        """解析地图目录路径。"""
+        if cfg_maps_dir:
+            return os.path.abspath(cfg_maps_dir)
+        # 自动探测：从本文件向上回溯找 software 目录
+        try:
+            file_dir = os.path.dirname(os.path.abspath(__file__))
+            for _ in range(5):
+                parent = os.path.dirname(file_dir)
+                if os.path.basename(parent) == "software":
+                    return os.path.join(parent, "maps")
+                file_dir = parent
+        except Exception:
+            pass
+        # 备选：当前工作目录下的 software/maps
+        cwd_maps = os.path.join(os.getcwd(), "software", "maps")
+        if os.path.isdir(cwd_maps):
+            return cwd_maps
+        return os.path.join(os.getcwd(), "software", "maps")
+
+    def _resolve_map_image_path(self, image_path: str) -> str:
+        """根据 image 字段解析出可读取的 PNG 绝对路径。
+
+        查找顺序：
+        1. image_path 作为绝对/相对路径直接存在
+        2. maps_dir 下查找
+        """
+        if not image_path:
+            return image_path
+        # 1. 直接存在（绝对路径或相对于 cwd）
+        if os.path.exists(image_path):
+            return os.path.abspath(image_path)
+        # 2. 在 maps_dir 下查找
+        candidate = os.path.join(self._maps_dir, image_path)
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+        return image_path
+
     def _on_upload_json(self, event) -> None:
         """接收上传的 JSON 元信息，解析并尝试加载。"""
         uploaded = event.target.value
@@ -803,8 +879,31 @@ class ViserSLAMVisualizer:
             if "map_info" not in meta:
                 raise ValueError("JSON 中缺少 'map_info' 字段")
             self._pending_json = meta
-            self._gui_map_status.value = f"已接收元数据: {uploaded.name}，等待上传 PNG 图片..."
             logger.info(f"地图元数据已缓存: {uploaded.name}")
+
+            # 若 JSON 中包含 image 字段且尚未手动上传 PNG，尝试自动加载
+            image_path = meta.get("image") or meta.get("map_info", {}).get("image")
+            if image_path and self._pending_png is None:
+                resolved = self._resolve_map_image_path(image_path)
+                png_arr = cv2.imread(resolved, cv2.IMREAD_UNCHANGED)
+                if png_arr is not None:
+                    _, png_bytes = cv2.imencode(".png", png_arr)
+                    self._pending_png = type("_FakeUpload", (), {
+                        "content": png_bytes.tobytes(),
+                        "name": os.path.basename(image_path),
+                    })()
+                    self._gui_map_status.value = (
+                        f"已接收元数据并自动加载图片: {os.path.basename(image_path)}"
+                    )
+                    logger.info(f"从 image 字段自动加载 PNG: {resolved}")
+                else:
+                    self._gui_map_status.value = (
+                        f"已接收元数据: {uploaded.name}，但自动加载图片失败: {resolved}"
+                    )
+                    logger.warning(f"image 字段指向的 PNG 无法读取: {resolved}（原始值: {image_path}）")
+            else:
+                self._gui_map_status.value = f"已接收元数据: {uploaded.name}，等待上传 PNG 图片..."
+
             self._try_load_pending_map()
         except Exception as e:
             self._gui_map_status.value = f"元数据解析失败: {e}"
@@ -1298,6 +1397,7 @@ def main():
     parser.add_argument("--odom-cmd", default=None, help="里程计命令 REQ 地址 (默认 tcp://localhost:5567)")
     parser.add_argument("--slam-cmd", default=None, help="SLAM 命令 REQ 地址 (默认 tcp://localhost:5568)")
     parser.add_argument("--global-path", default=None, help="全局路径 SUB 地址 (默认 tcp://localhost:5569)")
+    parser.add_argument("--maps-dir", default=None, help="地图文件夹路径 (默认自动探测 software/maps)")
     args = parser.parse_args()
 
     # 用命令行参数覆盖配置
@@ -1317,6 +1417,8 @@ def main():
         cfg.viser.slam_cmd_addr = args.slam_cmd
     if args.global_path:
         cfg.viser.global_path_sub_addr = args.global_path
+    if args.maps_dir:
+        cfg.viser.maps_dir = args.maps_dir
 
     visualizer = ViserSLAMVisualizer(enable_vision=not args.no_vision)
     visualizer.start()
