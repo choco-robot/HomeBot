@@ -379,7 +379,7 @@ class ViserSLAMVisualizer:
             self._gui_goal_theta = g.add_number("目标 Theta (deg)", 0.0, step=5.0)
             self._gui_set_goal = g.add_button("📍 设置目标点")
             self._gui_reset_odom = g.add_button("🔄 重置里程计")
-            self._gui_reset_slam = g.add_button("🔄 重置 SLAM 位姿")
+            self._gui_reset_slam = g.add_button("🔄 重置 SLAM 位姿(使用目标坐标)")
             self._gui_nav_status = g.add_text("操作状态", "就绪")
 
         # 数据流状态
@@ -1220,10 +1220,13 @@ class ViserSLAMVisualizer:
         logger.info(result)
 
     def _on_reset_slam(self) -> None:
-        """发送 SLAM 位姿重置命令。"""
-        result = self._send_cmd_req(self._slam_cmd, {"cmd": "reset_pose", "x": 0.0, "y": 0.0, "theta": 0.0})
-        self._gui_nav_status.value = result
-        logger.info(result)
+        """发送 SLAM 位姿重置命令，使用目标点输入框中的坐标和角度。"""
+        x = float(self._gui_goal_x.value)
+        y = float(self._gui_goal_y.value)
+        theta = math.radians(float(self._gui_goal_theta.value))
+        result = self._send_cmd_req(self._slam_cmd, {"cmd": "reset_pose", "x": x, "y": y, "theta": theta})
+        self._gui_nav_status.value = f"{result} → 重置到 ({x:.2f}, {y:.2f}, {math.degrees(theta):.1f}°)"
+        logger.info(f"重置 SLAM 位姿到: x={x}, y={y}, theta={theta} ({math.degrees(theta)}°), 结果: {result}")
 
     def _send_cmd_req(self, sock: zmq.Socket, req: dict) -> str:
         """发送 REQ 命令并等待响应。"""
