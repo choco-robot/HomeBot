@@ -241,6 +241,9 @@ class NavigationApp:
                 "replan_distance_threshold": max_path_deviation_m,
                 "inflation_radius": inflation_radius_m,
                 "robot_radius": 0.25,
+                "lookahead_distance": nav.lookahead_distance_m,
+                "max_angular_accel_rad": nav.max_angular_accel_rad,
+                "velocity_filter_alpha": nav.velocity_filter_alpha,
             }
         )
 
@@ -326,13 +329,56 @@ class NavigationApp:
     # ------------------------------------------------------------------
     # 公共接口
     # ------------------------------------------------------------------
-    def set_goal(self, x: float, y: float) -> None:
+    def set_goal(self, x: float, y: float, yaw: Optional[float] = None) -> None:
         """动态更新目标点。"""
         self.goal_x = x
         self.goal_y = y
-        self._current_goal_id = self._coordinator.navigate_to_async(x, y)
+        self._current_goal_id = self._coordinator.navigate_to_async(x, y, yaw=yaw)
         self._idle_reported = False
-        logger.info(f"目标点已更新: ({x}, {y}), ID={self._current_goal_id}")
+        yaw_str = f"{yaw:.2f}" if yaw is not None else "N/A"
+        logger.info(f"目标点已更新: ({x}, {y}, yaw={yaw_str}), ID={self._current_goal_id}")
+
+    def stop_navigation(self) -> None:
+        """立即停止导航：取消所有目标并停止机器人。"""
+        self._coordinator.cancel_all_goals()
+        self._send_velocity(0.0, 0.0)
+        self._current_goal_id = None
+        self._idle_reported = False
+        logger.info("导航已停止：所有目标已取消，机器人已停止")
+
+    def set_waypoints(self, waypoints: List[Tuple[float, float]], final_goal: Tuple[float, float, Optional[float]]) -> None:
+        """设置途径点队列，依次导航经过各途径点后到达最终目标。
+
+        Args:
+            waypoints: 途径点列表 [(x, y), ...]
+            final_goal: 最终目标 (x, y, yaw)，yaw 可为 None
+        """
+        if not waypoints:
+            # 无途径点时直接设置最终目标
+            self.set_goal(final_goal[0], final_goal[1], final_goal[2])
+            return
+
+        # 先取消所有待处理目标
+        self._coordinator.cancel_all_goals()
+
+        # 依次添加途径点到队列
+        for i, (wx, wy) in enumerate(waypoints):
+            self._coordinator.navigate_to_async(wx, wy, yaw=None, priority=0)
+            logger.info(f"添加途径点 {i+1}/{len(waypoints)}: ({wx:.2f}, {wy:.2f})")
+
+        # 最后添加最终目标
+        self._current_goal_id = self._coordinator.navigate_to_async(
+            final_goal[0], final_goal[1], yaw=final_goal[2], priority=0
+        )
+        self.goal_x = final_goal[0]
+        self.goal_y = final_goal[1]
+        self._idle_reported = False
+        yaw_str = f"{final_goal[2]:.2f}" if final_goal[2] is not None else "N/A"
+        logger.info(
+            f"导航任务已设置: {len(waypoints)} 个途径点 → 最终目标 "
+            f"({final_goal[0]:.2f}, {final_goal[1]:.2f}, yaw={yaw_str}), "
+            f"最终目标ID={self._current_goal_id}"
+        )
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -384,13 +430,41 @@ class NavigationApp:
                 # 发布 Coordinator 的全局路径（供可视化端订阅）
                 self._publish_coordinator_path()
 
-                # 检查 Viser 可视化器是否发布了新的目标点
+                # 检查 Viser 可视化器是否发布了新的目标点/导航任务
                 viser_goal = self._check_viser_goal()
                 if viser_goal:
-                    x = viser_goal.get("x", 0.0)
-                    y = viser_goal.get("y", 0.0)
-                    logger.info(f"收到 Viser 目标点: ({x}, {y})")
-                    self.set_goal(x, y)
+                    # 判断是否为停止命令
+                    if viser_goal.get("cmd") == "stop":
+                        logger.info("收到 Viser 停止导航命令")
+                        self.stop_navigation()
+                        continue
+
+                    # 判断是否为途径点任务格式
+                    waypoints_raw = viser_goal.get("waypoints")
+                    if waypoints_raw and isinstance(waypoints_raw, list):
+                        waypoints = []
+                        for wp in waypoints_raw:
+                            if isinstance(wp, dict):
+                                waypoints.append((float(wp.get("x", 0.0)), float(wp.get("y", 0.0))))
+                            elif isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                                waypoints.append((float(wp[0]), float(wp[1])))
+                        final = viser_goal.get("final_goal", {})
+                        fx = float(final.get("x", viser_goal.get("x", 0.0)))
+                        fy = float(final.get("y", viser_goal.get("y", 0.0)))
+                        ftheta = final.get("theta")
+                        if ftheta is not None:
+                            ftheta = float(ftheta)
+                        logger.info(f"收到 Viser 导航任务: {len(waypoints)} 个途径点 → 最终目标 ({fx:.2f}, {fy:.2f})")
+                        self.set_waypoints(waypoints, (fx, fy, ftheta))
+                    else:
+                        # 旧格式：单目标点
+                        x = float(viser_goal.get("x", 0.0))
+                        y = float(viser_goal.get("y", 0.0))
+                        theta = viser_goal.get("theta")
+                        if theta is not None:
+                            theta = float(theta)
+                        logger.info(f"收到 Viser 目标点: ({x:.2f}, {y:.2f}, theta={theta})")
+                        self.set_goal(x, y, yaw=theta)
                     continue
 
                 if not self._current_goal_id:

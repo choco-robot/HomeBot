@@ -254,6 +254,16 @@
             justify-content: space-between;
             align-items: center;
             cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .marker-item:hover {
+            background: #f5f5f5;
+        }
+        
+        .marker-item.selected {
+            background: #e8f0fe;
+            border-left: 3px solid #667eea;
         }
         
         .marker-dot {
@@ -374,9 +384,7 @@
                 <button class="tool-btn" data-tool="brush" onclick="setTool('brush')">
                     <span class="tool-icon">📏</span>直线障碍物
                 </button>
-                <button class="tool-btn" data-tool="eraser" onclick="setTool('eraser')">
-                    <span class="tool-icon">🧹</span>橡皮擦
-                </button>
+
                 <button class="tool-btn" data-tool="marker" onclick="setTool('marker')">
                     <span class="tool-icon">📍</span>标记点
                 </button>
@@ -395,9 +403,7 @@
                 <input type="range" class="range-slider" id="brushSize" min="0.1" max="1.0" step="0.05" value="0.2" oninput="updateBrushSize()">
                 <div class="range-value" id="brushSizeValue">0.20 m</div>
                 
-                <label class="property-label" style="margin-top: 10px;">橡皮擦大小 (米)</label>
-                <input type="range" class="range-slider" id="eraserSize" min="0.2" max="2.0" step="0.1" value="0.5" oninput="updateEraserSize()">
-                <div class="range-value" id="eraserSizeValue">0.50 m</div>
+
             </div>
         </div>
         
@@ -434,17 +440,17 @@
                 <div class="property-row">
                     <div class="property-group">
                         <label class="property-label">原点 X</label>
-                        <input type="number" class="property-input" id="mapOriginX" value="0.0" step="0.1" onchange="updateMapInfo()">
+                        <input type="number" class="property-input" id="mapOriginX" value="-5.0" step="0.1" onchange="updateMapInfo()">
                     </div>
                     <div class="property-group">
                         <label class="property-label">原点 Y</label>
-                        <input type="number" class="property-input" id="mapOriginY" value="0.0" step="0.1" onchange="updateMapInfo()">
+                        <input type="number" class="property-input" id="mapOriginY" value="-5.0" step="0.1" onchange="updateMapInfo()">
                     </div>
                 </div>
                 
                 <div class="property-group">
                     <label class="property-label">膨胀半径 (m)</label>
-                    <input type="number" class="property-input" id="inflationRadius" value="0.4" step="0.1" min="0">
+                    <input type="number" class="property-input" id="inflationRadius" value="0.2" step="0.1" min="0" onchange="updateMapInfo()">
                 </div>
                 
                 <div class="property-group">
@@ -487,7 +493,61 @@
                     </div>
                 </div>
                 
+                <div id="lineProps" style="display:none;">
+                    <div class="property-row">
+                        <div class="property-group">
+                            <label class="property-label">起点 X</label>
+                            <input type="number" class="property-input" id="obsLineX1" step="0.1" onchange="updateObstacle()">
+                        </div>
+                        <div class="property-group">
+                            <label class="property-label">起点 Y</label>
+                            <input type="number" class="property-input" id="obsLineY1" step="0.1" onchange="updateObstacle()">
+                        </div>
+                    </div>
+                    <div class="property-row">
+                        <div class="property-group">
+                            <label class="property-label">终点 X</label>
+                            <input type="number" class="property-input" id="obsLineX2" step="0.1" onchange="updateObstacle()">
+                        </div>
+                        <div class="property-group">
+                            <label class="property-label">终点 Y</label>
+                            <input type="number" class="property-input" id="obsLineY2" step="0.1" onchange="updateObstacle()">
+                        </div>
+                    </div>
+                    <div class="property-group">
+                        <label class="property-label">墙体厚度 (m)</label>
+                        <input type="number" class="property-input" id="obsLineThickness" step="0.05" min="0.05" onchange="updateObstacle()">
+                    </div>
+                </div>
+                
                 <button class="btn-danger" onclick="deleteObstacle()">🗑️ 删除障碍物</button>
+            </div>
+            
+            <div class="panel-section" id="markerProps" style="display:none;">
+                <div class="panel-title">标记点属性</div>
+                
+                <div class="property-row">
+                    <div class="property-group">
+                        <label class="property-label">位置 X</label>
+                        <input type="number" class="property-input" id="markerX" step="0.1" onchange="updateMarker()">
+                    </div>
+                    <div class="property-group">
+                        <label class="property-label">位置 Y</label>
+                        <input type="number" class="property-input" id="markerY" step="0.1" onchange="updateMarker()">
+                    </div>
+                </div>
+                
+                <div class="property-group">
+                    <label class="property-label">标记类型</label>
+                    <input type="text" class="property-input" id="markerSelectedType" readonly>
+                </div>
+                
+                <div class="property-group">
+                    <label class="property-label">标记名称</label>
+                    <input type="text" class="property-input" id="markerName" onchange="updateMarker()">
+                </div>
+                
+                <button class="btn-danger" onclick="deleteMarker()">🗑️ 删除标记点</button>
             </div>
             
             <div class="panel-section">
@@ -500,6 +560,11 @@
                         <option value="goal">终点 (红色)</option>
                         <option value="waypoint">路径点 (蓝色)</option>
                     </select>
+                </div>
+                
+                <div class="property-group">
+                    <label class="property-label">标记名称（可选）</label>
+                    <input type="text" class="property-input" id="markerNameInput" placeholder="留空则自动命名">
                 </div>
                 
                 <div class="marker-list" id="markerList">
@@ -557,6 +622,10 @@
         let obstacles = [];
         let markers = [];
         let selectedObstacle = null;
+        let selectedMarker = null;
+        let isDraggingMarker = false;
+        let isDraggingObstacle = false;
+        let dragObstacleStart = null;
         
         let scale = 1.0;
         let offsetX = 0;
@@ -566,14 +635,13 @@
         let isSpacePressed = false;
         
         let brushSize = 0.2;  // 墙体厚度，单位：米
-        let eraserSize = 0.5;  // 橡皮擦大小，单位：米
         
         let mapInfo = {
             width: 10.0,
             height: 10.0,
             resolution: 0.05,
-            origin: [0.0, 0.0],
-            inflationRadius: 0.4,
+            origin: [-5.0, -5.0],
+            inflationRadius: 0.2,
             borderObstacleWidth: 0.05
         };
         
@@ -881,16 +949,37 @@
                 const p1 = worldToScreen(obs.x1, obs.y1);
                 const p2 = worldToScreen(obs.x2, obs.y2);
                 const screenThickness = obs.thickness / mapInfo.resolution * scale;
-                
+
                 ctx.lineCap = 'round';
+
+                if (selectedObstacle === obs) {
+                    // 选中时绘制红色外框
+                    ctx.strokeStyle = '#ff0000';
+                    ctx.lineWidth = screenThickness + 4;
+                    ctx.beginPath();
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.stroke();
+                }
+
+                // 正常绘制
+                ctx.strokeStyle = obs.color || '#764ba2';
                 ctx.lineWidth = screenThickness;
                 ctx.beginPath();
                 ctx.moveTo(p1.x, p1.y);
                 ctx.lineTo(p2.x, p2.y);
                 ctx.stroke();
-                
-                // 重置lineWidth，避免影响其他绘制
-                ctx.lineWidth = selectedObstacle === obs ? 3 : 1;
+
+                // 绘制端点高亮（选中时）
+                if (selectedObstacle === obs) {
+                    ctx.fillStyle = '#ff0000';
+                    ctx.beginPath();
+                    ctx.arc(p1.x, p1.y, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(p2.x, p2.y, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
         }
         
@@ -907,6 +996,15 @@
                 symbol = '🎯';
             }
             
+            // 选中标记点高亮外圈
+            if (selectedMarker === marker) {
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(screenPos.x, screenPos.y, 14, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(screenPos.x, screenPos.y, 10, 0, Math.PI * 2);
@@ -921,6 +1019,16 @@
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(symbol, screenPos.x, screenPos.y);
+            
+            // 绘制名称标签
+            const displayName = marker.name || '';
+            if (displayName) {
+                ctx.fillStyle = '#333333';
+                ctx.font = '11px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillText(displayName, screenPos.x, screenPos.y + 16);
+            }
         }
         
         function drawPath() {
@@ -984,21 +1092,6 @@
                 cursorCtx.font = '11px Arial';
                 cursorCtx.textAlign = 'center';
                 cursorCtx.fillText(`${brushSize.toFixed(2)}m`, x, y - radiusPixels - 5);
-            } else if (currentTool === 'eraser') {
-                // 将米转换为屏幕像素
-                const radiusPixels = eraserSize / mapInfo.resolution * scale / 2;
-                
-                cursorCtx.strokeStyle = '#dc3545';
-                cursorCtx.lineWidth = 2;
-                cursorCtx.beginPath();
-                cursorCtx.arc(x, y, radiusPixels, 0, Math.PI * 2);
-                cursorCtx.stroke();
-                
-                // 显示尺寸
-                cursorCtx.fillStyle = 'rgba(220, 53, 69, 0.8)';
-                cursorCtx.font = '11px Arial';
-                cursorCtx.textAlign = 'center';
-                cursorCtx.fillText(`${eraserSize.toFixed(2)}m`, x, y - radiusPixels - 5);
             }
         }
         
@@ -1010,7 +1103,7 @@
             });
             document.querySelector(`.tool-btn[data-tool="${tool}"]`).classList.add('active');
             
-            if (tool === 'brush' || tool === 'eraser') {
+            if (tool === 'brush') {
                 canvas.style.cursor = 'none';
             } else {
                 canvas.style.cursor = 'crosshair';
@@ -1033,7 +1126,30 @@
             }
             
             if (currentTool === 'select') {
-                selectObstacleAt(x, y);
+                selectAt(x, y);
+                if (selectedObstacle && (selectedObstacle.type === 'rectangle' || selectedObstacle.type === 'circle')) {
+                    isDraggingObstacle = true;
+                    const worldPos = screenToWorld(x, y);
+                    dragObstacleStart = {
+                        mouseX: worldPos.x,
+                        mouseY: worldPos.y,
+                        obsX: selectedObstacle.x,
+                        obsY: selectedObstacle.y
+                    };
+                } else if (selectedObstacle && selectedObstacle.type === 'line') {
+                    isDraggingObstacle = true;
+                    const worldPos = screenToWorld(x, y);
+                    dragObstacleStart = {
+                        mouseX: worldPos.x,
+                        mouseY: worldPos.y,
+                        lineX1: selectedObstacle.x1,
+                        lineY1: selectedObstacle.y1,
+                        lineX2: selectedObstacle.x2,
+                        lineY2: selectedObstacle.y2
+                    };
+                } else if (selectedMarker) {
+                    isDraggingMarker = true;
+                }
             } else if (currentTool === 'rectangle' || currentTool === 'circle') {
                 isDrawing = true;
                 startX = x;
@@ -1042,9 +1158,7 @@
                 isDrawing = true;
                 startX = x;
                 startY = y;
-            } else if (currentTool === 'eraser') {
-                isDrawing = true;
-                eraseAt(x, y);
+
             } else if (currentTool === 'marker') {
                 addMarker(x, y);
             }
@@ -1061,13 +1175,47 @@
                 `缩放: ${Math.round(scale * 100)}% | 位置: (${worldPos.x.toFixed(2)}, ${worldPos.y.toFixed(2)}) m`;
             
             // 绘制光标预览
-            if (currentTool === 'brush' || currentTool === 'eraser') {
+            if (currentTool === 'brush') {
                 drawCursorPreview(x, y);
             }
             
             if (isDragging) {
                 offsetX = x - dragStartX;
                 offsetY = y - dragStartY;
+                render();
+                return;
+            }
+            
+            if (isDraggingMarker && selectedMarker) {
+                const worldPos = screenToWorld(x, y);
+                selectedMarker.x = worldPos.x;
+                selectedMarker.y = worldPos.y;
+                document.getElementById('markerX').value = selectedMarker.x.toFixed(2);
+                document.getElementById('markerY').value = selectedMarker.y.toFixed(2);
+                updateMarkerList();
+                render();
+                return;
+            }
+            
+            if (isDraggingObstacle && selectedObstacle && dragObstacleStart) {
+                const worldPos = screenToWorld(x, y);
+                const dx = worldPos.x - dragObstacleStart.mouseX;
+                const dy = worldPos.y - dragObstacleStart.mouseY;
+                if (selectedObstacle.type === 'line') {
+                    selectedObstacle.x1 = dragObstacleStart.lineX1 + dx;
+                    selectedObstacle.y1 = dragObstacleStart.lineY1 + dy;
+                    selectedObstacle.x2 = dragObstacleStart.lineX2 + dx;
+                    selectedObstacle.y2 = dragObstacleStart.lineY2 + dy;
+                    document.getElementById('obsLineX1').value = selectedObstacle.x1.toFixed(2);
+                    document.getElementById('obsLineY1').value = selectedObstacle.y1.toFixed(2);
+                    document.getElementById('obsLineX2').value = selectedObstacle.x2.toFixed(2);
+                    document.getElementById('obsLineY2').value = selectedObstacle.y2.toFixed(2);
+                } else {
+                    selectedObstacle.x = dragObstacleStart.obsX + dx;
+                    selectedObstacle.y = dragObstacleStart.obsY + dy;
+                    document.getElementById('obsX').value = selectedObstacle.x.toFixed(2);
+                    document.getElementById('obsY').value = selectedObstacle.y.toFixed(2);
+                }
                 render();
                 return;
             }
@@ -1100,8 +1248,6 @@
                 ctx.moveTo(startX, startY);
                 ctx.lineTo(x, y);
                 ctx.stroke();
-            } else if (currentTool === 'eraser') {
-                eraseAt(x, y);
             }
         }
         
@@ -1109,7 +1255,18 @@
             if (isDragging) {
                 isDragging = false;
                 canvas.style.cursor = isSpacePressed ? 'grab' : 
-                    (currentTool === 'brush' || currentTool === 'eraser' ? 'none' : 'crosshair');
+                    (currentTool === 'brush' ? 'none' : 'crosshair');
+                return;
+            }
+            
+            if (isDraggingMarker) {
+                isDraggingMarker = false;
+                return;
+            }
+            
+            if (isDraggingObstacle) {
+                isDraggingObstacle = false;
+                dragObstacleStart = null;
                 return;
             }
             
@@ -1209,15 +1366,19 @@
             if (e.code === 'Space') {
                 isSpacePressed = true;
                 canvas.style.cursor = 'grab';
-            } else if (e.code === 'Delete' && selectedObstacle) {
-                deleteObstacle();
+            } else if (e.code === 'Delete') {
+                if (selectedObstacle) {
+                    deleteObstacle();
+                } else if (selectedMarker) {
+                    deleteMarker();
+                }
             }
         }
         
         function handleKeyUp(e) {
             if (e.code === 'Space') {
                 isSpacePressed = false;
-                canvas.style.cursor = currentTool === 'brush' || currentTool === 'eraser' ? 'none' : 'crosshair';
+                canvas.style.cursor = currentTool === 'brush' ? 'none' : 'crosshair';
             }
         }
         
@@ -1253,10 +1414,12 @@
         }
         
         // ==================== 其他功能 ====================
-        function selectObstacleAt(x, y) {
-            const worldPos = screenToWorld(x, y);
+        function selectAt(sx, sy) {
+            const worldPos = screenToWorld(sx, sy);
             selectedObstacle = null;
+            selectedMarker = null;
             
+            // 先尝试选择障碍物
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 const obs = obstacles[i];
                 if (obs.type === 'rectangle') {
@@ -1274,9 +1437,12 @@
                     }
                 } else if (obs.type === 'line') {
                     // 点到线段的距离检测
-                    const dist = pointToLineDistance(worldPos.x, worldPos.y, 
+                    const dist = pointToLineDistance(worldPos.x, worldPos.y,
                                                     obs.x1, obs.y1, obs.x2, obs.y2);
-                    if (dist <= obs.thickness / 2) {
+                    // 使用厚度的一半作为基础容差，但保证最小 0.15m（约 3~7 像素）的选择区域，
+                    // 避免细线在屏幕上难以点击。
+                    const hitThreshold = Math.max((obs.thickness || 0.2) / 2, 0.15);
+                    if (dist <= hitThreshold) {
                         selectedObstacle = obs;
                         break;
                     }
@@ -1285,39 +1451,128 @@
             
             if (selectedObstacle) {
                 document.getElementById('obstacleProps').style.display = 'block';
-                document.getElementById('obsX').value = selectedObstacle.x.toFixed(2);
-                document.getElementById('obsY').value = selectedObstacle.y.toFixed(2);
-                
+                document.getElementById('markerProps').style.display = 'none';
+
                 if (selectedObstacle.type === 'rectangle') {
+                    document.getElementById('obsX').value = selectedObstacle.x.toFixed(2);
+                    document.getElementById('obsY').value = selectedObstacle.y.toFixed(2);
                     document.getElementById('rectProps').style.display = 'block';
                     document.getElementById('circleProps').style.display = 'none';
+                    document.getElementById('lineProps').style.display = 'none';
                     document.getElementById('obsWidth').value = selectedObstacle.width.toFixed(2);
                     document.getElementById('obsHeight').value = selectedObstacle.height.toFixed(2);
                 } else if (selectedObstacle.type === 'circle') {
+                    document.getElementById('obsX').value = selectedObstacle.x.toFixed(2);
+                    document.getElementById('obsY').value = selectedObstacle.y.toFixed(2);
                     document.getElementById('rectProps').style.display = 'none';
                     document.getElementById('circleProps').style.display = 'block';
+                    document.getElementById('lineProps').style.display = 'none';
                     document.getElementById('obsRadius').value = selectedObstacle.radius.toFixed(2);
-                } else {
+                } else if (selectedObstacle.type === 'line') {
                     document.getElementById('rectProps').style.display = 'none';
                     document.getElementById('circleProps').style.display = 'none';
+                    document.getElementById('lineProps').style.display = 'block';
+                    document.getElementById('obsLineX1').value = selectedObstacle.x1.toFixed(2);
+                    document.getElementById('obsLineY1').value = selectedObstacle.y1.toFixed(2);
+                    document.getElementById('obsLineX2').value = selectedObstacle.x2.toFixed(2);
+                    document.getElementById('obsLineY2').value = selectedObstacle.y2.toFixed(2);
+                    document.getElementById('obsLineThickness').value = selectedObstacle.thickness.toFixed(2);
+                } else {
+                    document.getElementById('obsX').value = selectedObstacle.x ? selectedObstacle.x.toFixed(2) : '';
+                    document.getElementById('obsY').value = selectedObstacle.y ? selectedObstacle.y.toFixed(2) : '';
+                    document.getElementById('rectProps').style.display = 'none';
+                    document.getElementById('circleProps').style.display = 'none';
+                    document.getElementById('lineProps').style.display = 'none';
                 }
-            } else {
-                document.getElementById('obstacleProps').style.display = 'none';
+                render();
+                return;
+            }
+            
+            // 未选中障碍物，尝试选择标记点（按屏幕像素距离）
+            document.getElementById('obstacleProps').style.display = 'none';
+            
+            for (let i = markers.length - 1; i >= 0; i--) {
+                const marker = markers[i];
+                const markerScreen = worldToScreen(marker.x, marker.y);
+                const dist = Math.sqrt(Math.pow(sx - markerScreen.x, 2) + 
+                                      Math.pow(sy - markerScreen.y, 2));
+                if (dist < 20) {  // 20像素选择阈值
+                    selectedMarker = marker;
+                    showMarkerProps();
+                    break;
+                }
+            }
+            
+            if (!selectedMarker) {
+                document.getElementById('markerProps').style.display = 'none';
             }
             
             render();
         }
         
+        function showMarkerProps() {
+            if (!selectedMarker) return;
+            document.getElementById('markerProps').style.display = 'block';
+            document.getElementById('markerX').value = selectedMarker.x.toFixed(2);
+            document.getElementById('markerY').value = selectedMarker.y.toFixed(2);
+            document.getElementById('markerName').value = selectedMarker.name || '';
+            
+            let typeName = '路径点';
+            if (selectedMarker.type === 'start') typeName = '起点';
+            else if (selectedMarker.type === 'goal') typeName = '终点';
+            document.getElementById('markerSelectedType').value = typeName;
+        }
+        
+        function updateMarker() {
+            if (!selectedMarker) return;
+            selectedMarker.x = parseFloat(document.getElementById('markerX').value);
+            selectedMarker.y = parseFloat(document.getElementById('markerY').value);
+            selectedMarker.name = document.getElementById('markerName').value.trim();
+            render();
+            updateMarkerList();
+        }
+        
+        function deleteMarker() {
+            if (!selectedMarker) return;
+            markers = markers.filter(m => m.id !== selectedMarker.id);
+            selectedMarker = null;
+            document.getElementById('markerProps').style.display = 'none';
+            updateMarkerList();
+            render();
+        }
+        
+        function selectMarkerById(id) {
+            selectedObstacle = null;
+            document.getElementById('obstacleProps').style.display = 'none';
+            
+            selectedMarker = markers.find(m => m.id === id);
+            if (selectedMarker) {
+                showMarkerProps();
+            } else {
+                document.getElementById('markerProps').style.display = 'none';
+            }
+            render();
+        }
+        
         function updateObstacle() {
             if (!selectedObstacle) return;
-            selectedObstacle.x = parseFloat(document.getElementById('obsX').value);
-            selectedObstacle.y = parseFloat(document.getElementById('obsY').value);
             
-            if (selectedObstacle.type === 'rectangle') {
-                selectedObstacle.width = parseFloat(document.getElementById('obsWidth').value);
-                selectedObstacle.height = parseFloat(document.getElementById('obsHeight').value);
-            } else if (selectedObstacle.type === 'circle') {
-                selectedObstacle.radius = parseFloat(document.getElementById('obsRadius').value);
+            if (selectedObstacle.type === 'line') {
+                selectedObstacle.x1 = parseFloat(document.getElementById('obsLineX1').value);
+                selectedObstacle.y1 = parseFloat(document.getElementById('obsLineY1').value);
+                selectedObstacle.x2 = parseFloat(document.getElementById('obsLineX2').value);
+                selectedObstacle.y2 = parseFloat(document.getElementById('obsLineY2').value);
+                selectedObstacle.thickness = parseFloat(document.getElementById('obsLineThickness').value);
+            } else {
+                selectedObstacle.x = parseFloat(document.getElementById('obsX').value);
+                selectedObstacle.y = parseFloat(document.getElementById('obsY').value);
+                
+                if (selectedObstacle.type === 'rectangle') {
+                    selectedObstacle.width = parseFloat(document.getElementById('obsWidth').value);
+                    selectedObstacle.height = parseFloat(document.getElementById('obsHeight').value);
+                } else if (selectedObstacle.type === 'circle') {
+                    selectedObstacle.radius = parseFloat(document.getElementById('obsRadius').value);
+                }
             }
             
             render();
@@ -1331,38 +1586,10 @@
             render();
         }
         
-        function eraseAt(x, y) {
-            const worldPos = screenToWorld(x, y);
-            const eraseRadius = eraserSize;  // 直接使用米为单位
-            
-            obstacles = obstacles.filter(obs => {
-                if (obs.type === 'rectangle') {
-                    // 检查橡皮擦圆心是否在矩形的膨胀区域内
-                    const closestX = Math.max(obs.x, Math.min(worldPos.x, obs.x + obs.width));
-                    const closestY = Math.max(obs.y, Math.min(worldPos.y, obs.y + obs.height));
-                    const dist = Math.sqrt(Math.pow(worldPos.x - closestX, 2) + 
-                                          Math.pow(worldPos.y - closestY, 2));
-                    return dist > eraseRadius;
-                } else if (obs.type === 'circle') {
-                    // 检查橡皮擦圆心到障碍物圆心的距离
-                    const dist = Math.sqrt(Math.pow(worldPos.x - obs.x, 2) + 
-                                          Math.pow(worldPos.y - obs.y, 2));
-                    return dist > (eraseRadius + obs.radius);
-                } else if (obs.type === 'line') {
-                    // 检查点到线段的距离
-                    const dist = pointToLineDistance(worldPos.x, worldPos.y, 
-                                                    obs.x1, obs.y1, obs.x2, obs.y2);
-                    return dist > (eraseRadius + obs.thickness / 2);
-                }
-                return true;
-            });
-            
-            render();
-        }
-        
         function addMarker(x, y) {
             const worldPos = screenToWorld(x, y);
             const type = document.getElementById('markerType').value;
+            let name = document.getElementById('markerNameInput').value.trim();
             
             if (type === 'start' && markers.some(m => m.type === 'start')) {
                 alert('起点已存在');
@@ -1373,11 +1600,22 @@
                 return;
             }
             
+            // 自动生成默认名称
+            if (!name) {
+                if (type === 'start') name = '起点';
+                else if (type === 'goal') name = '终点';
+                else {
+                    const waypointCount = markers.filter(m => m.type === 'waypoint').length;
+                    name = `路径点${waypointCount + 1}`;
+                }
+            }
+            
             markers.push({
                 id: Date.now(),
                 type: type,
                 x: worldPos.x,
-                y: worldPos.y
+                y: worldPos.y,
+                name: name
             });
             
             updateMarkerList();
@@ -1395,8 +1633,10 @@
             list.innerHTML = markers.map(m => {
                 const typeName = m.type === 'start' ? '起点' : (m.type === 'goal' ? '终点' : '路径点');
                 const dotClass = m.type === 'start' ? 'marker-start' : (m.type === 'goal' ? 'marker-goal' : 'marker-waypoint');
-                return `<div class="marker-item">
-                    <span><span class="marker-dot ${dotClass}"></span>${typeName}</span>
+                const selectedClass = (selectedMarker === m) ? 'selected' : '';
+                const displayName = m.name ? `${m.name}` : typeName;
+                return `<div class="marker-item ${selectedClass}" onclick="selectMarkerById(${m.id})">
+                    <span><span class="marker-dot ${dotClass}"></span>${displayName}</span>
                     <span style="color: #999; font-size: 11px;">(${m.x.toFixed(2)}, ${m.y.toFixed(2)})</span>
                 </div>`;
             }).join('');
@@ -1404,6 +1644,8 @@
         
         function clearMarkers() {
             markers = [];
+            selectedMarker = null;
+            document.getElementById('markerProps').style.display = 'none';
             updateMarkerList();
             render();
         }
@@ -1421,11 +1663,13 @@
             mapInfo.width = parseFloat(document.getElementById('newMapWidth').value);
             mapInfo.height = parseFloat(document.getElementById('newMapHeight').value);
             mapInfo.resolution = parseFloat(document.getElementById('newMapResolution').value);
-            
+            // 原点设为左下角，使地图中心位于 (0, 0)
+            mapInfo.origin = [-mapInfo.width / 2, -mapInfo.height / 2];
+
             document.getElementById('mapWidth').value = mapInfo.width;
             document.getElementById('mapHeight').value = mapInfo.height;
             document.getElementById('mapResolution').value = mapInfo.resolution;
-            
+
             mapInfo.borderObstacleWidth = 0.05;
             document.getElementById('borderObstacleWidth').value = mapInfo.borderObstacleWidth.toFixed(2);
             
@@ -1433,6 +1677,12 @@
             markers = [];
             backgroundImage = null;
             selectedObstacle = null;
+            selectedMarker = null;
+            isDraggingObstacle = false;
+            dragObstacleStart = null;
+            document.getElementById('markerProps').style.display = 'none';
+            document.getElementById('obstacleProps').style.display = 'none';
+            document.getElementById('markerNameInput').value = '';
             
             closeModal('newMapModal');
             resetZoom();
@@ -1454,6 +1704,14 @@
                     try {
                         const data = JSON.parse(e.target.result);
                         
+                        // 清除选中状态
+                        selectedObstacle = null;
+                        selectedMarker = null;
+                        isDraggingObstacle = false;
+                        dragObstacleStart = null;
+                        document.getElementById('obstacleProps').style.display = 'none';
+                        document.getElementById('markerProps').style.display = 'none';
+                        
                         // 更新地图信息
                         const mapInfoData = data.map_info || {};
                         mapInfo.width = mapInfoData.width || 10.0;
@@ -1474,7 +1732,15 @@
                         
                         // 加载障碍物
                         obstacles = data.obstacles || [];
-                        markers = data.markers || [];
+                        markers = (data.markers || []).map((m, idx) => {
+                            // 兼容旧数据：补充默认名称
+                            if (!m.name) {
+                                if (m.type === 'start') m.name = '起点';
+                                else if (m.type === 'goal') m.name = '终点';
+                                else m.name = `路径点${idx + 1}`;
+                            }
+                            return m;
+                        });
                         
                         // 检查是否有 PNG 引用
                         const pngFile = data.image;
@@ -1560,28 +1826,28 @@
             
             obstacles.forEach(obs => {
                 if (obs.type === 'rectangle') {
-                    // 矩形障碍物
+                    // 矩形障碍物（Y轴翻转：世界坐标Y向上 -> 图像坐标Y向下）
                     const x = (obs.x - mapInfo.origin[0]) / mapInfo.resolution;
-                    const y = (obs.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    const y = (mapInfo.origin[1] + mapInfo.height - obs.y - obs.height) / mapInfo.resolution;
                     const w = obs.width / mapInfo.resolution;
                     const h = obs.height / mapInfo.resolution;
                     slamCtx.fillRect(x, y, w, h);
                 
                 } else if (obs.type === 'circle') {
-                    // 圆形障碍物
+                    // 圆形障碍物（Y轴翻转）
                     const x = (obs.x - mapInfo.origin[0]) / mapInfo.resolution;
-                    const y = (obs.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    const y = (mapInfo.origin[1] + mapInfo.height - obs.y) / mapInfo.resolution;
                     const r = obs.radius / mapInfo.resolution;
                     slamCtx.beginPath();
                     slamCtx.arc(x, y, r, 0, Math.PI * 2);
                     slamCtx.fill();
                 
                 } else if (obs.type === 'line') {
-                    // 直线障碍物
+                    // 直线障碍物（Y轴翻转）
                     const x1 = (obs.x1 - mapInfo.origin[0]) / mapInfo.resolution;
-                    const y1 = (obs.y1 - mapInfo.origin[1]) / mapInfo.resolution;
+                    const y1 = (mapInfo.origin[1] + mapInfo.height - obs.y1) / mapInfo.resolution;
                     const x2 = (obs.x2 - mapInfo.origin[0]) / mapInfo.resolution;
-                    const y2 = (obs.y2 - mapInfo.origin[1]) / mapInfo.resolution;
+                    const y2 = (mapInfo.origin[1] + mapInfo.height - obs.y2) / mapInfo.resolution;
                     const thickness = obs.thickness / mapInfo.resolution;
                     
                     slamCtx.lineWidth = thickness;
@@ -1592,17 +1858,17 @@
                     slamCtx.stroke();
                 
                 } else if (obs.type === 'polygon' && obs.points.length > 0) {
-                    // 多边形障碍物
+                    // 多边形障碍物（Y轴翻转）
                     slamCtx.beginPath();
                     const firstPoint = obs.points[0];
                     const fx = (firstPoint.x - mapInfo.origin[0]) / mapInfo.resolution;
-                    const fy = (firstPoint.y - mapInfo.origin[1]) / mapInfo.resolution;
+                    const fy = (mapInfo.origin[1] + mapInfo.height - firstPoint.y) / mapInfo.resolution;
                     slamCtx.moveTo(fx, fy);
                     
                     for (let i = 1; i < obs.points.length; i++) {
                         const p = obs.points[i];
                         const px = (p.x - mapInfo.origin[0]) / mapInfo.resolution;
-                        const py = (p.y - mapInfo.origin[1]) / mapInfo.resolution;
+                        const py = (mapInfo.origin[1] + mapInfo.height - p.y) / mapInfo.resolution;
                         slamCtx.lineTo(px, py);
                     }
                     slamCtx.closePath();
@@ -1756,6 +2022,7 @@
                 start: [start.x, start.y],
                 goal: [goal.x, goal.y],
                 waypoints: waypoints.map(w => [w.x, w.y]),
+                waypoint_names: waypoints.map(w => w.name || ''),
                 path: [[start.x, start.y], ...waypoints.map(w => [w.x, w.y]), [goal.x, goal.y]]
             };
             
@@ -1833,6 +2100,12 @@
                 markers = [];
                 backgroundImage = null;
                 selectedObstacle = null;
+                selectedMarker = null;
+                isDraggingObstacle = false;
+                dragObstacleStart = null;
+                document.getElementById('markerProps').style.display = 'none';
+                document.getElementById('obstacleProps').style.display = 'none';
+                document.getElementById('markerNameInput').value = '';
                 updateMarkerList();
                 render();
             }
@@ -1853,11 +2126,6 @@
         function updateBrushSize() {
             brushSize = parseFloat(document.getElementById('brushSize').value);
             document.getElementById('brushSizeValue').textContent = `${brushSize.toFixed(2)} m`;
-        }
-        
-        function updateEraserSize() {
-            eraserSize = parseFloat(document.getElementById('eraserSize').value);
-            document.getElementById('eraserSizeValue').textContent = `${eraserSize.toFixed(2)} m`;
         }
         
         function updateStats() {

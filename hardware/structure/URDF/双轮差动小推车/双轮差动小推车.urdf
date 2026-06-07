@@ -1,0 +1,102 @@
+<?xml version="1.0"?>
+<robot name="双轮差动小推车">
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/base_link.STL" />
+      </geometry>
+      <material>
+        <color rgba="1.00000000 0.80000392 0.00000392 1.00000000"/>
+      </material>
+      <material name="paint_base_link_0_1">
+        <color rgba="0.12157255 0.11765098 0.11765098 1.00000000"/>
+      </material>
+      <material name="paint_base_link_0_2">
+        <color rgba="0.33725882 0.65098431 0.94118039 1.00000000"/>
+      </material>
+      <material name="paint_base_link_0_3">
+        <color rgba="0.94118039 0.33725882 0.33725882 1.00000000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/base_link.STL" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.0053469 0 0.2699583" rpy="0 0 0" />
+      <mass value="2.8878094" />
+      <inertia ixx="0.0885297" ixy="0" ixz="-0.0000896" iyy="0.0502666" iyz="0" izz="0.0640522" />
+    </inertial>
+  </link>
+
+  <link name="Left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/Left_wheel.STL" />
+      </geometry>
+      <material>
+        <color rgba="0.48235686 0.43529804 0.43529804 1.00000000"/>
+      </material>
+      <material name="paint_Left_wheel_0_1">
+        <color rgba="1.00000000 0.42353333 0.03921961 1.00000000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/Left_wheel.STL" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.114651" rpy="0 0 0" />
+      <mass value="0.5748957" />
+      <inertia ixx="0.0005663" ixy="0" ixz="0" iyy="0.0005663" iyz="0" izz="0.0008792" />
+    </inertial>
+  </link>
+
+  <link name="Right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/Right_wheel.STL" />
+      </geometry>
+      <material>
+        <color rgba="0.48235686 0.43529804 0.43529804 1.00000000"/>
+      </material>
+      <material name="paint_Right_wheel_0_1">
+        <color rgba="1.00000000 0.42353333 0.03921961 1.00000000"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/Right_wheel.STL" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.114651" rpy="0 0 0" />
+      <mass value="0.5748957" />
+      <inertia ixx="0.0005663" ixy="0" ixz="0" iyy="0.0005663" iyz="0" izz="0.0008792" />
+    </inertial>
+  </link>
+
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link" />
+    <child link="Left_wheel" />
+    <origin xyz="-0.1502521 0.098 0.0625" rpy="1.5707963 0 3.1415927" />
+    <axis xyz="0 0 1" />
+  </joint>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link" />
+    <child link="Right_wheel" />
+    <origin xyz="-0.1502521 -0.098 0.0625" rpy="1.5707963 0 0" />
+    <axis xyz="0 0 1" />
+  </joint>
+
+</robot>

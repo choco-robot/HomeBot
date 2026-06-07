@@ -65,7 +65,7 @@ SLAM_MAP_SIZE_METERS = 10.0  # 地图物理尺寸（米）
 
 # 仿真参数
 UPDATE_INTERVAL_MS = 50  # 可视化更新间隔（毫秒）
-LINEAR_SPEED = 0.4       # 线速度（m/s）
+LINEAR_SPEED = 0.5       # 线速度（m/s）
 ANGULAR_SPEED = 1.0      # 角速度（rad/s）
 
 # 保存路径

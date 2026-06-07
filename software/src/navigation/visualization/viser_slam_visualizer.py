@@ -29,6 +29,7 @@ import math
 import os
 import threading
 import time
+from pathlib import Path
 from collections import deque
 from typing import Any, Deque, List, Optional, Tuple
 
@@ -37,6 +38,23 @@ import numpy as np
 import viser
 import viser.transforms as tf
 import zmq
+
+# Viser URDF 支持（可选依赖 yourdfpy）
+try:
+    from viser.extras import ViserUrdf
+
+    _VISER_URDF_AVAILABLE = True
+except Exception:  # pragma: no cover - defensive import
+    ViserUrdf = None  # type: ignore[misc, assignment]
+    _VISER_URDF_AVAILABLE = False
+
+try:
+    import yourdfpy  # type: ignore[import-not-found]
+
+    _YOURDFPY_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    yourdfpy = None  # type: ignore[assignment]
+    _YOURDFPY_AVAILABLE = False
 
 from common.logging import get_logger
 from common.zmq_helper import create_socket
@@ -190,9 +208,14 @@ class ViserSLAMVisualizer:
         self._point_size = cfg.point_size
         self._map_update_interval = cfg.map_update_interval
         self._follow_robot = cfg.follow_robot
+        self._lidar_rotation_offset_deg = cfg.lidar_rotation_offset_deg
 
         # 地图目录：支持命令行/配置指定，否则自动探测 software/maps
         self._maps_dir = self._resolve_maps_dir(cfg.maps_dir)
+
+        # 机器人 URDF 路径（空则使用简易圆柱造型）
+        self._urdf_path: Optional[str] = cfg.urdf_path if cfg.urdf_path else None
+        self._urdf_color_override: Optional[Tuple[float, float, float]] = cfg.urdf_color_override
 
         # Viser 服务器
         self._server = viser.ViserServer(host=cfg.host, port=cfg.port)
@@ -247,6 +270,9 @@ class ViserSLAMVisualizer:
         self._goal_theta = 0.0
         self._goal_marker_visible = False
 
+        # 途径点状态
+        self._waypoints: List[Tuple[float, float]] = []  # [(x, y), ...]
+
         # 场景节点 handle 缓存
         self._handles: dict[str, Any] = {}
 
@@ -278,24 +304,8 @@ class ViserSLAMVisualizer:
             "/map/base_link", show_axes=True, axes_length=0.25, axes_radius=0.02
         )
 
-        # 机器人底盘（圆柱）
-        s.add_cylinder(
-            "/map/base_link/body",
-            radius=0.18,
-            height=0.10,
-            position=(0.0, 0.0, 0.05),
-            color=(100, 180, 255),
-        )
-
-        # 方向箭头杆
-        s.add_cylinder(
-            "/map/base_link/arrow_shaft",
-            radius=0.03,
-            height=0.30,
-            position=(0.10, 0.0, 0.05),
-            wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
-            color=(255, 200, 50),
-        )
+        # 机器人模型：优先使用 URDF，否则使用简易圆柱造型
+        self._setup_robot_body(s)
 
         # 位姿文字标签（显示在机器人上方）
         self._handles["/map/base_link/pose_label"] = s.add_label(
@@ -328,6 +338,76 @@ class ViserSLAMVisualizer:
         )
 
         logger.info("Scene initialized")
+
+    # --------------------------------------------------------------------------
+    # 机器人模型初始化
+    # --------------------------------------------------------------------------
+    def _setup_robot_body(self, s: viser.SceneApi) -> None:
+        """根据 URDF 配置设置机器人模型。"""
+        urdf_path = self._urdf_path
+
+        if urdf_path and os.path.isfile(urdf_path):
+            try:
+                self._setup_urdf_robot_body(s, urdf_path)
+                logger.info(f"使用 URDF 机器人模型: {urdf_path}")
+                return
+            except Exception as e:
+                logger.warning(f"加载 URDF 失败 ({urdf_path}): {e}，回退到简易圆柱造型")
+                self._remove_node("/map/base_link/urdf")
+
+        self._setup_simple_robot_body(s)
+        if urdf_path:
+            logger.info("URDF 路径无效或依赖缺失，使用简易圆柱机器人造型")
+        else:
+            logger.info("未配置 URDF，使用简易圆柱机器人造型")
+
+    def _setup_simple_robot_body(self, s: viser.SceneApi) -> None:
+        """使用简易圆柱+箭头作为机器人模型。"""
+        s.add_cylinder(
+            "/map/base_link/body",
+            radius=0.18,
+            height=0.10,
+            position=(0.0, 0.0, 0.05),
+            color=(100, 180, 255),
+        )
+        s.add_cylinder(
+            "/map/base_link/arrow_shaft",
+            radius=0.03,
+            height=0.30,
+            position=(0.10, 0.0, 0.05),
+            wxyz=tf.SO3.from_y_radians(math.pi / 2).wxyz,
+            color=(255, 200, 50),
+        )
+
+    def _setup_urdf_robot_body(self, s: viser.SceneApi, urdf_path: str) -> None:
+        """使用 ViserUrdf 加载 URDF 机器人模型。"""
+        if not _VISER_URDF_AVAILABLE or ViserUrdf is None:
+            raise RuntimeError("viser.extras.ViserUrdf 不可用")
+
+        # ViserUrdf 需要 yourdfpy 来解析 URDF
+        if not _YOURDFPY_AVAILABLE:
+            raise RuntimeError(
+                "加载 URDF 需要 yourdfpy 依赖，"
+                "请安装: pip install yourdfpy"
+            )
+
+        # 可选：设置缩放因子（通过环境变量或后续扩展配置）
+        scale = float(os.environ.get("HOMEBOT_URDF_SCALE", "1.0"))
+
+        # 附加到 /map/base_link 坐标系
+        urdf_handle = ViserUrdf(
+            target=self._server,
+            urdf_or_path=Path(urdf_path),
+            scale=scale,
+            root_node_name="/map/base_link",
+            load_meshes=True,
+            load_collision_meshes=False,
+            mesh_color_override=self._urdf_color_override,
+        )
+        self._handles["/map/base_link/urdf"] = urdf_handle
+
+        # 初始化所有 joint 到零位，否则子 link 会停留在父节点原点
+        urdf_handle.update_cfg(urdf_handle._urdf.zero_cfg)
 
     # --------------------------------------------------------------------------
     # GUI 初始化
@@ -377,7 +457,12 @@ class ViserSLAMVisualizer:
             self._gui_goal_x = g.add_number("目标 X (m)", 0.0, step=0.1)
             self._gui_goal_y = g.add_number("目标 Y (m)", 0.0, step=0.1)
             self._gui_goal_theta = g.add_number("目标 Theta (deg)", 0.0, step=5.0)
-            self._gui_set_goal = g.add_button("📍 设置目标点")
+            with g.add_folder("途径点管理", expand_by_default=True):
+                self._gui_add_waypoint = g.add_button("➕ 添加途径点")
+                self._gui_clear_waypoints = g.add_button("🗑️ 清除途径点")
+                self._gui_waypoint_list = g.add_text("途径点列表", "暂无")
+            self._gui_set_goal = g.add_button("🚀 开始导航")
+            self._gui_stop_nav = g.add_button("🛑 停止导航")
             self._gui_reset_odom = g.add_button("🔄 重置里程计")
             self._gui_reset_slam = g.add_button("🔄 重置 SLAM 位姿(使用目标坐标)")
             self._gui_nav_status = g.add_text("操作状态", "就绪")
@@ -400,8 +485,11 @@ class ViserSLAMVisualizer:
         self._gui_save_map.on_click(lambda _: self._on_save_map())
         self._gui_use_slam_map.on_click(lambda _: self._on_use_slam_map())
         self._gui_set_goal.on_click(lambda _: self._on_set_goal())
+        self._gui_stop_nav.on_click(lambda _: self._on_stop_nav())
         self._gui_reset_odom.on_click(lambda _: self._on_reset_odom())
         self._gui_reset_slam.on_click(lambda _: self._on_reset_slam())
+        self._gui_add_waypoint.on_click(lambda _: self._on_add_waypoint())
+        self._gui_clear_waypoints.on_click(lambda _: self._on_clear_waypoints())
 
         # 图层控制回调
         self._gui_show_map.on_update(lambda _: self._update_layer_visibility())
@@ -419,6 +507,7 @@ class ViserSLAMVisualizer:
     # --------------------------------------------------------------------------
     def _set_top_view(self) -> None:
         """切换到顶视图。"""
+        self._gui_follow_robot.value = False
         for client in self._server.get_clients().values():
             client.camera.wxyz = (0.0, 0.0, 0.0, 1.0)  # 俯视角
             client.camera.position = (0.0, 0.0, 15.0)
@@ -426,6 +515,7 @@ class ViserSLAMVisualizer:
 
     def _reset_view(self) -> None:
         """重置到默认视角。"""
+        self._gui_follow_robot.value = False
         for client in self._server.get_clients().values():
             client.camera.wxyz = (0.0, 0.0, 0.0, 1.0)
             client.camera.position = (0.0, -5.5, 5.5)
@@ -595,6 +685,7 @@ class ViserSLAMVisualizer:
             look_z = 0.0
 
             for client in self._server.get_clients().values():
+                client.camera.up_direction = np.array([0.0, 0.0, 1.0])
                 client.camera.position = np.array([cam_x, cam_y, cam_z])
                 client.camera.look_at = np.array([look_x, look_y, look_z])
 
@@ -665,7 +756,7 @@ class ViserSLAMVisualizer:
                 points=pts,
                 colors=colors,
                 point_size=self._point_size,
-                wxyz=tf.SO3.from_z_radians(math.pi).wxyz,  # 点云绕 z 轴旋转 180°
+                wxyz=tf.SO3.from_z_radians(math.radians(self._lidar_rotation_offset_deg)).wxyz,
             )
         self._last_lidar_time = time.time()
 
@@ -968,10 +1059,12 @@ class ViserSLAMVisualizer:
                 origin=origin,
                 default_cost=COST_UNKNOWN,
             )
+            # PNG 原点在左上角，需翻转 Y 轴与地图坐标系对齐
+            arr_flipped = np.flipud(arr)
             grid.data = np.where(
-                arr < 50,
+                arr_flipped < 50,
                 COST_FREE,
-                np.where(arr > 200, COST_LETHAL, COST_UNKNOWN),
+                np.where(arr_flipped > 200, COST_LETHAL, COST_UNKNOWN),
             ).astype(np.int16)
 
             # 5. 提取障碍物和标记点
@@ -1208,27 +1301,135 @@ class ViserSLAMVisualizer:
     # --------------------------------------------------------------------------
     # 导航控制
     # --------------------------------------------------------------------------
+    def _on_add_waypoint(self) -> None:
+        """添加途径点到列表。"""
+        x = float(self._gui_goal_x.value)
+        y = float(self._gui_goal_y.value)
+        self._waypoints.append((x, y))
+        self._update_waypoint_list_text()
+        self._update_waypoint_markers()
+        self._gui_nav_status.value = f"途径点已添加: ({x:.2f}, {y:.2f})，共 {len(self._waypoints)} 个"
+        logger.info(f"途径点已添加: ({x:.2f}, {y:.2f})，当前途径点数量: {len(self._waypoints)}")
+
+    def _on_clear_waypoints(self) -> None:
+        """清除所有途径点。"""
+        self._waypoints.clear()
+        self._update_waypoint_list_text()
+        self._clear_waypoint_markers()
+        self._gui_nav_status.value = "途径点已清除"
+        logger.info("途径点已清除")
+
+    def _update_waypoint_list_text(self) -> None:
+        """更新途径点列表显示文本。"""
+        if not self._waypoints:
+            self._gui_waypoint_list.value = "暂无"
+        else:
+            lines = []
+            for i, (x, y) in enumerate(self._waypoints, 1):
+                lines.append(f"  {i}. ({x:.2f}, {y:.2f})")
+            self._gui_waypoint_list.value = "\n".join(lines)
+
+    def _update_waypoint_markers(self) -> None:
+        """在场景中更新途径点标记和连线。"""
+        s = self._server.scene
+        # 清除旧的
+        self._clear_waypoint_markers()
+        if not self._waypoints:
+            return
+
+        # 创建父节点
+        self._handles["/map/waypoints"] = s.add_frame("/map/waypoints", show_axes=False)
+
+        # 绘制途径点标记
+        for i, (x, y) in enumerate(self._waypoints):
+            base = f"/map/waypoints/wp_{i}"
+            # 蓝色小球标记
+            s.add_icosphere(base, radius=0.08, position=(x, y, 0.08), color=(50, 150, 255))
+            # 序号标签
+            s.add_label(f"{base}/label", text=f"WP{i+1}", position=(x, y, 0.3))
+
+        # 绘制连线：途径点之间 + 最后一个途径点到最终目标
+        all_points = list(self._waypoints) + [(self._goal_x, self._goal_y)]
+        if len(all_points) >= 2:
+            pts = np.array(all_points, dtype=np.float32)
+            n_segments = len(pts) - 1
+            segments = np.zeros((n_segments, 2, 3), dtype=np.float32)
+            segments[:, 0, :2] = pts[:-1]
+            segments[:, 1, :2] = pts[1:]
+            segments[:, :, 2] = 0.05
+            colors = np.zeros((n_segments, 2, 3), dtype=np.uint8)
+            colors[:, :, :] = COLOR_BLUE
+            self._handles["/map/waypoints/lines"] = s.add_line_segments(
+                "/map/waypoints/lines",
+                points=segments,
+                colors=colors,
+                line_width=3.0,
+            )
+
+    def _clear_waypoint_markers(self) -> None:
+        """清除场景中的途径点标记。"""
+        self._remove_node("/map/waypoints")
+
     def _on_set_goal(self) -> None:
-        """设置目标点并发布。"""
+        """设置目标点并发布（支持途径点队列）。"""
         self._goal_x = float(self._gui_goal_x.value)
         self._goal_y = float(self._gui_goal_y.value)
         self._goal_theta = math.radians(float(self._gui_goal_theta.value))
 
-        goal_msg = {
-            "x": self._goal_x,
-            "y": self._goal_y,
-            "theta": self._goal_theta,
+        # 构建导航消息
+        goal_msg: dict = {
+            "timestamp": time.time(),
+        }
+        if self._waypoints:
+            goal_msg["waypoints"] = [
+                {"x": float(wx), "y": float(wy)} for wx, wy in self._waypoints
+            ]
+            goal_msg["final_goal"] = {
+                "x": self._goal_x,
+                "y": self._goal_y,
+                "theta": self._goal_theta,
+            }
+        else:
+            # 兼容旧格式：无途径点时直接发布单目标
+            goal_msg["x"] = self._goal_x
+            goal_msg["y"] = self._goal_y
+            goal_msg["theta"] = self._goal_theta
+
+        try:
+            self._goal_pub.send_json(goal_msg, flags=zmq.NOBLOCK)
+            if self._waypoints:
+                self._gui_nav_status.value = (
+                    f"导航任务已发布: {len(self._waypoints)} 个途径点 → "
+                    f"最终目标 ({self._goal_x:.2f}, {self._goal_y:.2f})"
+                )
+            else:
+                self._gui_nav_status.value = f"目标点已发布: ({self._goal_x:.2f}, {self._goal_y:.2f})"
+            logger.info(f"导航任务已发布: {goal_msg}")
+        except Exception as e:
+            self._gui_nav_status.value = f"发布失败: {e}"
+            logger.warning(f"发布导航任务失败: {e}")
+
+        self._update_goal_marker()
+        self._update_waypoint_markers()
+
+    def _on_stop_nav(self) -> None:
+        """停止导航：发布停止命令，并清空本地途径点和目标状态。"""
+        stop_msg = {
+            "cmd": "stop",
             "timestamp": time.time(),
         }
         try:
-            self._goal_pub.send_json(goal_msg, flags=zmq.NOBLOCK)
-            self._gui_nav_status.value = f"目标点已发布: ({self._goal_x:.2f}, {self._goal_y:.2f})"
-            logger.info(f"目标点已发布: {goal_msg}")
+            self._goal_pub.send_json(stop_msg, flags=zmq.NOBLOCK)
+            self._gui_nav_status.value = "🛑 停止导航命令已发送"
+            logger.info("停止导航命令已发布")
         except Exception as e:
-            self._gui_nav_status.value = f"发布失败: {e}"
-            logger.warning(f"发布目标点失败: {e}")
+            self._gui_nav_status.value = f"停止命令发送失败: {e}"
+            logger.warning(f"停止导航命令发送失败: {e}")
 
-        self._update_goal_marker()
+        # 清空本地途径点和状态
+        self._waypoints.clear()
+        self._update_waypoint_list_text()
+        self._clear_waypoint_markers()
 
     def _on_reset_odom(self) -> None:
         """发送里程计重置命令。"""
@@ -1374,11 +1575,13 @@ class ViserSLAMVisualizer:
         goal.wxyz = yaw_to_wxyz(self._goal_theta)
         # 更新标签
         self._update_goal_marker_from_state()
+        # 更新途径点连线（最终目标位置可能改变）
+        self._update_waypoint_markers()
         # 更新 GUI
         self._gui_goal_x.value = round(self._goal_x, 2)
         self._gui_goal_y.value = round(self._goal_y, 2)
         self._gui_goal_theta.value = round(math.degrees(self._goal_theta), 1)
-        self._gui_nav_status.value = "目标点已调整，点击 📍 设置目标点 发布"
+        self._gui_nav_status.value = "目标点已调整，点击 🚀 开始导航 发布"
 
     def _update_goal_marker_from_state(self) -> None:
         """仅更新场景标记（不重新创建 TransformControls）。"""
@@ -1417,6 +1620,8 @@ def main():
     parser.add_argument("--slam-cmd", default=None, help="SLAM 命令 REQ 地址 (默认 tcp://localhost:5568)")
     parser.add_argument("--global-path", default=None, help="全局路径 SUB 地址 (默认 tcp://localhost:5569)")
     parser.add_argument("--maps-dir", default=None, help="地图文件夹路径 (默认自动探测 software/maps)")
+    parser.add_argument("--urdf", default=None, help="机器人 URDF 文件路径 (默认使用简易圆柱造型)")
+    parser.add_argument("--lidar-offset", type=float, default=None, help="激光雷达坐标旋转偏移（度），LD06=180，标准极坐标=0")
     args = parser.parse_args()
 
     # 用命令行参数覆盖配置
@@ -1438,6 +1643,10 @@ def main():
         cfg.viser.global_path_sub_addr = args.global_path
     if args.maps_dir:
         cfg.viser.maps_dir = args.maps_dir
+    if args.urdf:
+        cfg.viser.urdf_path = args.urdf
+    if args.lidar_offset is not None:
+        cfg.viser.lidar_rotation_offset_deg = args.lidar_offset
 
     visualizer = ViserSLAMVisualizer(enable_vision=not args.no_vision)
     visualizer.start()

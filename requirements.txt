@@ -24,3 +24,8 @@ pupil-apriltags
 
 # Viser 3D 可视化 (SLAM RViz 替代)
 viser>=0.2.0
+
+# URDF 机器人模型渲染（可选）
+# 如需在 Viser 中显示真实机器人 URDF 模型，请安装:
+# pip install yourdfpy
+# yourdfpy

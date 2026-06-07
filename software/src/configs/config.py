@@ -4,7 +4,7 @@
 敏感配置（API密钥等）从 secrets 模块加载，不直接存储在此文件
 """
 import os
-from typing import Optional
+from typing import Optional, Tuple
 from dataclasses import dataclass, field, asdict
 
 import logging
@@ -13,6 +13,18 @@ import logging
 from configs.secrets import get_secrets, Secrets
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------------------
+# 项目路径宏（便于配置文件中写相对路径）
+# ------------------------------------------------------------------------------
+
+# config.py 位于 software/src/configs/，向上回溯三级到项目根目录
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+SOFTWARE_DIR = os.path.join(PROJECT_ROOT, "software")
+HARDWARE_DIR = os.path.join(PROJECT_ROOT, "hardware")
+DOCS_DIR = os.path.join(PROJECT_ROOT, "docs")
+MAPS_DIR = os.path.join(PROJECT_ROOT, "software", "maps")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "software", "models")
 
 
 @dataclass
@@ -274,23 +286,23 @@ class VisionConfig:
 class NavigationConfig:
     """导航配置（全局路径规划 + 局部避障）"""
     # 速度限制
-    max_linear_speed: float = 0.5        # 导航时最大线速度 (m/s)
+    max_linear_speed: float = 0.8        # 导航时最大线速度 (m/s)
     max_angular_speed: float = 0.8       # 导航时最大角速度 (rad/s)
     
     # 到达判断阈值
-    arrival_distance_threshold_m: float = 0.2    # 到达目标点的距离阈值（米）
-    arrival_angle_threshold_rad: float = 0.15    # 到达目标点的角度阈值（弧度）
+    arrival_distance_threshold_m: float = 0.1    # 到达目标点的距离阈值（米）
+    arrival_angle_threshold_rad: float = 0.1    # 到达目标点的角度阈值（弧度）
     
     # 避障配置
-    use_depth_obstacle: bool = True      # 是否启用基于深度视觉的避障
+    use_depth_obstacle: bool = False      # 是否启用基于深度视觉的避障
     emergency_obstacle_distance_m: float = 0.3   # 紧急避障距离（米）
     safety_distance_m: float = 0.5       # VFH 安全距离（米）
     
     # 规划配置
     max_replan_attempts: int = 5         # 全局路径规划最大重试次数
     replan_interval_s: float = 3.0       # 重规划间隔（秒）
-    lookahead_distance_m: float = 0.4    # 路径跟踪前瞻距离（米）
-    max_path_deviation_m: float = 0.5    # 允许偏离全局路径的最大距离（米）
+    lookahead_distance_m: float = 0.5    # 路径跟踪前瞻距离（米）
+    max_path_deviation_m: float = 1.0    # 允许偏离全局路径的最大距离（米）
     inflation_radius_m: float = 0.2      # 障碍物膨胀半径（米）
     robot_radius_m: float = 0.25         # 机器人半径（米）
     
@@ -299,6 +311,12 @@ class NavigationConfig:
     
     # 控制频率
     control_rate_hz: float = 10.0        # 导航控制循环频率（Hz）
+    
+    # 角速度变化率限制
+    max_angular_accel_rad: float = 2.0   # 最大角加速度（rad/s²），用于平滑转向突变
+    
+    # 速度低通滤波器
+    velocity_filter_alpha: float = 0.4   # 一阶低通滤波系数（0~1），越小越平滑
 
 
 @dataclass
@@ -351,6 +369,12 @@ class ViserConfig:
     slam_cmd_addr: str = "tcp://localhost:5568"  # SLAM 命令 REQ 地址
     global_path_sub_addr: str = "tcp://localhost:5569"  # 全局路径 SUB 地址
     maps_dir: str = ""  # 地图文件夹路径（空则自动探测 software/maps）
+    urdf_path: str = os.path.join(HARDWARE_DIR, "structure", "URDF", "双轮差动小推车", "双轮差动小推车.urdf")  # 机器人 URDF 文件路径（空则使用简易圆柱造型）
+    urdf_color_override: Optional[Tuple[float, float, float]] = None  # URDF 模型颜色覆盖 (R, G, B)，None 则使用 URDF 自带颜色
+    # 激光雷达坐标适配（度）
+    # 不同雷达的 0° 零位方向不同：LD06 0°=后方(180°)，标准极坐标 0°=前方(0°)
+    lidar_rotation_offset_deg: float = 180.0
+    
     # 可视化参数
     max_trajectory_points: int = 5000   # 最大轨迹点数
     point_size: float = 0.03            # 激光点大小

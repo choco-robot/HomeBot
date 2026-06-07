@@ -160,18 +160,81 @@ class AStarPlanner:
         self,
         path: List[Tuple[float, float]],
     ) -> List[Tuple[float, float]]:
-        """用视线法简化路径：若当前点与下下一点连线无障碍，则跳过下一点。"""
+        """滑动窗口路径简化（O(N * W²) ≈ O(N)）。
+
+        策略：以当前点为起点，在窗口 [i+1, i+W] 内寻找最远的、
+        视线无障碍且近似直线的点作为下一段起点。
+
+        效果：
+        - 长直线段：每 W 步保留一个点，快速简化
+        - 转弯段：窗口内找不到直线点，小步前进，保留拐角细节
+        """
+        return self._sliding_window_simplify(path, window_size=20)
+
+    def _sliding_window_simplify(
+        self,
+        path: List[Tuple[float, float]],
+        window_size: int = 20,
+    ) -> List[Tuple[float, float]]:
+        """滑动窗口简化（O(N * W²) ≈ O(N)）。
+
+        策略：以当前点为起点，在窗口 [i+1, i+W] 内寻找最远的、
+        视线无障碍且近似直线的点作为下一段起点。
+
+        效果：
+        - 长直线段：每 W 步保留一个点，快速粗化
+        - 转弯段：窗口内找不到直线点，小步前进，保留细节
+        """
+        if len(path) <= 2:
+            return path
+
         simplified = [path[0]]
         i = 0
+        max_deviation_threshold = 0.15
+
         while i < len(path) - 1:
-            j = len(path) - 1
+            # 窗口右边界
+            j = min(i + window_size, len(path) - 1)
+
+            # 从窗口最远处往回找
             while j > i + 1:
                 if self._has_line_of_sight(path[i], path[j]):
-                    break
+                    if self._is_straight_segment(path, i, j, max_deviation_threshold):
+                        break
                 j -= 1
+
             simplified.append(path[j])
             i = j
+
         return simplified
+
+    def _is_straight_segment(
+        self,
+        path: List[Tuple[float, float]],
+        start: int,
+        end: int,
+        threshold: float,
+    ) -> bool:
+        """检查 path[start:end] 是否是近似直线（所有中间点偏离连线不超过阈值）。"""
+        if end - start <= 2:
+            return True
+
+        x0, y0 = path[start]
+        x1, y1 = path[end]
+        dx = x1 - x0
+        dy = y1 - y0
+        line_len = math.hypot(dx, dy)
+
+        if line_len < 1e-6:
+            return True
+
+        for k in range(start + 1, end):
+            x, y = path[k]
+            dev = abs(dy * (x - x0) - dx * (y - y0)) / line_len
+            if dev > threshold:
+                return False
+
+        return True
 
     def _has_line_of_sight(
         self,
