@@ -235,6 +235,7 @@ class ViserSLAMVisualizer:
             self._vision_sub = None
         self._map_sub = SLAMMapSubscriber(self._slam_map_addr)
         self._path_sub = ZMQJsonSubscriber(self._global_path_sub_addr, required_keys=("path",))
+        self._nav_status_sub = ZMQJsonSubscriber(cfg.nav_status_sub_addr, required_keys=("state",))
 
         # ZeroMQ 发布者/请求者（导航控制）
         self._goal_pub = create_socket(zmq.PUB, bind=True, address=self._goal_pub_addr)
@@ -510,7 +511,7 @@ class ViserSLAMVisualizer:
         self._gui_follow_robot.value = False
         for client in self._server.get_clients().values():
             client.camera.wxyz = (0.0, 0.0, 0.0, 1.0)  # 俯视角
-            client.camera.position = (0.0, 0.0, 15.0)
+            client.camera.position = (0.0, 0.0, 7.5)
             client.camera.look_at = (0.0, 0.0, 0.0)
 
     def _reset_view(self) -> None:
@@ -638,6 +639,7 @@ class ViserSLAMVisualizer:
             self._vision_sub.close()
         self._map_sub.close()
         self._path_sub.close()
+        self._nav_status_sub.close()
         if self._goal_pub:
             self._goal_pub.close()
         if self._odom_cmd:
@@ -1281,7 +1283,13 @@ class ViserSLAMVisualizer:
         self._gui_status_y.value = round(slam_pose.get("y", 0.0), 3)
         theta_deg = math.degrees(slam_pose.get("theta", 0.0))
         self._gui_status_theta.value = round(theta_deg, 2)
-        self._gui_status_state.value = slam_pose.get("state", "UNKNOWN")
+
+        # 优先显示导航状态，没有则回退到 SLAM 定位状态
+        nav_status = self._nav_status_sub.read()
+        if nav_status is not None:
+            self._gui_status_state.value = nav_status.get("state", "UNKNOWN")
+        else:
+            self._gui_status_state.value = slam_pose.get("state", "UNKNOWN")
 
         if odom:
             self._gui_status_vx.value = round(odom.get("vx", 0.0), 3)
@@ -1523,7 +1531,7 @@ class ViserSLAMVisualizer:
                 rotation_limits=((0, 0), (0, 0), (-1000, 1000)),  # 只允许绕 Z 轴旋转
                 depth_test=False,                                 # 始终可见
             )
-            tc.on_update(lambda _: self._on_goal_drag_update())
+            tc.on_update(lambda e: self._on_goal_drag_update(e))
             tc.on_drag_end(lambda _: self._on_goal_drag_end())
             self._handles[name_tc] = tc
 
@@ -1536,8 +1544,10 @@ class ViserSLAMVisualizer:
         qw, qx, qy, qz = wxyz / norm
         return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
-    def _on_goal_drag_update(self) -> None:
-        """拖拽目标点时实时更新内部状态和 GUI 数值（不移动场景节点）。"""
+    def _on_goal_drag_update(self, event) -> None:
+        """拖拽目标点时实时更新内部状态和 GUI 数值（仅在 update 阶段记录）。"""
+        if event.phase != "update":
+            return
         tc = self._handles.get("/map/goal/_tc")
         goal = self._handles.get("/map/goal")
         if tc is None or goal is None:

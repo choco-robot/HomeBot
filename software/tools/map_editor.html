@@ -1801,7 +1801,9 @@
         
         function saveMap() {
             // 生成文件名前缀（使用时间戳）
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const now = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
             const prefix = `map_${timestamp}`;
             
             // 1. 生成 SLAM 格式地图（灰度图 + 膨胀渐变）
@@ -2113,6 +2115,9 @@
         
         // ==================== 辅助函数 ====================
         function updateMapInfo() {
+            const oldOriginX = mapInfo.origin[0];
+            const oldOriginY = mapInfo.origin[1];
+
             mapInfo.width = parseFloat(document.getElementById('mapWidth').value);
             mapInfo.height = parseFloat(document.getElementById('mapHeight').value);
             mapInfo.resolution = parseFloat(document.getElementById('mapResolution').value);
@@ -2120,6 +2125,34 @@
             mapInfo.origin[1] = parseFloat(document.getElementById('mapOriginY').value);
             mapInfo.inflationRadius = parseFloat(document.getElementById('inflationRadius').value);
             mapInfo.borderObstacleWidth = parseFloat(document.getElementById('borderObstacleWidth').value);
+
+            const dx = mapInfo.origin[0] - oldOriginX;
+            const dy = mapInfo.origin[1] - oldOriginY;
+
+            // 原点改变时，平移所有障碍物和标记点，保持相对位置
+            if (dx !== 0 || dy !== 0) {
+                obstacles.forEach(obs => {
+                    if (obs.type === 'rectangle' || obs.type === 'circle') {
+                        obs.x += dx;
+                        obs.y += dy;
+                    } else if (obs.type === 'line') {
+                        obs.x1 += dx;
+                        obs.y1 += dy;
+                        obs.x2 += dx;
+                        obs.y2 += dy;
+                    } else if (obs.type === 'polygon') {
+                        obs.points.forEach(p => {
+                            p.x += dx;
+                            p.y += dy;
+                        });
+                    }
+                });
+                markers.forEach(m => {
+                    m.x += dx;
+                    m.y += dy;
+                });
+            }
+
             render();
         }
         

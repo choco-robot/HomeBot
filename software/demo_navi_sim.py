@@ -52,7 +52,7 @@ print("=" * 70)
 # 外部地图配置（JSON 格式，支持 PNG 引用或障碍物列表重建）
 # 示例：EXTERNAL_MAP_JSON = "maps/my_map.json"
 # 如果设为 None 或文件不存在，则回退到内置地图
-EXTERNAL_MAP_JSON = 'maps\map_2026-06-07T13-33-58.json'  # type: Optional[str]
+EXTERNAL_MAP_JSON = 'maps\map_2026-06-07T14-32-45.json'  # type: Optional[str]
 
 # 地图类型：'maze', 'simple_room', 'cluttered'
 # 仅在没有配置外部地图时生效
@@ -240,6 +240,7 @@ LIDAR_SCAN_PUB_ADDR = "tcp://*:5565"
 SLAM_POSE_PUB_ADDR = "tcp://*:5563"
 SLAM_MAP_PUB_ADDR = "tcp://*:5564"
 GLOBAL_PATH_PUB_ADDR = "tcp://*:5569"
+NAV_STATUS_PUB_ADDR = "tcp://*:5570"
 GOAL_SUB_ADDR = "tcp://localhost:5566"
 ODOM_CMD_REP_ADDR = "tcp://*:5567"
 SLAM_CMD_REP_ADDR = "tcp://*:5568"
@@ -250,6 +251,7 @@ lidar_scan_pub = create_socket(zmq.PUB, bind=True, address=LIDAR_SCAN_PUB_ADDR)
 slam_pose_pub = create_socket(zmq.PUB, bind=True, address=SLAM_POSE_PUB_ADDR)
 slam_map_pub = create_socket(zmq.PUB, bind=True, address=SLAM_MAP_PUB_ADDR)
 global_path_pub = create_socket(zmq.PUB, bind=True, address=GLOBAL_PATH_PUB_ADDR)
+nav_status_pub = create_socket(zmq.PUB, bind=True, address=NAV_STATUS_PUB_ADDR)
 
 # SUB socket: 接收 Viser 下发的导航目标
 goal_sub = create_socket(zmq.SUB, bind=False, address=GOAL_SUB_ADDR)
@@ -300,7 +302,7 @@ def _publish_lidar_scan(scan: np.ndarray, angles: np.ndarray) -> None:
         pass
 
 
-def _publish_slam_pose(pose: Tuple[float, float, float]) -> None:
+def _publish_slam_pose(pose: Tuple[float, float, float], state: str = "tracking") -> None:
     """发布 SLAM 位姿（仿真中直接使用真实位姿）"""
     x, y, theta = pose
     msg = {
@@ -312,7 +314,7 @@ def _publish_slam_pose(pose: Tuple[float, float, float]) -> None:
             [0.0, 0.01, 0.0],
             [0.0, 0.0, 0.001],
         ],
-        "state": "tracking",
+        "state": state,
         "timestamp": time.time(),
     }
     try:
@@ -386,8 +388,10 @@ def _handle_goal_msg(goal_msg: dict) -> None:
         waypoints = goal_msg["waypoints"]
         final = goal_msg["final_goal"]
         print(f"   [ZMQ] 收到途径点导航任务: {len(waypoints)} 个途径点 -> 最终目标 ({final['x']:.2f}, {final['y']:.2f})")
-        # 目前 coordinator 不支持途径点队列，直接导航到最终目标
-        # （如需完整支持，可后续扩展 coordinator）
+        # 依次将途径点加入 coordinator 队列
+        for wp in waypoints:
+            coordinator.navigate_to_async(x=wp["x"], y=wp["y"], timeout=MAX_DURATION)
+        # 最后加入最终目标
         _current_goal_id = coordinator.navigate_to_async(x=final["x"], y=final["y"], yaw=final.get("theta"), timeout=MAX_DURATION)
         return
 
@@ -600,8 +604,25 @@ try:
 
         # 3. 发布 SLAM 位姿（仿真中直接使用真实位姿）
         true_pose = sim.get_robot_pose()
+        nav_state = state.value if state else "tracking"
         if true_pose:
-            _publish_slam_pose(true_pose)
+            _publish_slam_pose(true_pose, state=nav_state)
+
+        # 3.5 发布导航状态（供 Viser 订阅）
+        if feedback:
+            try:
+                nav_status_pub.send_json(
+                    {
+                        "state": nav_state,
+                        "distance_to_goal": float(feedback.distance_to_goal),
+                        "progress": float(feedback.progress),
+                        "goal_id": _current_goal_id or "",
+                        "timestamp": time.time(),
+                    },
+                    flags=zmq.NOBLOCK,
+                )
+            except zmq.Again:
+                pass
 
         # 4. 低频发布栅格地图
         grid = sim.get_map()
@@ -784,7 +805,7 @@ print("\n9. 清理...")
 
 # 关闭 ZeroMQ socket
 for sock in (odom_pub, lidar_scan_pub, slam_pose_pub, slam_map_pub, global_path_pub,
-             goal_sub, odom_cmd_rep, slam_cmd_rep):
+             nav_status_pub, goal_sub, odom_cmd_rep, slam_cmd_rep):
     try:
         sock.close()
     except Exception:
