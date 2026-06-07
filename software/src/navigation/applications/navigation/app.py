@@ -50,6 +50,7 @@ DEFAULT_OBSTACLE_ADDR = "tcp://localhost:5562"
 DEFAULT_CHASSIS_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_PATH_PUB_ADDR = "tcp://*:5569"
 DEFAULT_GOAL_SUB_ADDR = "tcp://localhost:5566"
+DEFAULT_NAV_STATUS_ADDR = "tcp://*:5570"
 
 
 # ------------------------------------------------------------------------------
@@ -187,6 +188,7 @@ class NavigationApp:
         chassis_addr: str = DEFAULT_CHASSIS_ADDR,
         path_pub_addr: str = DEFAULT_PATH_PUB_ADDR,
         goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
+        nav_status_pub_addr: str = DEFAULT_NAV_STATUS_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
         arrival_threshold_m: Optional[float] = None,
         lookahead_distance_m: Optional[float] = None,
@@ -231,6 +233,10 @@ class NavigationApp:
         # 全局路径发布者（供可视化端订阅）
         self._path_pub = create_socket(zmq.PUB, bind=True, address=path_pub_addr)
         logger.info(f"全局路径 PUB: {path_pub_addr}")
+
+        # 导航状态发布者（供可视化端订阅）
+        self._nav_status_pub = create_socket(zmq.PUB, bind=True, address=nav_status_pub_addr)
+        logger.info(f"导航状态 PUB: {nav_status_pub_addr}")
 
         # 导航协调器
         self._coordinator = NavigationCoordinator(
@@ -479,6 +485,21 @@ class NavigationApp:
                 dist = feedback.distance_to_goal
                 progress = feedback.progress
 
+                # 发布导航状态供可视化端订阅
+                try:
+                    self._nav_status_pub.send_json(
+                        {
+                            "state": state.value,
+                            "distance_to_goal": float(dist),
+                            "progress": float(progress),
+                            "goal_id": self._current_goal_id,
+                            "timestamp": time.time(),
+                        },
+                        flags=zmq.NOBLOCK,
+                    )
+                except zmq.Again:
+                    pass
+
                 logger.info(
                     f"状态: {state.value} | 距离: {dist:.2f}m | 进度: {progress:.0%}"
                 )
@@ -515,6 +536,7 @@ class NavigationApp:
             self._obstacle_sub.close()
         self._goal_sub.close()
         self._path_pub.close()
+        self._nav_status_pub.close()
         self._chassis.close()
         logger.info("NavigationApp 已停止")
 
@@ -597,6 +619,9 @@ def main():
     parser.add_argument(
         "--goal-sub", default=DEFAULT_GOAL_SUB_ADDR, help="目标点 SUB 地址（Viser 发布端）"
     )
+    parser.add_argument(
+        "--nav-status-pub", default=DEFAULT_NAV_STATUS_ADDR, help="导航状态 PUB 地址"
+    )
     args = parser.parse_args()
 
     app = NavigationApp(
@@ -608,6 +633,7 @@ def main():
         chassis_addr=args.chassis,
         path_pub_addr=args.path_pub,
         goal_sub_addr=args.goal_sub,
+        nav_status_pub_addr=args.nav_status_pub,
         control_rate=args.rate,
         arrival_threshold_m=args.threshold,
         inflation_radius_m=args.inflation,

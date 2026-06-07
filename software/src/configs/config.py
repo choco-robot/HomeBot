@@ -403,6 +403,7 @@ class ViserConfig:
     odom_cmd_addr: str = "tcp://localhost:5567"  # 里程计命令 REQ 地址
     slam_cmd_addr: str = "tcp://localhost:5568"  # SLAM 命令 REQ 地址
     global_path_sub_addr: str = "tcp://localhost:5569"  # 全局路径 SUB 地址
+    nav_status_sub_addr: str = "tcp://localhost:5570"  # 导航状态 SUB 地址
     maps_dir: str = ""  # 地图文件夹路径（空则自动探测 software/maps）
     urdf_path: str = os.path.join(HARDWARE_DIR, "structure", "URDF", "双轮差动小推车", "双轮差动小推车.urdf")  # 机器人 URDF 文件路径（空则使用简易圆柱造型）
     urdf_color_override: Optional[Tuple[float, float, float]] = None  # URDF 模型颜色覆盖 (R, G, B)，None 则使用 URDF 自带颜色
