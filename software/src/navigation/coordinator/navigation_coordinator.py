@@ -32,7 +32,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from queue import PriorityQueue
 
 import numpy as np
@@ -123,20 +123,7 @@ class NavigationCoordinator:
     """
 
     def __init__(self, config: Optional[dict] = None):
-        """初始化导航协调器
-
-        Args:
-            config: 配置字典，包含以下参数：
-                - replan_distance_threshold: 偏离路径阈值（米），默认 0.5
-                - goal_reached_distance: 到达目标距离阈值（米），默认 0.1
-                - goal_reached_angle: 到达目标角度阈值（弧度），默认 0.1
-                - max_replan_attempts: 最大重规划次数，默认 3
-                - obstacle_check_frequency: 障碍物检测频率（Hz），默认 10.0
-                - control_frequency: 控制循环频率（Hz），默认 10.0
-                - obstacle_emergency_distance: 紧急停止距离（米），默认 0.3
-                - inflation_radius: 障碍物膨胀半径（米），默认 0.25
-                - robot_radius: 机器人半径（米），默认 0.2
-        """
+        """初始化导航协调器"""
         config = config or {}
 
         # 配置参数
@@ -144,35 +131,49 @@ class NavigationCoordinator:
         self.goal_reached_distance = config.get("goal_reached_distance", 0.1)
         self.goal_reached_angle = config.get("goal_reached_angle", 0.1)
         self.max_replan_attempts = config.get("max_replan_attempts", 3)
-        self.obstacle_check_frequency = config.get("obstacle_check_frequency", 10.0)
         self.control_frequency = config.get("control_frequency", 10.0)
         self.obstacle_emergency_distance = config.get(
             "obstacle_emergency_distance", 0.3
         )
         self.inflation_radius = config.get("inflation_radius", 0.25)
         self.robot_radius = config.get("robot_radius", 0.2)
+        self.lookahead_distance = config.get("lookahead_distance", 0.4)
+        self._max_angular_accel = config.get("max_angular_accel_rad", 2.0)
+        self._velocity_filter_alpha = config.get("velocity_filter_alpha", 0.2)
+
+        # 缓存导航配置（避免控制循环中反复读取）
+        nav = _nav_cfg()
+        self._max_linear_speed = nav.max_linear_speed
+        self._max_angular_speed = nav.max_angular_speed
+        logger.info(f"max_linear_speed: {self._max_linear_speed:.2f} m/s, max_angular_speed: {self._max_angular_speed:.2f} rad/s, max_angular_accel: {self._max_angular_accel:.2f} rad/s², velocity_filter_alpha: {self._velocity_filter_alpha:.2f}")
+
+        # 速度低通滤波器状态（一阶 IIR）
+        self._filtered_linear_vel = 0.0
+        self._filtered_angular_vel = 0.0
+
+        # 角速度变化率限制（用于平滑转向突变）
+        self._last_angular_vel = 0.0
 
         # 状态
         self.state = NavigationState.IDLE
         self.current_goal: Optional[NavigationGoal] = None
         self.global_path: Optional[List[Tuple[float, float]]] = None
         self.current_path_index = 0
+        self._current_local_goal: Optional[Tuple[float, float]] = None
 
         # 目标队列
         self.goal_queue: PriorityQueue[NavigationGoal] = PriorityQueue()
-        self.goals: Dict[str, NavigationGoal] = {}  # goal_id -> Goal
+        self.goals: Dict[str, NavigationGoal] = {}
         self._goals_lock = threading.Lock()
 
-        # 外部接口（需要通过 setter 注入）
-        self._pose_provider: Optional[Callable[[], Tuple[float, float, float]]] = None
-        self._obstacle_provider: Optional[Callable[[], List]] = None
-        self._velocity_sender: Optional[Callable[[float, float], bool]] = None
-        self._map_provider: Optional[Callable[[], OccupancyGrid]] = None
+        # 外部接口（需通过 setter 注入）
+        self._pose_provider: Optional[Callable] = None
+        self._obstacle_provider: Optional[Callable] = None
+        self._velocity_sender: Optional[Callable] = None
+        self._map_provider: Optional[Callable] = None
 
-        # 规划器（延迟导入，避免循环依赖）
+        # 规划器（延迟加载）
         self._global_planner = None
-        self._local_planner = None
-        self._costmap_generator = None
 
         # 运行控制
         self._running = False
@@ -189,41 +190,21 @@ class NavigationCoordinator:
     # 外部接口注入
     # --------------------------------------------------------------------------
 
-    def set_pose_provider(self, provider: Callable[[], Tuple[float, float, float]]):
-        """设置位姿提供者
-
-        Args:
-            provider: 返回当前机器人位姿 的函数
-        """
+    def set_pose_provider(self, provider: Callable):
+        """设置位姿提供者"""
         self._pose_provider = provider
-        logger.debug("位姿提供者已设置")
 
-    def set_obstacle_provider(self, provider: Callable[[], List]):
-        """设置障碍物提供者
-
-        Args:
-            provider: 返回障碍物列表的函数
-        """
+    def set_obstacle_provider(self, provider: Callable):
+        """设置障碍物提供者"""
         self._obstacle_provider = provider
-        logger.debug("障碍物提供者已设置")
 
-    def set_velocity_sender(self, sender: Callable[[float, float], bool]):
-        """设置速度发送器
-
-        Args:
-            sender: 发送线速度和角速度的函数 返回是否成功
-        """
+    def set_velocity_sender(self, sender: Callable):
+        """设置速度发送器"""
         self._velocity_sender = sender
-        logger.debug("速度发送器已设置")
 
-    def set_map_provider(self, provider: Callable[[], OccupancyGrid]):
-        """设置地图提供者
-
-        Args:
-            provider: 返回全局地图 的函数
-        """
+    def set_map_provider(self, provider: Callable):
+        """设置地图提供者"""
         self._map_provider = provider
-        logger.debug("地图提供者已设置")
 
     # --------------------------------------------------------------------------
     # 目标管理
@@ -322,9 +303,8 @@ class NavigationCoordinator:
 
     def cancel_all_goals(self):
         """取消所有目标"""
-        with self._goals_lock:
-            for goal_id in list(self.goals.keys()):
-                self.cancel_goal(goal_id)
+        for goal_id in list(self.goals.keys()):
+            self.cancel_goal(goal_id)
 
     def get_feedback(self, goal_id: str) -> Optional[NavigationFeedback]:
         """获取导航反馈
@@ -358,13 +338,12 @@ class NavigationCoordinator:
         dy = goal.target_pose[1] - current_pose[1]
         distance = math.sqrt(dx * dx + dy * dy)
 
-        # 计算进度
+        # 计算进度（按路径长度估算）
         progress = 0.0
         if self.global_path:
             total_distance = self._calculate_path_length(self.global_path)
-            remaining_distance = distance
             if total_distance > 0:
-                progress = max(0, min(1, 1 - remaining_distance / total_distance))
+                progress = max(0, min(1, 1 - distance / total_distance))
 
         time_elapsed = (
             time.time() - goal.timestamp if goal.status == GoalStatus.ACTIVE else 0
@@ -511,8 +490,13 @@ class NavigationCoordinator:
             self._fail_current_goal("全局规划失败，无法找到路径")
             return
 
-        # 平滑路径
-        path = self._smooth_path(path)
+        # 视线法简化：检查两点之间是否可直线通行，拉直折线
+        if len(path) > 2:
+            path = self._global_planner._simplify_path(path)
+            logger.info(f"视线法简化后路径点数量: {len(path)}")
+
+        # 路径处理：视线法简化后不再做额外平滑
+        # 保留原始折线路径，避免插值导致穿障碍物或过度切弯
 
         self.global_path = path
         self.current_path_index = 0
@@ -547,28 +531,41 @@ class NavigationCoordinator:
             self.state = NavigationState.OBSTACLE_AVOIDING
             return
 
-        # 更新局部代价地图（如果规划器需要）
-        if self._costmap_generator is None:
-            try:
-                from navigation.planning.costmap_generator import LocalCostmapGenerator
+        # 最终朝向调整：位置已到达但角度未满足时，原地旋转到目标朝向
+        target_yaw = self.current_goal.target_pose[2]
+        if target_yaw is not None:
+            dx = self.current_goal.target_pose[0] - current_pose[0]
+            dy = self.current_goal.target_pose[1] - current_pose[1]
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance <= self.goal_reached_distance:
+                yaw_error = self._normalize_angle(target_yaw - current_pose[2])
+                angular_vel = 1.5 * yaw_error
+                angular_vel = float(np.clip(angular_vel, -self._max_angular_speed, self._max_angular_speed))
+                self._send_velocity(0.0, angular_vel)
+                return
 
-                self._costmap_generator = LocalCostmapGenerator()
-            except ImportError:
-                pass
+        # 计算当前到最终目标的直线距离（用于终点减速）
+        dx_goal = self.current_goal.target_pose[0] - current_pose[0]
+        dy_goal = self.current_goal.target_pose[1] - current_pose[1]
+        distance_to_goal = math.sqrt(dx_goal * dx_goal + dy_goal * dy_goal)
 
-        # 获取局部目标点
+        # 获取局部目标点并计算速度指令
         local_goal = self._get_local_goal(current_pose)
-        
-
-        # 计算速度指令
+        self._current_local_goal = local_goal
         linear_vel, angular_vel = self._compute_velocity(
             current_pose=current_pose,
             local_goal=local_goal,
             obstacles=obstacles,
+            distance_to_goal=distance_to_goal,
         )
 
+        # 一阶低通滤波器：平滑输出速度
+        a = self._velocity_filter_alpha
+        self._filtered_linear_vel = a * linear_vel + (1.0 - a) * self._filtered_linear_vel
+        self._filtered_angular_vel = a * angular_vel + (1.0 - a) * self._filtered_angular_vel
+
         # 发送速度指令
-        if not self._send_velocity(linear_vel, angular_vel):
+        if not self._send_velocity(self._filtered_linear_vel, self._filtered_angular_vel):
             logger.warning("速度指令发送失败")
 
         # 检查是否需要重规划
@@ -675,49 +672,60 @@ class NavigationCoordinator:
 
         return True
 
+    @staticmethod
+    def _extract_obstacle_distance(obs: Any) -> Optional[float]:
+        """从各种障碍物格式中提取距离值。"""
+        if hasattr(obs, "z"):
+            return float(obs.z)
+        if isinstance(obs, (tuple, list)) and len(obs) >= 3:
+            return float(obs[2])
+        if isinstance(obs, dict) and "distance" in obs:
+            return float(obs["distance"])
+        return None
+
     def _has_emergency_obstacle(self, obstacles: List) -> bool:
-        """检查是否有紧急障碍物
-
-        Args:
-            obstacles: 障碍物列表，每个障碍物应有 z 属性（距离）
-
-        Returns:
-            是否有紧急障碍物
-        """
+        """检查是否有紧急障碍物"""
         for obs in obstacles:
-            # 支持不同的障碍物格式
-            if hasattr(obs, "z"):
-                # DepthObstacle 类型
-                if obs.z < self.obstacle_emergency_distance:
-                    return True
-            elif isinstance(obs, (tuple, list)) and len(obs) >= 3:
-                # (x, y, distance) 格式
-                if obs[2] < self.obstacle_emergency_distance:
-                    return True
-            elif isinstance(obs, dict) and "distance" in obs:
-                # 字典格式
-                if obs["distance"] < self.obstacle_emergency_distance:
-                    return True
-
+            dist = self._extract_obstacle_distance(obs)
+            if dist is not None and dist < self.obstacle_emergency_distance:
+                return True
         return False
 
+    @staticmethod
+    def _point_to_segment_distance(
+        px: float, py: float, x1: float, y1: float, x2: float, y2: float
+    ) -> float:
+        """计算点 (px, py) 到线段 (x1,y1)-(x2,y2) 的最短距离。"""
+        dx = x2 - x1
+        dy = y2 - y1
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq < 1e-12:
+            return math.hypot(px - x1, py - y1)
+        t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / seg_len_sq))
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        return math.hypot(px - proj_x, py - proj_y)
+
     def _needs_replanning(self, current_pose: Tuple[float, float, float]) -> bool:
-        """检查是否需要重规划"""
+        """检查是否需要重规划
+
+        计算当前位姿到全局路径各线段的垂直距离，取最小值与阈值比较。
+        """
         if not self.global_path or self.current_path_index >= len(self.global_path):
             return False
 
-        # 计算到全局路径的距离
         min_distance = float("inf")
 
-        # 只检查当前位置附近的路径点
+        # 只检查当前位置附近的路径线段
         start_idx = max(0, self.current_path_index - 5)
         end_idx = min(len(self.global_path), self.current_path_index + 20)
 
-        for i in range(start_idx, end_idx):
-            point = self.global_path[i]
-            dx = point[0] - current_pose[0]
-            dy = point[1] - current_pose[1]
-            distance = math.sqrt(dx * dx + dy * dy)
+        for i in range(start_idx, end_idx - 1):
+            x1, y1 = self.global_path[i]
+            x2, y2 = self.global_path[i + 1]
+            distance = self._point_to_segment_distance(
+                current_pose[0], current_pose[1], x1, y1, x2, y2
+            )
             min_distance = min(min_distance, distance)
 
         return min_distance > self.replan_distance_threshold
@@ -732,8 +740,6 @@ class NavigationCoordinator:
         if not self.global_path:
             return current_pose[:2]
 
-        lookahead_distance = 0.1  # 向前看 0.5 米
-
         # 从当前路径索引开始查找
         for i in range(self.current_path_index, len(self.global_path)):
             point = self.global_path[i]
@@ -741,7 +747,7 @@ class NavigationCoordinator:
             dy = point[1] - current_pose[1]
             distance = math.sqrt(dx * dx + dy * dy)
 
-            if distance >= lookahead_distance:
+            if distance >= self.lookahead_distance:
                 self.current_path_index = i
                 return point
 
@@ -753,13 +759,14 @@ class NavigationCoordinator:
         current_pose: Tuple[float, float, float],
         local_goal: Tuple[float, float],
         obstacles: List,
+        distance_to_goal: float = float("inf"),
     ) -> Tuple[float, float]:
         """计算速度指令
 
-        使用简单的纯追踪控制器：
+        纯追踪控制器 + 终点距离减速：
         - 计算到局部目标的方向
         - 调整角速度朝向目标
-        - 根据障碍物距离调整线速度
+        - 根据障碍物距离和终点距离调整线速度
 
         Returns:
             (linear_vel, angular_vel)
@@ -773,118 +780,51 @@ class NavigationCoordinator:
         # 计算角度误差
         angle_error = self._normalize_angle(target_angle - current_pose[2])
 
-        # 角速度：简单的 P 控制器
-        nav = _nav_cfg()
-        angular_vel = 1.5 * angle_error  # Kp = 1.5 (降低增益，使转向更平滑)
-        angular_vel = np.clip(angular_vel, -nav.max_angular_speed, nav.max_angular_speed)  # 限制角速度
+        # 角速度 P 控制器
+        angular_vel = 1.5 * angle_error
+        angular_vel = float(np.clip(angular_vel, -self._max_angular_speed, self._max_angular_speed))
 
-        # 线速度：根据角度误差和障碍物距离调整
-        if abs(angle_error) > math.pi / 3:  # 60度（放宽阈值）
-            # 角度误差太大，原地旋转
+        # 角速度变化率限制（slew rate limit）
+        dt = 1.0 / self.control_frequency
+        max_delta = self._max_angular_accel * dt
+        angular_vel = float(np.clip(angular_vel, self._last_angular_vel - max_delta, self._last_angular_vel + max_delta))
+        self._last_angular_vel = angular_vel
+
+        # 线速度：角度误差大时原地旋转，否则根据误差、障碍物和终点距离降速
+        if abs(angle_error) > math.pi / 3:
             linear_vel = 0.0
         else:
-            # 根据角度误差和障碍物距离调整速度
-            max_linear = nav.max_linear_speed  # 从全局配置读取最大线速度
-
-            # 角度因子：角度误差越小，速度越快
             angle_factor = 1.0 - abs(angle_error) / (math.pi / 3)
 
-            # 障碍物因子：障碍物越近，速度越慢
+            # 障碍物因子
             obstacle_factor = 1.0
             min_obstacle_dist = self._get_min_obstacle_distance(obstacles)
-            if min_obstacle_dist < 1.5:  # 提高到1.5m
-                obstacle_factor = min_obstacle_dist / 1.5
+            if min_obstacle_dist < 1.0:
+                obstacle_factor = min_obstacle_dist / 1.0
 
-            linear_vel = max_linear * angle_factor * obstacle_factor
-            linear_vel = max(0.0, linear_vel)  # 不后退
+            # 终点距离减速因子：进入减速区后按距离比例降速
+            distance_factor = 1.0
+            decel_zone = self.goal_reached_distance * 5
+            if distance_to_goal < decel_zone:
+                distance_factor = max(0.15, distance_to_goal / decel_zone)
+
+            linear_vel = self._max_linear_speed * angle_factor * obstacle_factor * distance_factor
+            linear_vel = max(0.0, linear_vel)
 
         return linear_vel, angular_vel
 
     def _get_min_obstacle_distance(self, obstacles: List) -> float:
         """获取最近障碍物距离"""
         min_dist = float("inf")
-
         for obs in obstacles:
-            if hasattr(obs, "z"):
-                dist = obs.z
-            elif isinstance(obs, (tuple, list)) and len(obs) >= 3:
-                dist = obs[2]
-            elif isinstance(obs, dict) and "distance" in obs:
-                dist = obs["distance"]
-            else:
-                continue
-
-            min_dist = min(min_dist, dist)
-
+            dist = self._extract_obstacle_distance(obs)
+            if dist is not None:
+                min_dist = min(min_dist, dist)
         return min_dist if min_dist != float("inf") else 10.0
 
-    def _smooth_path(
-        self, path: List[Tuple[float, float]]
-    ) -> List[Tuple[float, float]]:
-        """平滑路径（RDP算法简化版本）
-
-        Args:
-            path: 原始路径点列表
-
-        Returns:
-            平滑后的路径点列表
-        """
-        if len(path) < 3:
-            return path
-
-        # RDP 算法参数
-        epsilon = 0.05  # 简化阈值（米）
-
-        # 递归实现 RDP
-        def rdp_simplify(
-            points: List[Tuple[float, float]], eps: float
-        ) -> List[Tuple[float, float]]:
-            if len(points) < 3:
-                return points
-
-            # 找到距离首尾连线最远的点
-            start = np.array(points[0])
-            end = np.array(points[-1])
-
-            max_dist = 0
-            max_idx = 0
-
-            for i in range(1, len(points) - 1):
-                point = np.array(points[i])
-
-                # 计算点到线段的距离
-                line_vec = end - start
-                point_vec = point - start
-                line_len = np.linalg.norm(line_vec)
-
-                if line_len < 1e-6:
-                    dist = np.linalg.norm(point_vec)
-                else:
-                    line_unit = line_vec / line_len
-                    proj_length = np.dot(point_vec, line_unit)
-                    proj_length = np.clip(proj_length, 0, line_len)
-                    proj_point = start + proj_length * line_unit
-                    dist = np.linalg.norm(point - proj_point)
-
-                if dist > max_dist:
-                    max_dist = dist
-                    max_idx = i
-
-            # 如果最大距离大于阈值，递归简化
-            if max_dist > eps:
-                left = rdp_simplify(points[: max_idx + 1], eps)
-                right = rdp_simplify(points[max_idx:], eps)
-                return left[:-1] + right
-            else:
-                return [points[0], points[-1]]
-
-        try:
-            simplified = rdp_simplify(path, epsilon)
-            logger.debug(f"路径平滑: {len(path)} -> {len(simplified)} 个点")
-            return simplified
-        except Exception as e:
-            logger.warning(f"路径平滑失败: {e}，返回原始路径")
-            return path
+    def _smooth_path(self, path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """平滑路径（预留接口，当前直接返回原始路径）。"""
+        return path
 
     def _calculate_path_length(self, path: List[Tuple[float, float]]) -> float:
         """计算路径总长度"""
@@ -908,6 +848,10 @@ class NavigationCoordinator:
         self._send_velocity(0.0, 0.0)
         self.global_path = None
         self.current_path_index = 0
+        self._current_local_goal = None
+        self._last_angular_vel = 0.0
+        self._filtered_linear_vel = 0.0
+        self._filtered_angular_vel = 0.0
 
     def _complete_current_goal(self):
         """完成当前目标"""
@@ -939,6 +883,10 @@ class NavigationCoordinator:
     def get_current_state(self) -> NavigationState:
         """获取当前导航状态"""
         return self.state
+
+    def get_local_goal(self) -> Optional[Tuple[float, float]]:
+        """获取当前局部目标点（供可视化使用）"""
+        return self._current_local_goal
 
     def is_running(self) -> bool:
         """检查协调器是否在运行"""

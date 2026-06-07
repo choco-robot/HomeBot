@@ -255,6 +255,7 @@ class MapEnvironment:
         # 注意：图像坐标系 Y 轴向下，地图坐标系 Y 轴向上
         # 需要垂直翻转图像
         grid_data = np.flipud(image).astype(np.int16)
+        # grid_data = image.astype(np.int16)
 
         # 创建 OccupancyGrid
         self.grid = OccupancyGrid(
