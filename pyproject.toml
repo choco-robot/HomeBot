@@ -2,4 +2,56 @@
 requires = ["setuptools>=60.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# project metadata is provided in setup.py for editable installs
+[project]
+name = "homebot"
+version = "0.1.0"
+description = "HomeBot 家用机器人控制软件"
+requires-python = ">=3.11"
+dependencies = [
+    "pyzmq>=25.0.0",
+    "opencv-python>=4.8.0",
+    "pyserial>=3.5",
+    "flask>=3.0.0",
+    "flask-socketio>=5.3.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+vision = [
+    "ultralytics>=8.3.0",
+    "scipy>=1.10.0",
+    "filterpy>=1.4.5",
+]
+speech = [
+    "sherpa-onnx>=1.9.0",
+    "sounddevice>=0.4.6",
+    "openai>=1.0.0",
+    "fastmcp>=2.14.0",
+    "websockets>=12.0",
+    "volcengine-python-sdk",
+]
+navigation = [
+    "viser>=0.2.0",
+    "pupil-apriltags",
+    "pyyaml",
+]
+all = [
+    "ultralytics>=8.3.0",
+    "scipy>=1.10.0",
+    "filterpy>=1.4.5",
+    "sherpa-onnx>=1.9.0",
+    "sounddevice>=0.4.6",
+    "openai>=1.0.0",
+    "fastmcp>=2.14.0",
+    "websockets>=12.0",
+    "volcengine-python-sdk",
+    "viser>=0.2.0",
+    "pupil-apriltags",
+    "pyyaml",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["software/src"]
