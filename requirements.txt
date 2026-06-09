@@ -1,31 +1,31 @@
+# HomeBot 基础依赖（最少安装）
+# 安装命令: pip install -e .
+
 pyzmq>=25.0.0
 opencv-python>=4.8.0
 pyserial>=3.5
 flask>=3.0.0
 flask-socketio>=5.3.0
-ultralytics>=8.3.0
 numpy>=1.24.0
-scipy>=1.10.0
-filterpy>=1.4.5
 
-# 语音交互依赖
-sherpa-onnx>=1.9.0
-sounddevice>=0.4.6
-openai>=1.0.0
-fastmcp>=2.14.0
-websockets>=12.0
-
-# 火山引擎LLM依赖
-volcengine-python-sdk
-
-# SLAM + AprilTag 融合定位
-pupil-apriltags
-# breezyslam 需从源码安装: pip install git+https://github.com/simondlevy/BreezySLAM.git#subdirectory=python
-
-# Viser 3D 可视化 (SLAM RViz 替代)
-viser>=0.2.0
-
-# URDF 机器人模型渲染（可选）
-# 如需在 Viser 中显示真实机器人 URDF 模型，请安装:
-# pip install yourdfpy
-# yourdfpy
+# --- 可选功能依赖（推荐使用 pyproject.toml extras 安装）---
+#
+# 人体跟随 / 目标检测:   pip install -e ".[vision]"
+#   - ultralytics>=8.3.0
+#   - scipy>=1.10.0
+#   - filterpy>=1.4.5
+#
+# 语音交互:              pip install -e ".[speech]"
+#   - sherpa-onnx>=1.9.0
+#   - sounddevice>=0.4.6
+#   - openai>=1.0.0
+#   - fastmcp>=2.14.0
+#   - websockets>=12.0
+#   - volcengine-python-sdk
+#
+# 导航 / SLAM / 可视化:   pip install -e ".[navigation]"
+#   - viser>=0.2.0
+#   - pupil-apriltags
+#   - pyyaml
+#
+# 安装全部可选依赖:       pip install -e ".[all]"
