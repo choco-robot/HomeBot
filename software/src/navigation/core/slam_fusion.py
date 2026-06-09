@@ -69,8 +69,8 @@ class BreezySLAMWrapper:
             map_size_pixels,
             map_size_meters,
             random_seed=42,
-            map_quality=100,
-            hole_width_mm=400,
+            map_quality=20,
+            hole_width_mm=200,
         )
         self._map_size_meters = map_size_meters
 
@@ -502,6 +502,74 @@ class SLAMFusion:
         except Exception as e:
             logger.warning(f"读取地图保存位姿失败: {e}")
         return None
+
+    # ------------------------------------------------------------------
+    # 导出为编辑器兼容格式 (PNG + JSON)
+    # ------------------------------------------------------------------
+    def export_to_editor_format(
+        self, output_dir: str, prefix: str = "slam_map"
+    ) -> dict:
+        """将当前栅格地图导出为编辑器兼容的 PNG + JSON 格式。
+
+        BreezySLAM 地图值域: 0=自由, 255=障碍，与编辑器 PNG 格式一致。
+        地图原点默认为中心 (0, 0)，因此 origin = [-size/2, -size/2]。
+
+        Args:
+            output_dir: 输出目录路径
+            prefix: 文件名前缀
+
+        Returns:
+            {"png_path": str, "json_path": str, "meta": dict}
+        """
+        import json
+
+        from PIL import Image
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 1. 获取地图字节数组并转为二维数组
+        mapbytes = self.get_map_bytes()
+        map_array = np.frombuffer(mapbytes, dtype=np.uint8).reshape(
+            (self.map_size_pixels, self.map_size_pixels)
+        )
+
+        # BreezySLAM getmap 语义: 255=自由, 0=障碍
+        # 编辑器/仿真器期望: 0=空闲(黑), 255=障碍(白) —— 与 ROS 格式一致
+        # 同时做 Y 轴翻转，使图像坐标系与地图编辑器对齐
+        export_array = np.flipud(255 - map_array).astype(np.uint8)
+
+        # 2. 保存为 PNG 灰度图
+        png_path = os.path.join(output_dir, f"{prefix}.png")
+        Image.fromarray(export_array, mode="L").save(png_path)
+
+        # 3. 计算元数据
+        resolution = self.map_size_meters / self.map_size_pixels
+        half_size = self.map_size_meters / 2.0
+        meta = {
+            "image": f"{prefix}.png",
+            "map_info": {
+                "resolution": round(resolution, 4),
+                "width": round(self.map_size_meters, 2),
+                "height": round(self.map_size_meters, 2),
+                "origin": [round(-half_size, 2), round(-half_size, 2)],
+                "inflation_radius": 0.2,
+                "border_obstacle_width": 0.05,
+            },
+            "source": "slam",
+            "obstacles": [],
+            "markers": [],
+        }
+
+        # 4. 保存 JSON
+        json_path = os.path.join(output_dir, f"{prefix}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            f"编辑器格式地图已导出: PNG={png_path}, JSON={json_path}, "
+            f"resolution={resolution:.3f}m/px, origin=({-half_size:.1f}, {-half_size:.1f})"
+        )
+        return {"png_path": png_path, "json_path": json_path, "meta": meta}
 
     # ------------------------------------------------------------------
     # 初始位姿设置

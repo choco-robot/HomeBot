@@ -49,7 +49,7 @@ print("=" * 70)
 # 外部地图配置（JSON 格式，支持 PNG 引用或障碍物列表重建）
 # 示例：EXTERNAL_MAP_JSON = "maps/my_map.json"
 # 如果设为 None 或文件不存在，则回退到内置地图
-EXTERNAL_MAP_JSON = 'E:\\develop\\HomeBot\\homebot\\software\\maps\\map_2026-06-05T08-22-35.json'  # type: Optional[str]
+EXTERNAL_MAP_JSON = 'maps\map_2026-06-07T14-32-45.json'  # type: Optional[str]
 
 # 地图类型：'maze', 'simple_room', 'cluttered'
 # 仅在没有配置外部地图时生效
@@ -57,7 +57,7 @@ MAP_TYPE = "simple_room"
 
 # 机器人起始位姿
 # 建议设为 (0,0)，与 BreezySLAM 默认地图中心对齐，避免空地图时 RMHC 搜索漂移
-START_POSE = (0.0, 0.0, 0.0)  # (x, y, theta_rad)
+START_POSE = (-3.0, -3.5, 0.0)  # (x, y, theta_rad)
 
 # SLAM 配置
 SLAM_MAP_SIZE_PIXELS = 400  # 地图分辨率（像素）
@@ -66,10 +66,11 @@ SLAM_MAP_SIZE_METERS = 10.0  # 地图物理尺寸（米）
 # 仿真参数
 UPDATE_INTERVAL_MS = 50  # 可视化更新间隔（毫秒）
 LINEAR_SPEED = 0.5       # 线速度（m/s）
-ANGULAR_SPEED = 1.0      # 角速度（rad/s）
+ANGULAR_SPEED = 0.5      # 角速度（rad/s）
 
 # 保存路径
 SAVE_MAP_PATH = "slam_map.npz"
+EXPORT_EDITOR_PATH = "maps/slam_export"  # 导出编辑器格式地图 (PNG+JSON) 的目录/前缀
 
 # ------------------------------------------------------------------------------
 # 辅助函数
@@ -121,6 +122,9 @@ class KeyboardController:
         elif key == "m":
             print("   [CMD] 保存地图")
             return "save_map"
+        elif key == "e":
+            print("   [CMD] 导出编辑器格式地图")
+            return "export_editor"
         elif key == "f":
             print("   [CMD] 切换地图更新模式")
             return "toggle_map_update"
@@ -286,6 +290,9 @@ def _handle_key_press(event, ctrl: KeyboardController):
     elif result == "save_map":
         global _save_requested
         _save_requested = True
+    elif result == "export_editor":
+        global _export_requested
+        _export_requested = True
     elif result == "toggle_map_update":
         global _update_map_enabled
         _update_map_enabled = not _update_map_enabled
@@ -293,7 +300,7 @@ def _handle_key_press(event, ctrl: KeyboardController):
 
 
 print("   [OK] 可视化窗口已创建")
-print("   键盘控制: W/A/S/D=移动, 空格=停止, R=重置, M=保存地图, Q=退出")
+print("   键盘控制: W/A/S/D=移动, 空格=停止, E=导出编辑器格式, R=重置, M=保存地图, Q=退出")
 
 # 4. 启动系统
 print("\n4. 启动系统...")
@@ -312,6 +319,7 @@ print("   [OK] 系统已启动")
 
 _running = True
 _save_requested = False
+_export_requested = False
 _update_map_enabled = True
 frame_count = 0
 last_scan = None
@@ -412,7 +420,7 @@ try:
             f"State: {status['state']}",
             f"Map Update: {'ON' if _update_map_enabled else 'OFF (Localization Only)'}",
             f"Control: v={controller.linear:.2f}m/s, ω={controller.angular:.2f}rad/s",
-            "Keys: W/A/S/D=Move, Space=Stop, F=ToggleMap, R=Reset, M=Save, Q=Quit",
+            "Keys: W/A/S/D=Move, Space=Stop, F=ToggleMap, E=Export, R=Reset, M=Save, Q=Quit",
         ]
         info_text.set_text("\n".join(info_lines))
 
@@ -420,7 +428,7 @@ try:
         fig.canvas.draw_idle()
         fig.canvas.flush_events()
 
-        # 保存地图请求
+        # 保存地图请求 (.npz)
         if _save_requested:
             _save_requested = False
             try:
@@ -428,6 +436,20 @@ try:
                 print(f"   [OK] SLAM 地图已保存: {SAVE_MAP_PATH}")
             except Exception as e:
                 print(f"   [FAIL] 保存地图失败: {e}")
+
+        # 导出编辑器格式地图 (PNG+JSON)
+        if _export_requested:
+            _export_requested = False
+            try:
+                result = slam.export_to_editor_format(
+                    os.path.dirname(EXPORT_EDITOR_PATH) or ".",
+                    os.path.basename(EXPORT_EDITOR_PATH) or "slam_export"
+                )
+                print(f"   [OK] 编辑器格式地图已导出:")
+                print(f"       PNG : {result['png_path']}")
+                print(f"       JSON: {result['json_path']}")
+            except Exception as e:
+                print(f"   [FAIL] 导出编辑器格式地图失败: {e}")
 
         # 控制帧率
         time.sleep(UPDATE_INTERVAL_MS / 1000.0)
