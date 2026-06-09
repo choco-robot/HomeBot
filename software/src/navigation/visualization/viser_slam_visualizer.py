@@ -292,8 +292,10 @@ class ViserSLAMVisualizer:
         # 地图固定坐标系
         self._handles["/map"] = s.add_frame("/map", show_axes=True, axes_length=0.3, axes_radius=0.02)
 
-        # 地面网格
-        s.add_grid("/map/ground_grid", width=10, height=10, cell_size=1.0)
+        # 地面网格：大小使用 SLAM 配置中的物理地图尺寸
+        slam_cfg = get_config().slam
+        grid_size = slam_cfg.map_size_meters if slam_cfg.map_size_meters > 0 else 10.0
+        s.add_grid("/map/ground_grid", width=grid_size, height=grid_size, cell_size=1.0)
 
         # 里程计坐标系
         self._handles["/map/odom_frame"] = s.add_frame(
@@ -1267,15 +1269,20 @@ class ViserSLAMVisualizer:
         # 使用 handle 直接更新，避免频繁 remove/recreate
         h = self._handles.get(name)
         if h is not None and hasattr(h, "points"):
-            h.points = points
-            h.colors = colors
-        else:
-            self._handles[name] = self._server.scene.add_point_cloud(
-                name,
-                points=points,
-                colors=colors,
-                point_size=self._point_size,
-            )
+            try:
+                h.points = points
+                h.colors = colors
+                return
+            except RuntimeError:
+                logger.debug(f"轨迹句柄已移除或失效，重新创建: {name}")
+                self._handles.pop(name, None)
+
+        self._handles[name] = self._server.scene.add_point_cloud(
+            name,
+            points=points,
+            colors=colors,
+            point_size=self._point_size,
+        )
 
     def _update_status_panel(self, slam_pose: dict, odom: Optional[dict]) -> None:
         """更新 GUI 状态面板。"""

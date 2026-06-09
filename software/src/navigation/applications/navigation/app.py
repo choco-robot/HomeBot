@@ -21,7 +21,7 @@ import argparse
 import json
 import math
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import zmq
@@ -90,6 +90,24 @@ class SLAMMapSubscriber(ZMQMultipartJsonSubscriber):
                 self._latest_data.copy() if self._latest_data else None,
                 self._latest_map_bytes,
             )
+
+
+class ViserGoalSubscriber(ZMQJsonSubscriber):
+    """订阅 Viser 发布的导航目标与控制命令。"""
+
+    def __init__(self, sub_addr: str = DEFAULT_GOAL_SUB_ADDR):
+        super().__init__(sub_addr, required_keys=())
+
+    def _validate(self, data: Any) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if data.get("cmd") == "stop":
+            return True
+        if "x" in data and "y" in data:
+            return True
+        if "waypoints" in data and isinstance(data["waypoints"], list):
+            return True
+        return False
 
 
 # ------------------------------------------------------------------------------
@@ -221,7 +239,7 @@ class NavigationApp:
             self._obstacle_sub = None
             logger.info("深度障碍物订阅已禁用，局部避障将仅依赖全局地图规划")
 
-        self._goal_sub = ZMQJsonSubscriber(goal_sub_addr, required_keys=("x", "y"))
+        self._goal_sub = ViserGoalSubscriber(goal_sub_addr)
         logger.info(f"目标点 SUB: {goal_sub_addr}")
 
         # 底盘客户端
@@ -395,7 +413,7 @@ class NavigationApp:
         self._coordinator.start()
 
         logger.info(
-            f"NavigationApp 启动，初始目标=({self.goal_x}, {self.goal_y}), "
+            f"NavigationApp 启动"
             f"使用 NavigationCoordinator 进行全局规划+局部避障"
         )
 
@@ -423,11 +441,6 @@ class NavigationApp:
 
         if not self._running:
             return
-
-        # 发送初始目标（异步）
-        self._current_goal_id = self._coordinator.navigate_to_async(
-            self.goal_x, self.goal_y
-        )
 
         try:
             while self._running:
@@ -579,12 +592,6 @@ class NavigationApp:
 def main():
     parser = argparse.ArgumentParser(description="HomeBot 全局自主导航应用")
     parser.add_argument(
-        "--goal-x", type=float, default=1.0, help="目标点 X（米，地图坐标系）"
-    )
-    parser.add_argument(
-        "--goal-y", type=float, default=0.0, help="目标点 Y（米，地图坐标系）"
-    )
-    parser.add_argument(
         "--slam-pose", default=DEFAULT_SLAM_POSE_ADDR, help="SLAM位姿 SUB 地址"
     )
     parser.add_argument(
@@ -624,8 +631,6 @@ def main():
     args = parser.parse_args()
 
     app = NavigationApp(
-        goal_x=args.goal_x,
-        goal_y=args.goal_y,
         slam_pose_addr=args.slam_pose,
         slam_map_addr=args.slam_map,
         obstacle_addr=args.obstacle,
