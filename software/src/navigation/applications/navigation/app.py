@@ -13,7 +13,14 @@
 
 Usage:
     cd software/src
-    python -m navigation.applications.navigation --goal-x 2.0 --goal-y 1.5
+    # 建图模式（默认）
+    python -m navigation.applications.navigation
+
+    # 导航模式（地图不更新，只定位）
+    python -m navigation.applications.navigation --mode navigation
+
+    # 通过 Viser 可视化器设置目标点后启动
+    python -m navigation.applications.navigation --mode navigation --goal-sub tcp://localhost:5566
 """
 from __future__ import annotations
 
@@ -51,6 +58,7 @@ DEFAULT_CHASSIS_ADDR = "tcp://127.0.0.1:5556"
 DEFAULT_PATH_PUB_ADDR = "tcp://*:5569"
 DEFAULT_GOAL_SUB_ADDR = "tcp://localhost:5566"
 DEFAULT_NAV_STATUS_ADDR = "tcp://*:5570"
+DEFAULT_SLAM_CMD_ADDR = "tcp://localhost:5568"
 
 
 # ------------------------------------------------------------------------------
@@ -207,6 +215,7 @@ class NavigationApp:
         path_pub_addr: str = DEFAULT_PATH_PUB_ADDR,
         goal_sub_addr: str = DEFAULT_GOAL_SUB_ADDR,
         nav_status_pub_addr: str = DEFAULT_NAV_STATUS_ADDR,
+        slam_cmd_addr: str = DEFAULT_SLAM_CMD_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
         arrival_threshold_m: Optional[float] = None,
         lookahead_distance_m: Optional[float] = None,
@@ -215,9 +224,12 @@ class NavigationApp:
         inflation_radius_m: Optional[float] = None,
         max_path_deviation_m: Optional[float] = None,
         use_depth: Optional[bool] = None,
+        mode: str = "mapping",
     ):
         nav = _nav_cfg()
         self._goal: Tuple[float, float] = (goal_x, goal_y)
+        self._mode = mode.lower()
+        self._cached_map: Optional[OccupancyGrid] = None
         self._arrival_threshold = arrival_threshold_m if arrival_threshold_m is not None else nav.arrival_distance_threshold_m
         self._lookahead = lookahead_distance_m if lookahead_distance_m is not None else nav.lookahead_distance_m
         self._replan_interval = replan_interval_s if replan_interval_s is not None else nav.replan_interval_s
@@ -242,6 +254,16 @@ class NavigationApp:
 
         self._goal_sub = ViserGoalSubscriber(goal_sub_addr)
         logger.info(f"目标点 SUB: {goal_sub_addr}")
+
+        # SLAM 命令客户端（用于切换建图/定位模式）
+        self._slam_cmd_socket: Optional[zmq.Socket] = None
+        if self._mode == "navigation":
+            try:
+                self._slam_cmd_socket = create_socket(zmq.REQ, bind=False, address=slam_cmd_addr)
+                self._slam_cmd_socket.setsockopt(zmq.RCVTIMEO, 2000)
+                logger.info(f"SLAM 命令 REQ: {slam_cmd_addr}")
+            except Exception as e:
+                logger.warning(f"连接 SLAM 命令通道失败: {e}")
 
         # 底盘客户端
         from services.motion_service.chassis_arbiter import ChassisArbiterClient
@@ -307,19 +329,30 @@ class NavigationApp:
         return histogram_to_obstacles(hist)
 
     def _get_map(self) -> Optional[OccupancyGrid]:
-        """地图提供者（供 Coordinator 调用）。"""
+        """地图提供者（供 Coordinator 调用）。
+
+        导航模式下只缓存一次地图，后续不再更新。
+        """
+        if self._mode == "navigation" and self._cached_map is not None:
+            return self._cached_map
+
         meta, map_bytes = self._slam_map_sub.read()
         if meta is None or map_bytes is None:
-            return None
+            return self._cached_map if self._mode == "navigation" else None
+
         try:
-            return _bytes_to_occupancy_grid(
+            grid = _bytes_to_occupancy_grid(
                 map_bytes,
                 meta.get("size_pixels", 800),
                 meta.get("size_meters", 10.0),
             )
+            if self._mode == "navigation" and grid is not None:
+                self._cached_map = grid
+                logger.info("导航模式：地图已缓存，后续不再更新")
+            return grid
         except Exception as e:
             logger.warning(f"地图转换失败: {e}")
-            return None
+            return self._cached_map if self._mode == "navigation" else None
 
     def _send_velocity(self, linear: float, angular: float) -> bool:
         """速度发送器（供 Coordinator 调用）。
@@ -413,8 +446,9 @@ class NavigationApp:
         self._running = True
         self._coordinator.start()
 
+        mode_str = "导航模式" if self._mode == "navigation" else "建图模式"
         logger.info(
-            f"NavigationApp 启动"
+            f"NavigationApp 启动 ({mode_str})，"
             f"使用 NavigationCoordinator 进行全局规划+局部避障"
         )
 
@@ -442,6 +476,14 @@ class NavigationApp:
 
         if not self._running:
             return
+
+        # 根据模式设置 SLAM 服务
+        if self._mode == "navigation":
+            self._set_slam_mode("localization_only")
+            logger.info("导航模式：地图不更新，仅使用定位")
+        else:
+            self._set_slam_mode("mapping")
+            logger.info("建图模式：地图持续更新")
 
         try:
             while self._running:
@@ -550,8 +592,37 @@ class NavigationApp:
         self._goal_sub.close()
         self._path_pub.close()
         self._nav_status_pub.close()
+        if self._slam_cmd_socket is not None:
+            self._slam_cmd_socket.close()
         self._chassis.close()
         logger.info("NavigationApp 已停止")
+
+    # ------------------------------------------------------------------
+    # SLAM 模式控制
+    # ------------------------------------------------------------------
+    def _set_slam_mode(self, mode: str) -> bool:
+        """向 SLAM 服务发送模式设置命令。
+
+        Args:
+            mode: "localization_only" 或 "mapping"
+
+        Returns:
+            是否设置成功
+        """
+        if self._slam_cmd_socket is None:
+            return False
+        try:
+            self._slam_cmd_socket.send_json({"cmd": "set_mode", "mode": mode})
+            resp = self._slam_cmd_socket.recv_json()
+            if resp.get("success"):
+                logger.info(f"SLAM 服务已切换为 {mode} 模式")
+                return True
+            else:
+                logger.warning(f"SLAM 模式切换失败: {resp.get('message')}")
+                return False
+        except Exception as e:
+            logger.warning(f"发送 SLAM 模式命令失败: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # 障碍物数据转换
@@ -629,6 +700,15 @@ def main():
     parser.add_argument(
         "--nav-status-pub", default=DEFAULT_NAV_STATUS_ADDR, help="导航状态 PUB 地址"
     )
+    parser.add_argument(
+        "--slam-cmd", default=DEFAULT_SLAM_CMD_ADDR, help="SLAM 服务命令地址"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["navigation", "mapping"],
+        default="mapping",
+        help="运行模式: navigation=导航模式(地图不更新,只定位), mapping=建图模式(默认)",
+    )
     args = parser.parse_args()
 
     app = NavigationApp(
@@ -639,11 +719,13 @@ def main():
         path_pub_addr=args.path_pub,
         goal_sub_addr=args.goal_sub,
         nav_status_pub_addr=args.nav_status_pub,
+        slam_cmd_addr=args.slam_cmd,
         control_rate=args.rate,
         arrival_threshold_m=args.threshold,
         inflation_radius_m=args.inflation,
         max_path_deviation_m=args.deviation,
         use_depth=args.use_depth,
+        mode=args.mode,
     )
     app.start()
 

@@ -187,6 +187,9 @@ class SLAMService:
         self._vision_thread: Optional[Thread] = None
         self._odom_thread: Optional[Thread] = None
 
+        # 运行模式
+        self._localization_only = False
+
         # 统计
         self._loop_count = 0
         self._tag_detect_count = 0
@@ -300,7 +303,7 @@ class SLAMService:
                     odom = self._latest_odom
 
                 # 3. SLAM Lidar 更新
-                self._fusion.update_lidar(angles_deg, distances_mm, odom)
+                self._fusion.update_lidar(angles_deg, distances_mm, odom, update_map=not self._localization_only)
 
                 # 4. 每 5 轮（2Hz）执行 AprilTag 检测与融合
                 loop_counter += 1
@@ -347,6 +350,16 @@ class SLAMService:
                 theta = req.get("theta", 0.0)
                 self._fusion.reset_pose(x, y, theta)
                 self._cmd_socket.send_json({"success": True, "message": f"SLAM 已重置为 ({x}, {y}, {theta})"})
+            elif cmd == "set_mode":
+                mode = req.get("mode", "")
+                if mode in ("localization_only", "navigation"):
+                    self._localization_only = True
+                    self._cmd_socket.send_json({"success": True, "message": "已切换到纯定位模式"})
+                elif mode == "mapping":
+                    self._localization_only = False
+                    self._cmd_socket.send_json({"success": True, "message": "已切换到建图模式"})
+                else:
+                    self._cmd_socket.send_json({"success": False, "message": f"未知模式: {mode}"})
             else:
                 self._cmd_socket.send_json({"success": False, "message": f"未知命令: {cmd}"})
         except zmq.Again:
