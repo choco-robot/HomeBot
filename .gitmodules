@@ -1,0 +1,3 @@
+[submodule "software/third_party/breezyslam"]
+	path = software/third_party/breezyslam
+	url = https://github.com/simondlevy/breezySLAM.git

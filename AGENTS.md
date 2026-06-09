@@ -74,6 +74,8 @@ homebot/
 │   │   │   └── visualization/ # Viser 3D SLAM 可视化
 │   │   ├── examples/          # 示例代码
 │   │   └── tests/             # 测试代码
+│   ├── third_party/           # 第三方 Git 子模块
+│   │   └── breezyslam/        # BreezySLAM (Git submodule)
 │   ├── tools/                 # 辅助脚本（模型下载等）
 │   ├── models/                # 机器学习模型（YOLO 等）
 │   ├── start_system.py        # 跨平台系统启动器
@@ -85,6 +87,50 @@ homebot/
 ├── setup.py                   # 包安装配置
 └── README.md                  # 项目说明
 ```
+
+## Agent 文档体系
+
+本项目采用**分层级联 AGENTS.md** 机制：各关键模块目录下放置专门的模块级 `AGENTS.md`，当 AI Agent 操作某个目录下的文件时，能自动获取最相关的上下文。
+
+### 文档树
+
+```
+homebot/
+├── AGENTS.md                          # 根文档：项目全景、架构图、快速启动
+└── software/src/
+    ├── AGENTS.md                      # 源码总览：模块地图、导入规范、端口速查
+    ├── services/AGENTS.md             # 服务层：接口契约、消息格式、数据流
+    ├── navigation/AGENTS.md           # 导航层：坐标系、算法、仿真、可视化
+    ├── applications/AGENTS.md         # 应用层：控制流、扩展开发模板
+    ├── hal/AGENTS.md                  # 硬件抽象层：驱动清单、适配指南
+    ├── common/AGENTS.md               # 公共工具：消息格式、ZMQ 规范
+    └── configs/AGENTS.md              # 配置体系：全量配置项速查
+```
+
+### 级联生效规则（Agent 必读）
+
+**1. 作用域规则**
+- 每个 `AGENTS.md` 对其所在目录及所有子目录生效
+- deeper 目录的 `AGENTS.md` 优先级高于父目录（就近原则）
+- 用户直接给出的对话指令优先级最高
+
+**2. 对于 Kimi Code CLI**
+- 系统**自动**收集与当前操作相关的所有层级 `AGENTS.md`
+- 按优先级合并后注入 Agent 上下文，**无需手动读取**
+- 操作 `software/src/navigation/core/astar_planner.py` 时，自动获取 `navigation/AGENTS.md` 中的坐标系定义
+
+**3. 对于其他 AI 工具 / 人类开发者**
+- 修改某个目录下的代码前，**先读取该目录及上级目录的 `AGENTS.md`**
+- 例如修改 `hal/chassis/driver.py` 时，依次参考：
+  1. `hal/AGENTS.md`（底盘驱动参数、适配指南）
+  2. `software/src/AGENTS.md`（导入规范、端口速查）
+  3. `AGENTS.md`（根文档：全局架构、安全规范）
+
+**4. 文档维护义务**
+- 修改了某模块的接口、消息格式、配置项或目录结构后，**必须同步更新该模块的 `AGENTS.md`**
+- 新增模块时，应在模块根目录新建 `AGENTS.md`，并在 `software/src/AGENTS.md` 的子文档索引中登记
+
+---
 
 ## 系统架构
 
@@ -154,6 +200,8 @@ homebot/
 
 ### 2. 服务层 (Services)
 
+> **详细文档参见 `software/src/services/AGENTS.md`**，包含完整的 ZeroMQ 端口表、消息格式、启动命令和数据流图。
+
 **底盘服务** (`services/motion_service/chassis_service.py`):
 - ZeroMQ REP 模式监听控制指令
 - **仲裁器核心逻辑**：优先级-based 控制权管理
@@ -172,17 +220,16 @@ PRIORITIES = {
 ```
 
 **视觉服务** (`services/vision_service/vision.py`):
-- ZeroMQ PUB 模式发布图像帧
+- ZeroMQ PUB 模式发布图像帧 (`tcp://*:5560`)
 - JPEG 编码压缩
-- 支持 VisionSubscriber 订阅
+- 支持 `VisionSubscriber` 订阅
 
 **语音服务** (`services/speech_service/`):
 - **WakeupASR Service** (`wakeup_asr_service.py`): 
-  - ZeroMQ PUB 模式发布语音识别结果
-  - 持续监听麦克风，检测唤醒词后自动ASR
-  - 发布地址: `tcp://*:5571`
-- **Voice Engine** (`voice_engine.py`): 语音唤醒、ASR、TTS封装
-- **TTS Client** (`tts_client.py`): 火山引擎流式TTS客户端
+  - ZeroMQ PUB 模式发布语音识别结果 (`tcp://*:5571`)
+  - 持续监听麦克风，检测唤醒词后自动 ASR
+- **Voice Engine** (`voice_engine.py`): 语音唤醒、ASR、TTS 封装
+- **TTS Client** (`tts_client.py`): 火山引擎流式 TTS 客户端
 
 ### 3. 应用层 (Applications)
 
@@ -211,6 +258,8 @@ PRIORITIES = {
 - 可视化内容：坐标系树、机器人模型、激光点云、栅格地图、摄像头视锥、双轨迹
 - GUI 面板：状态显示、图层控制、视角切换（跟随/自由/顶视）
 - 启动：`python -m navigation.visualization`
+
+> **导航算法详细文档参见 `software/src/navigation/AGENTS.md`**，包含坐标系定义、A*/VFH/SLAMFusion 算法说明、仿真器架构和修改指南。
 
 **语音交互** (`applications/speech_interaction/`):
 - **Speech App** (`speech_app.py`): SUB模式订阅WakeupASR服务
@@ -525,4 +574,30 @@ python software/tools/download_models.py
 
 ---
 
-*最后更新：2026-04-20*
+## 人类文档索引 (docs/)
+
+`docs/` 目录下存放面向人类用户的操作指南和开发文档。Agent 在需要了解用户使用场景、故障排查、配置教程时，可参考以下索引：
+
+| 主题 | 文档 | 受众 | 内容 |
+|------|------|------|------|
+| API 密钥 | `API密钥配置指南.md` | 开发者/用户 | TTS/LLM/Vision 密钥获取与配置 |
+| 物料清单 | `HomeBot_BOM物料清单.md` | 组装者 | 完整硬件零件清单 |
+| 新应用开发 | `HomeBot新应用开发指南.md` | 开发者 | 创建 `applications/my_app/` 的逐步指南 |
+| 导航系统架构 | `homebot_nav_design.md` | 开发者 | SLAM + 深度感知分层架构设计 |
+| NavigationCoordinator | `NavigationCoordinator_详细说明.md` | 开发者 | 状态机、纯追踪、参数详解 |
+| Web 控制端 | `Web控制界面介绍.md`, `网页控制端使用指南.md` | 用户 | 界面功能、启动方式、手机访问 |
+| 人体跟随 | `人体检测与跟随方案.md`, `人体跟随使用指南.md` | 开发者/用户 | YOLO 方案设计 + 使用教程 |
+| 导航系统开发 | `导航系统开发方案.md` | 开发者 | 5 阶段增量开发计划 |
+| 工具脚本 | `工具脚本使用指南.md` | 开发者/用户 | 串口/摄像头枚举、机械臂校准 |
+| 技术选型 | `技术方案选型.md` | 开发者 | ZeroMQ vs MQTT、避障方案对比 |
+| 游戏手柄 | `游戏手柄控制使用指南.md`, `游戏手柄控制快速参考.md` | 用户 | Xbox 手柄映射、配置、故障排查 |
+| Picoclaw 控制 | `用Picoclaw小龙虾控制HomeBot.md` | 用户/开发者 | MCP 技能安装、自然语言控制 |
+| 语音交互 | `语音交互使用指南.md`, `自定义唤醒词配置指南.md` | 用户/开发者 | 语音命令、唤醒词配置、模型下载 |
+| 软件架构 | `软件架构与开发规划.md` | 开发者 | 分层架构、通信协议、开发时间线 |
+| 配置修改 | `配置修改说明.md` | 用户/开发者 | 所有配置字段逐条解释 |
+| 问题记录 | `问题记录.md` | 开发者 | 已知问题与解决方案 |
+| 更新记录 | `更新记录.md` | 开发者/用户 | 版本变更日志 |
+
+---
+
+*最后更新：2026-06-10*
