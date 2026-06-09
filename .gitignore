@@ -88,7 +88,9 @@ secrets.json
 
 *.stp
 
-# Maps and generated artifacts
+# Maps
 software/maps/
 *.npz
-*.gif
+
+# 本地编译的 wheel 文件（平台相关二进制，不提交）
+software/third_party/wheels/
