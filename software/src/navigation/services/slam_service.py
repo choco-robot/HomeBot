@@ -68,6 +68,7 @@ class SLAMService:
         publish_rate_hz: Optional[float] = None,
         load_map_path: Optional[str] = None,
         save_map_path: Optional[str] = None,
+        export_editor_path: Optional[str] = None,
         init_x: Optional[float] = None,
         init_y: Optional[float] = None,
         init_theta: Optional[float] = None,
@@ -86,6 +87,7 @@ class SLAMService:
         # 地图加载/保存参数
         self._load_map_path = load_map_path
         self._save_map_path = save_map_path
+        self._export_editor_path = export_editor_path
         self._init_x = init_x
         self._init_y = init_y
         self._init_theta = init_theta
@@ -226,15 +228,25 @@ class SLAMService:
 
     def _save_map_on_exit(self) -> None:
         """服务退出时自动保存地图。"""
-        if not self._save_map_path:
-            return
-        try:
-            path = Path(self._save_map_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            self._fusion.save_map(str(path))
-            logger.info(f"退出时自动保存地图成功: {path}")
-        except Exception as e:
-            logger.error(f"退出保存地图失败: {e}")
+        # 1. 保存 .npz（如有指定）
+        if self._save_map_path:
+            try:
+                path = Path(self._save_map_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._fusion.save_map(str(path))
+                logger.info(f"退出时自动保存地图成功: {path}")
+            except Exception as e:
+                logger.error(f"退出保存 .npz 地图失败: {e}")
+
+        # 2. 导出编辑器格式（如有指定）
+        if self._export_editor_path:
+            try:
+                path = Path(self._export_editor_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._fusion.export_to_editor_format(str(path.parent), path.stem)
+                logger.info(f"退出时导出编辑器格式地图成功: {path.parent}/{path.stem}.png+json")
+            except Exception as e:
+                logger.error(f"退出导出编辑器格式地图失败: {e}")
 
     def _signal_handler(self, signum, frame) -> None:
         """信号处理：保存地图后退出。"""
@@ -518,6 +530,7 @@ def main():
     parser.add_argument("--rate", type=float, default=None, help="主循环频率 Hz")
     parser.add_argument("--load-map", default=None, help="启动时加载已有地图 (.npz)")
     parser.add_argument("--save-map", default=None, help="退出时保存地图到指定路径 (.npz)")
+    parser.add_argument("--export-editor", default=None, help="退出时导出编辑器格式地图 (PNG+JSON) 到指定目录/前缀")
     parser.add_argument("--init-x", type=float, default=None, help="初始位姿 X (m)")
     parser.add_argument("--init-y", type=float, default=None, help="初始位姿 Y (m)")
     parser.add_argument("--init-theta", type=float, default=None, help="初始位姿朝向 (rad)")
@@ -533,6 +546,7 @@ def main():
         publish_rate_hz=args.rate,
         load_map_path=args.load_map,
         save_map_path=args.save_map,
+        export_editor_path=args.export_editor,
         init_x=args.init_x,
         init_y=args.init_y,
         init_theta=args.init_theta,
