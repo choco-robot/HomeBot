@@ -360,19 +360,74 @@ class ChassisService:
         success = self.chassis.set_velocity(cmd.vx, cmd.vy, cmd.vz)
         status = "OK" if success else "FAIL"
         print(f"[CHASSIS_SVC] [{status}] vx={cmd.vx:+.2f}, vz={cmd.vz:+.2f} [from {cmd.source}]")
-    
-    def _parse_request(self, data: Dict[str, Any]) -> Optional[ControlCommand]:
-        """解析REQ请求数据"""
+
+    def _handle_command(self, cmd: Dict[str, Any]) -> ArbiterResponse:
+        """处理非速度控制类命令（如传感器复位）。"""
+        command = cmd.get("cmd", "")
+
+        if command == "reset_sensors":
+            reset_odom = bool(cmd.get("odom", True))
+            reset_imu = bool(cmd.get("imu", True))
+            messages: List[str] = []
+            success = True
+
+            if reset_odom:
+                if hasattr(self.chassis.driver, 'reset_odometry'):
+                    if self.chassis.driver.reset_odometry():
+                        messages.append("编码器里程计已清零")
+                    else:
+                        success = False
+                        messages.append("编码器里程计清零失败")
+                else:
+                    messages.append("当前底盘不支持编码器里程计清零")
+
+            if reset_imu:
+                if hasattr(self.chassis.driver, 'imu_clear_attitude'):
+                    if self.chassis.driver.imu_clear_attitude():
+                        messages.append("IMU 姿态已清零")
+                    else:
+                        success = False
+                        messages.append("IMU 姿态清零失败")
+                else:
+                    messages.append("当前底盘不支持 IMU 清零")
+
+            message = "; ".join(messages) if messages else "无操作"
+            return ArbiterResponse(
+                success=success,
+                message=message,
+                current_owner=self._current_owner or "none",
+                current_priority=self._current_priority
+            )
+
+        return ArbiterResponse(
+            success=False,
+            message=f"未知命令: {command}",
+            current_owner=self._current_owner or "none",
+            current_priority=self._current_priority
+        )
+
+    def _parse_request(self, data: Dict[str, Any]) -> Optional[Any]:
+        """解析REQ请求数据。
+
+        支持两种风格：
+        - 速度控制命令：{"source": "web", "vx": 0.5, "vy": 0.0, "vz": 0.3, "priority": 1}
+        - 硬件管理命令：{"cmd": "reset_sensors", "odom": true, "imu": true}
+        """
         try:
+            if "cmd" in data:
+                # 硬件管理命令，直接返回 dict
+                return data
+
+            # 速度控制命令
             source = data.get("source", "")
             vx = float(data.get("vx", 0.0))
             vy = float(data.get("vy", 0.0))
             vz = float(data.get("vz", 0.0))
             priority = int(data.get("priority", 0))
-            
+
             if priority == 0 and source in PRIORITIES:
                 priority = PRIORITIES[source]
-            
+
             return ControlCommand(
                 source=source, vx=vx, vy=vy, vz=vz,
                 priority=priority, timestamp=time.time()
@@ -438,16 +493,19 @@ class ChassisService:
                 try:
                     request_data = self._rep_socket.recv_json(flags=zmq.NOBLOCK)
                     cmd = self._parse_request(request_data)
-                    
+
                     if cmd is None:
                         response = ArbiterResponse(
                             success=False, message="请求格式错误",
                             current_owner=self._current_owner or "none",
                             current_priority=self._current_priority
                         )
+                    elif isinstance(cmd, dict):
+                        # 硬件管理命令
+                        response = self._handle_command(cmd)
                     else:
                         response = self._arbitrate(cmd)
-                    
+
                     self._rep_socket.send_json(asdict(response))
                     
                 except zmq.Again:

@@ -348,7 +348,7 @@ class NavigationConfig:
     max_angular_accel_rad: float = 2.0   # 最大角加速度（rad/s²），用于平滑转向突变
     
     # 速度低通滤波器
-    velocity_filter_alpha: float = 0.4   # 一阶低通滤波系数（0~1），越小越平滑
+    velocity_filter_alpha: float = 0.7   # 一阶低通滤波系数（0~1），越小越平滑
 
 
 @dataclass

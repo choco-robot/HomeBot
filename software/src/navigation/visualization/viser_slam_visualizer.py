@@ -452,6 +452,7 @@ class ViserSLAMVisualizer:
             self._gui_load_png = g.add_upload_button("📂 上传地图图片", mime_type=".png")
             self._gui_load_json = g.add_upload_button("📂 上传地图元数据", mime_type=".json")
             self._gui_save_map = g.add_button("💾 保存地图")
+            self._gui_clear_map = g.add_button("🗑️ 清空地图")
             self._gui_use_slam_map = g.add_button("↩️ 恢复 SLAM 实时地图")
             self._gui_map_status = g.add_text("地图状态", "使用 SLAM 实时地图")
 
@@ -486,6 +487,7 @@ class ViserSLAMVisualizer:
         self._gui_load_png.on_upload(self._on_upload_png)
         self._gui_load_json.on_upload(self._on_upload_json)
         self._gui_save_map.on_click(lambda _: self._on_save_map())
+        self._gui_clear_map.on_click(lambda _: self._on_clear_map())
         self._gui_use_slam_map.on_click(lambda _: self._on_use_slam_map())
         self._gui_set_goal.on_click(lambda _: self._on_set_goal())
         self._gui_stop_nav.on_click(lambda _: self._on_stop_nav())
@@ -1177,6 +1179,21 @@ class ViserSLAMVisualizer:
         except Exception as e:
             self._gui_map_status.value = f"保存失败: {e}"
             logger.error(f"保存地图失败: {e}")
+
+    def _on_clear_map(self) -> None:
+        """发送清空地图命令，并切换回 SLAM 实时建图模式。"""
+        result = self._send_cmd_req(self._slam_cmd, {"cmd": "reset_map"})
+
+        # 清除本地已加载的地图覆盖层，恢复实时 SLAM 地图
+        self._use_loaded_grid = False
+        self._loaded_grid = None
+        self._loaded_obstacles = []
+        self._loaded_markers = []
+        self._force_map_update = True
+        self._remove_node("/map/overlays")
+
+        self._gui_map_status.value = f"{result} | 已清空地图并恢复 SLAM 实时建图"
+        logger.info("已发送清空地图命令，并清除本地加载地图")
 
     def _on_use_slam_map(self) -> None:
         """恢复使用 SLAM 实时地图。"""

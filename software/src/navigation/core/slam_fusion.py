@@ -359,19 +359,24 @@ class SLAMFusion:
     # ------------------------------------------------------------------
     def _compute_pose_change(
         self, odom: Optional[Tuple[float, float, float, float]]
-    ) -> Tuple[float,float,float, float]:
-        """从里程计计算 BreezySLAM 所需的 pose_change (dxy_mm, dtheta_deg, dt_s)。"""
-        if odom is None or self._last_odom_xyt is None:
-            # 无里程计时，使用内部累积值
-            dxy_mm = self._odom_accum_dxy_mm
-            dtheta_deg = self._odom_accum_dtheta_deg
-            dt = self._odom_accum_dt
+    ) -> Tuple[float, float, float, float]:
+        """从里程计计算机器人坐标系下的位姿变化 (dx_m, dy_m, dtheta_rad, dt_s)。"""
+        if odom is None:
+            # 无里程计时，视为零位移
+            dt = max(self._odom_accum_dt, 0.01)
             self._odom_accum_dxy_mm = 0.0
             self._odom_accum_dtheta_deg = 0.0
             self._odom_accum_dt = 0.0
-            return dxy_mm, dtheta_deg, max(dt, 0.01)
+            return 0.0, 0.0, 0.0, dt
 
         x, y, theta, ts = odom
+
+        # 第一帧里程计：只记录基准，不计算位移
+        if self._last_odom_xyt is None:
+            self._last_odom_xyt = (x, y, theta)
+            self._last_odom_time = ts
+            return 0.0, 0.0, 0.0, 0.01
+
         lx, ly, ltheta = self._last_odom_xyt
 
         dt = ts - self._last_odom_time if self._last_odom_time else 0.1
@@ -607,12 +612,71 @@ class SLAMFusion:
         self.P = np.diag([0.01, 0.01, 0.001])
         self._slam_fail_count = 0
         self.state = "NORMAL"
+
+        # 清空里程计缓存和积分累计量，避免下一帧把重置前的运动一次性灌进来
+        self._last_odom_xyt = None
+        self._prev_odom_xyt = None
+        self._last_odom_time = None
+        self._odom_accum_dxy_mm = 0.0
+        self._odom_accum_dtheta_deg = 0.0
+        self._odom_accum_dt = 0.0
+
         # 同步重置 BreezySLAM 内部位姿
         x_mm = x * 1000.0 + self._map_center_mm
         y_mm = y * 1000.0 + self._map_center_mm
         theta_deg = math.degrees(theta)
         self.slam.setpos(x_mm, y_mm, theta_deg)
         logger.info(f"SLAM 位姿已重置: ({x:.3f}, {y:.3f}, {theta:.3f})")
+
+    def reset_map(
+        self,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        theta: Optional[float] = None,
+    ) -> None:
+        """清空当前地图并重新开始建图，可指定重置后的位姿。
+
+        实现方式：重新实例化底层 BreezySLAM，从而彻底清空栅格地图和
+        粒子群历史；随后把位姿恢复到当前位姿（或指定值）。
+
+        Args:
+            x: 重置后位姿 X (m)，None 表示保持当前 X
+            y: 重置后位姿 Y (m)，None 表示保持当前 Y
+            theta: 重置后朝向 (rad)，None 表示保持当前 Theta
+        """
+        # 默认保持当前位姿，避免机器人“瞬移”
+        reset_x = float(self.x if x is None else x)
+        reset_y = float(self.y if y is None else y)
+        reset_theta = float(self.theta if theta is None else theta)
+
+        # 重新创建底层 SLAM 实例，彻底清空地图和内部状态
+        self.slam = BreezySLAMWrapper(
+            self.scan_size, self.map_size_pixels, self.map_size_meters
+        )
+
+        # 重置融合状态和协方差
+        self.x = reset_x
+        self.y = reset_y
+        self.theta = reset_theta
+        self.P = np.diag([0.01, 0.01, 0.001])
+        self._slam_fail_count = 0
+        self.state = "NORMAL"
+
+        # 清空里程计积分累计量，避免把重置前的运动一次性灌给新地图
+        self._odom_accum_dxy_mm = 0.0
+        self._odom_accum_dtheta_deg = 0.0
+        self._odom_accum_dt = 0.0
+
+        # 同步设置底层 SLAM 位姿
+        x_mm = reset_x * 1000.0 + self._map_center_mm
+        y_mm = reset_y * 1000.0 + self._map_center_mm
+        theta_deg = math.degrees(reset_theta)
+        self.slam.setpos(x_mm, y_mm, theta_deg)
+
+        logger.info(
+            f"地图已清空并重新开始建图，位姿保持为: "
+            f"({reset_x:.3f}, {reset_y:.3f}, {math.degrees(reset_theta):.2f}°)"
+        )
 
 
 # ------------------------------------------------------------------------------

@@ -125,6 +125,19 @@ class SLAMService:
         self._cmd_socket = create_socket(zmq.REP, bind=True, address=self.slam_cmd_addr)
         logger.info(f"SLAMService REP cmd: {self.slam_cmd_addr}")
 
+        # REQ socket 用于联动重置里程计和底盘传感器
+        config = get_config()
+        self._odom_cmd_addr = config.zmq.odom_cmd_addr.replace("*", "localhost")
+        self._chassis_cmd_addr = config.zmq.chassis_service_addr.replace("*", "localhost")
+
+        self._odom_cmd = create_socket(zmq.REQ, bind=False, address=self._odom_cmd_addr)
+        self._odom_cmd.setsockopt(zmq.RCVTIMEO, 1000)
+        logger.info(f"SLAMService Odom CMD REQ: {self._odom_cmd_addr}")
+
+        self._chassis_cmd = create_socket(zmq.REQ, bind=False, address=self._chassis_cmd_addr)
+        self._chassis_cmd.setsockopt(zmq.RCVTIMEO, 1000)
+        logger.info(f"SLAMService Chassis CMD REQ: {self._chassis_cmd_addr}")
+
         # ------------------------------------------------------------------
         # 雷达驱动
         # ------------------------------------------------------------------
@@ -348,8 +361,36 @@ class SLAMService:
                 x = req.get("x", 0.0)
                 y = req.get("y", 0.0)
                 theta = req.get("theta", 0.0)
+
+                # 1. 先清零底盘编码器里程计（IMU 不复位，避免 IMU 零位与目标 theta 不一致导致跳变）
+                chassis_msg = self._send_req(
+                    self._chassis_cmd, {"cmd": "reset_sensors", "odom": True, "imu": False}
+                )
+
+                # 2. 等待底盘编码器清零生效，避免 OdomService 把旧的绝对值作为基准
+                time.sleep(0.2)
+
+                # 3. 再重置软件里程计和 SLAM 融合位姿
+                odom_msg = self._send_req(
+                    self._odom_cmd, {"cmd": "reset_pose", "x": x, "y": y, "yaw": theta}
+                )
                 self._fusion.reset_pose(x, y, theta)
-                self._cmd_socket.send_json({"success": True, "message": f"SLAM 已重置为 ({x}, {y}, {theta})"})
+
+                message = (
+                    f"SLAM 已重置为 ({x}, {y}, {theta}); "
+                    f"里程计: {odom_msg}; 底盘传感器: {chassis_msg}"
+                )
+                self._cmd_socket.send_json({"success": True, "message": message})
+            elif cmd == "reset_map":
+                # 可选参数：指定重置后的位姿，未提供则保持当前位姿
+                x = req.get("x", None)
+                y = req.get("y", None)
+                theta = req.get("theta", None)
+                self._fusion.reset_map(x, y, theta)
+                # 立即发布一次空地图，让可视化器同步刷新
+                self._publish_map()
+                self._last_map_pub_time = time.time()
+                self._cmd_socket.send_json({"success": True, "message": "地图已清空，重新开始建图"})
             elif cmd == "set_mode":
                 mode = req.get("mode", "")
                 if mode in ("localization_only", "navigation"):
@@ -371,6 +412,20 @@ class SLAMService:
             except Exception:
                 pass
 
+    def _send_req(self, sock: zmq.Socket, req: dict) -> str:
+        """向其他服务发送 REQ 请求并返回结果摘要。"""
+        try:
+            sock.send_json(req)
+            rep = sock.recv_json()
+            if rep.get("success"):
+                return rep.get("message", "成功")
+            else:
+                return f"失败: {rep.get('message', '未知错误')}"
+        except zmq.Again:
+            return "请求超时"
+        except Exception as e:
+            return f"请求异常: {e}"
+
     def stop(self) -> None:
         """停止服务。"""
         self._running = False
@@ -379,7 +434,7 @@ class SLAMService:
         for t in (self._vision_thread, self._odom_thread):
             if t:
                 t.join(timeout=1.0)
-        for sock in (self._vision_sub, self._odom_sub, self._pose_pub, self._map_pub, self._lidar_scan_pub, self._cmd_socket):
+        for sock in (self._vision_sub, self._odom_sub, self._pose_pub, self._map_pub, self._lidar_scan_pub, self._cmd_socket, self._odom_cmd, self._chassis_cmd):
             if sock:
                 sock.close()
         logger.info("SLAMService 已停止")

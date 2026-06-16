@@ -74,6 +74,9 @@ class OdomService:
         self._last_vz = 0.0
         self._last_time: Optional[float] = None
 
+        # 底盘编码器里程计上一帧（用于增量计算，避免 reset 后被绝对值拉走）
+        self._last_chassis_odom: Optional[Dict[str, float]] = None
+
         # 运行标志
         self._running = False
 
@@ -120,12 +123,8 @@ class OdomService:
                     # 2. 优先使用底盘直接发布的编码器里程计（如 DiffChassisDriver）
                     chassis_odom = state.get("odom")
                     if chassis_odom is not None and chassis_odom.get("source") == "chassis_encoder":
-                        # 底盘直接提供了编码器里程计，跳过速度积分，直接使用
-                        self.x = float(chassis_odom.get("x", self.x))
-                        self.y = float(chassis_odom.get("y", self.y))
-                        self.yaw = float(chassis_odom.get("yaw", self.yaw))
-                        # 规范化 yaw
-                        self.yaw = math.atan2(math.sin(self.yaw), math.cos(self.yaw))
+                        # 使用增量方式融合底盘编码器里程计，避免 reset 后因底盘未清零被绝对值拉偏
+                        self._update_from_chassis_odom(chassis_odom)
                     else:
                         # 无底盘里程计（如 OmniChassisDriver），用速度积分推算位姿
                         if self._last_time is not None:
@@ -228,12 +227,46 @@ class OdomService:
             self._pub_count = 0
             self._last_log_time = now
 
+    def _update_from_chassis_odom(self, chassis_odom: Dict[str, Any]) -> None:
+        """基于底盘编码器里程计的增量更新内部位姿。
+
+        关键点：reset_pose 后把 _last_chassis_odom 置 None，
+        这样下一帧收到底盘里程计时只把它当作新基准，不会把内部位姿拉走。
+        """
+        x = float(chassis_odom.get("x", 0.0))
+        y = float(chassis_odom.get("y", 0.0))
+        yaw = float(chassis_odom.get("yaw", 0.0))
+        yaw = math.atan2(math.sin(yaw), math.cos(yaw))
+
+        if self._last_chassis_odom is None:
+            # 第一帧或刚重置，仅记录基准
+            self._last_chassis_odom = {"x": x, "y": y, "yaw": yaw}
+            return
+
+        dx = x - self._last_chassis_odom["x"]
+        dy = y - self._last_chassis_odom["y"]
+        dyaw = math.atan2(
+            math.sin(yaw - self._last_chassis_odom["yaw"]),
+            math.cos(yaw - self._last_chassis_odom["yaw"]),
+        )
+
+        self.x += dx
+        self.y += dy
+        self.yaw = math.atan2(math.sin(self.yaw + dyaw), math.cos(self.yaw + dyaw))
+        self._last_chassis_odom = {"x": x, "y": y, "yaw": yaw}
+
     def reset_pose(self, x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> None:
         """重置里程计位姿。"""
         self.x = x
         self.y = y
         self.yaw = yaw
+        # 清空速度缓存，避免重置后用旧速度继续积分
+        self._last_vx = 0.0
+        self._last_vy = 0.0
+        self._last_vz = 0.0
         self._last_time = None
+        # 清空底盘编码器里程计基准，下一帧开始重新以当前底盘读数为基准做增量
+        self._last_chassis_odom = None
         logger.info(f"里程计已重置: ({x}, {y}, {yaw})")
 
     def _handle_command(self) -> None:
