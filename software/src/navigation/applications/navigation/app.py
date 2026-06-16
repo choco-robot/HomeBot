@@ -222,6 +222,7 @@ class NavigationApp:
         slam_cmd_addr: str = DEFAULT_SLAM_CMD_ADDR,
         planner_config: Optional[LocalPlannerConfig] = None,
         arrival_threshold_m: Optional[float] = None,
+        arrival_angle_threshold_m: Optional[float] = None,
         control_rate: Optional[float] = None,
         inflation_radius_m: Optional[float] = None,
         max_path_deviation_m: Optional[float] = None,
@@ -233,6 +234,7 @@ class NavigationApp:
         self._mode = mode.lower()
         self._cached_map: Optional[OccupancyGrid] = None
         self._arrival_threshold = arrival_threshold_m if arrival_threshold_m is not None else nav.arrival_distance_threshold_m
+        self._arrival_angle_threshold = arrival_angle_threshold_m if arrival_angle_threshold_m is not None else nav.arrival_angle_threshold_rad
         self._control_interval = 1.0 / (control_rate if control_rate is not None else nav.control_rate_hz) if (control_rate if control_rate is not None else nav.control_rate_hz) > 0 else 0.1
         self._inflation_radius = inflation_radius_m if inflation_radius_m is not None else nav.inflation_radius_m
         self._max_deviation = max_path_deviation_m if max_path_deviation_m is not None else nav.max_path_deviation_m
@@ -281,6 +283,7 @@ class NavigationApp:
         self._coordinator = NavigationCoordinator(
             {
                 "goal_reached_distance": arrival_threshold_m,
+                "goal_reached_angle": self._arrival_angle_threshold,
                 "control_frequency": control_rate,
                 "max_replan_attempts": 5,
                 "obstacle_emergency_distance": 0.3,
@@ -676,7 +679,10 @@ def main():
     )
     parser.add_argument("--rate", type=float, default=10.0, help="控制频率 Hz")
     parser.add_argument(
-        "--threshold", type=float, default=0.15, help="到达阈值（米）"
+        "--threshold", type=float, default=None, help="到达距离阈值（米），默认使用配置"
+    )
+    parser.add_argument(
+        "--angle-threshold", type=float, default=None, help="到达角度阈值（弧度），默认使用配置"
     )
     parser.add_argument(
         "--inflation", type=float, default=0.2, help="障碍物膨胀半径（米）"
@@ -721,6 +727,7 @@ def main():
         slam_cmd_addr=args.slam_cmd,
         control_rate=args.rate,
         arrival_threshold_m=args.threshold,
+        arrival_angle_threshold_m=args.angle_threshold,
         inflation_radius_m=args.inflation,
         max_path_deviation_m=args.deviation,
         use_depth=args.use_depth,

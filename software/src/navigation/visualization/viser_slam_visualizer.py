@@ -1538,8 +1538,7 @@ class ViserSLAMVisualizer:
                 rotation_limits=((0, 0), (0, 0), (-1000, 1000)),  # 只允许绕 Z 轴旋转
                 depth_test=False,                                 # 始终可见
             )
-            tc.on_update(lambda e: self._on_goal_drag_update(e))
-            tc.on_drag_end(lambda _: self._on_goal_drag_end())
+            tc.on_update(lambda e: self._on_goal_drag(e))
             self._handles[name_tc] = tc
 
     def _quat_to_yaw(self, wxyz) -> float:
@@ -1551,8 +1550,15 @@ class ViserSLAMVisualizer:
         qw, qx, qy, qz = wxyz / norm
         return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
+    def _on_goal_drag(self, event) -> None:
+        """目标点拖拽事件分发：根据 phase 调用 update / end 处理。"""
+        if event.phase == "update":
+            self._on_goal_drag_update(event)
+        elif event.phase == "end":
+            self._on_goal_drag_end()
+
     def _on_goal_drag_update(self, event) -> None:
-        """拖拽目标点时实时更新内部状态和 GUI 数值（仅在 update 阶段记录）。"""
+        """拖拽目标点时实时更新内部状态和 GUI 数值。"""
         if event.phase != "update":
             return
         tc = self._handles.get("/map/goal/_tc")
@@ -1583,7 +1589,7 @@ class ViserSLAMVisualizer:
         if tc is None or goal is None:
             return
         # 直接使用 on_update 中已经记录好的最终值
-        # （on_drag_end 时 tc.position 可能已被 Viser 重置，不能重新计算）
+        # （拖拽结束 phase == 'end' 时 tc.position 可能已被 Viser 重置，不能重新计算）
         # 重置控件局部偏移和旋转
         tc.position = np.array([0.0, 0.0, 0.0])
         tc.wxyz = np.array([1.0, 0.0, 0.0, 0.0])
