@@ -80,7 +80,7 @@ class NavigationGoal:
     """导航目标"""
 
     goal_id: str
-    target_pose: Tuple[float, float, float]  # (x, y, yaw)
+    target_pose: Tuple[float, float, Optional[float]]  # (x, y, yaw); yaw=None 表示不约束朝向
     priority: int = 0  # 优先级（0=普通，1=高，2=紧急）
     timestamp: float = field(default_factory=time.time)
     timeout: float = 300.0  # 超时时间（秒）
@@ -233,7 +233,7 @@ class NavigationCoordinator:
             导航反馈（同步模式）或目标ID字符串（异步模式）
         """
         goal_id = str(uuid.uuid4())[:8]
-        target_pose = (x, y, yaw if yaw is not None else 0.0)
+        target_pose = (x, y, yaw)
 
         goal = NavigationGoal(
             goal_id=goal_id,
@@ -539,8 +539,20 @@ class NavigationCoordinator:
             distance = math.sqrt(dx * dx + dy * dy)
             if distance <= self.goal_reached_distance:
                 yaw_error = self._normalize_angle(target_yaw - current_pose[2])
-                angular_vel = 1.5 * yaw_error
+
+                # 已在角度阈值内，停止旋转，避免过冲/抖动
+                if abs(yaw_error) <= self.goal_reached_angle:
+                    self._send_velocity(0.0, 0.0)
+                    self._last_angular_vel = 0.0
+                    return
+
+                # 低增益 P 控制 + 角速度变化率限制，防止速度跳变导致震荡
+                angular_vel = 1.0 * yaw_error
                 angular_vel = float(np.clip(angular_vel, -self._max_angular_speed, self._max_angular_speed))
+                dt = 1.0 / self.control_frequency
+                max_delta = self._max_angular_accel * dt
+                angular_vel = float(np.clip(angular_vel, self._last_angular_vel - max_delta, self._last_angular_vel + max_delta))
+                self._last_angular_vel = angular_vel
                 self._send_velocity(0.0, angular_vel)
                 return
 
