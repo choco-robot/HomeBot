@@ -169,6 +169,17 @@ max_var_theta = 1.0            # rad²
 - 触发条件: 连续 `KIDNAP_FAIL_FRAMES` 帧失败 + 检测到 AprilTag
 - 动作: 全局重定位，重置 SLAM 粒子到 Tag 位姿
 
+**位姿重置 (`reset_pose`)**:
+- 动作: 设置融合位姿并同步到底层 BreezySLAM 粒子群
+- 额外效果: 清空内部里程计缓存和积分累计量，防止下一帧把重置前的运动一次性灌给 SLAM
+- 联动: SLAMService 在收到 `reset_pose` 命令后，会同步向 OdomService 和 ChassisService 发送复位指令
+
+**清空地图 (`reset_map`)**:
+- 动作: 重新实例化底层 `BreezySLAMWrapper`，彻底清空栅格地图和粒子群历史
+- 位姿: 默认保持当前融合位姿，可通过 `x/y/theta` 参数指定新位姿
+- 协方差: 重置为较小值，状态恢复为 `NORMAL`
+- 用途: Viser 前端“清空地图”按钮，方便在同一运行会话中重新开始建图
+
 **坐标单位**:
 - BreezySLAM 内部: **mm / deg**，相对地图左上角
 - `SLAMFusion` 暴露: **m / rad**，世界坐标系，原点在地图中心

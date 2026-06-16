@@ -113,6 +113,15 @@
 - `source="emergency"` 触发紧急停止锁定
 - `source="home"` 或 `"command":"home"` 解锁并停止
 
+**传感器复位命令 (REQ → REP)**:
+```json
+{"cmd": "reset_sensors", "odom": true, "imu": true}
+```
+- 清零底盘编码器里程计（DiffChassisDriver 支持）
+- 清零 IMU 姿态角（DiffChassisDriver 支持）
+- `odom`/`imu` 可选，默认均为 `true`
+- 当前底盘不支持对应功能时返回提示但不报错
+
 **响应格式**:
 ```json
 {
@@ -411,6 +420,8 @@ python -m services.speech_service wakeup_asr
 {"cmd": "reset_pose", "x": 0.0, "y": 0.0, "yaw": 0.0}
 ```
 
+- 重置位姿的同时会清空内部速度缓存，避免用旧速度继续积分
+
 **发布格式 (PUB @ 5559)**:
 ```json
 {
@@ -423,6 +434,11 @@ python -m services.speech_service wakeup_asr
     "timestamp": 1710662847.123
 }
 ```
+
+**编码器里程计融合策略**:
+- 当底盘直接发布编码器里程计（`state.odom.source == "chassis_encoder"`）时，OdomService 采用**增量融合**
+- 记录上一帧底盘编码器里程计作为基准，计算 `dx, dy, dyaw` 后累加到内部位姿
+- `reset_pose()` 会清空该基准，使下一帧底盘里程计仅作为新基准，避免 reset 后因底盘未清零被绝对值拉偏
 
 **启动命令**:
 ```bash
@@ -447,7 +463,7 @@ python -m navigation.services.odom_service --rate 50.0
 | 位姿发布 | `PUB` | `tcp://*:5563` | 发布融合位姿 |
 | 地图发布 | `PUB` | `tcp://*:5564` | 发布占用栅格地图（multipart: meta JSON + bytes） |
 | 激光扫描发布 | `PUB` | `tcp://*:5565` | 发布原始激光点云供可视化 |
-| SLAM 命令 | `REP` | `tcp://*:5568` | 接收 reset_pose / set_mode 命令 |
+| SLAM 命令 | `REP` | `tcp://*:5568` | 接收 reset_pose / reset_map / set_mode 命令 |
 
 **位姿发布格式 (PUB @ 5563)**:
 ```json
@@ -477,8 +493,13 @@ python -m navigation.services.odom_service --rate 50.0
 **命令格式 (REP @ 5568)**:
 ```json
 {"cmd": "reset_pose", "x": 0.0, "y": 0.0, "theta": 0.0}
+{"cmd": "reset_map", "x": 0.0, "y": 0.0, "theta": 0.0}  // x/y/theta 可选，省略时保持当前位姿
 {"cmd": "set_mode", "mode": "localization_only|navigation|mapping"}
 ```
+
+- `reset_pose`: 重置 SLAM 融合位姿到底层 BreezySLAM，**同时联动重置 OdomService 里程计和 ChassisService 编码器/IMU**，确保位姿严格保持
+- `reset_map`: 清空当前栅格地图并重新开始建图；重新实例化底层 SLAM，默认保持当前位姿
+- `set_mode`: 切换纯定位/建图模式
 
 **启动命令**:
 ```bash
