@@ -165,8 +165,9 @@ class OccupancyGrid:
         cost_array = COST_LETHAL - (COST_LETHAL - COST_OCCUPIED) * (dist / radius)
         cost_array = cost_array.astype(np.int16)
 
-        # 只更新比当前值大的代价（取最大）
-        update_mask = mask & (cost_array > self.data)
+        # 只更新已知空闲区域：未知区域保持 UNKNOWN，已占用区域保持 LETHAL。
+        # 这样障碍物膨胀不会把“未探索”区域错误标记为已占用。
+        update_mask = mask & (self.data == COST_FREE) & (cost_array > self.data)
         self.data[update_mask] = cost_array[update_mask]
 
         logger.debug(f"膨胀完成，半径={inflation_radius_m}m ({radius}栅格)")

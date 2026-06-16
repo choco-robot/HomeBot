@@ -53,9 +53,31 @@ class AStarPlanner:
             return False
         cost = self.grid.get_cost(gx, gy)
         if cost == COST_UNKNOWN:
-            # 默认将未知区域视为可通行；如需保守策略可改为 False
-            return True
+            # 保守策略：未探索/未知区域视为障碍物，禁止通行
+            return False
         return cost < self.obstacle_threshold
+
+    def _find_valid_neighbor(
+        self, gx: int, gy: int, max_radius: int = 5
+    ) -> Optional[Tuple[int, int]]:
+        """在 (gx, gy) 周围螺旋搜索最近的空闲栅格。
+
+        用于处理起点/终点因膨胀或轻微建图误差被标记为占用的情况。
+        搜索范围默认 5 个栅格，可通过 max_radius 调整。
+        """
+        if self._is_valid(gx, gy):
+            return (gx, gy)
+
+        for r in range(1, max_radius + 1):
+            # 只搜索正方形外圈，避免重复检查
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    if abs(dx) != r and abs(dy) != r:
+                        continue
+                    nx, ny = gx + dx, gy + dy
+                    if self._is_valid(nx, ny):
+                        return (nx, ny)
+        return None
 
     def plan(
         self,
@@ -76,9 +98,18 @@ class AStarPlanner:
         sx, sy = self.grid.world_to_grid(start_world[0], start_world[1])
         gx, gy = self.grid.world_to_grid(goal_world[0], goal_world[1])
 
-        if not self._is_valid(sx, sy):
+        # 如果起点恰好被膨胀或轻微占用，尝试在附近搜索一个可通行的替代起点
+        start_grid = self._find_valid_neighbor(sx, sy)
+        if start_grid is None:
             logger.warning(f"起点无效或被占据: {start_world} -> grid({sx},{sy})")
             return None
+        if start_grid != (sx, sy):
+            logger.warning(
+                f"起点 grid({sx},{sy}) 被占据，已调整到附近空闲栅格 "
+                f"grid({start_grid[0]},{start_grid[1]})"
+            )
+            sx, sy = start_grid
+
         if not self._is_valid(gx, gy):
             logger.warning(f"终点无效或被占据: {goal_world} -> grid({gx},{gy})")
             return None
