@@ -172,8 +172,6 @@ class NavigationCoordinator:
         self._velocity_sender: Optional[Callable] = None
         self._map_provider: Optional[Callable] = None
 
-        # 规划器（延迟加载）
-        self._global_planner = None
 
         # 运行控制
         self._running = False
@@ -464,15 +462,14 @@ class NavigationCoordinator:
         # 膨胀障碍物（机器人半径 + 安全边距）
         global_map.inflate_obstacles(self.inflation_radius + self.robot_radius)
 
-        # 初始化规划器（延迟加载）
-        if self._global_planner is None:
-            try:
-                from navigation.core.astar_planner import AStarPlanner
+        # 每次规划都重新创建规划器，确保使用最新地图，避免"幽灵障碍物"
+        try:
+            from navigation.core.astar_planner import AStarPlanner
 
-                self._global_planner = AStarPlanner(global_map, allow_diagonal=True)
-            except ImportError as e:
-                self._fail_current_goal(f"无法加载规划器: {e}")
-                return
+            planner = AStarPlanner(global_map, allow_diagonal=True)
+        except ImportError as e:
+            self._fail_current_goal(f"无法加载规划器: {e}")
+            return
 
         # 执行全局规划
         start = (current_pose[0], current_pose[1])
@@ -481,7 +478,7 @@ class NavigationCoordinator:
         logger.debug(f"全局规划: {start} -> {goal}")
 
         try:
-            path = self._global_planner.plan(start, goal)
+            path = planner.plan(start, goal)
         except Exception as e:
             logger.error(f"规划异常: {e}", exc_info=True)
             path = None
@@ -492,7 +489,7 @@ class NavigationCoordinator:
 
         # 视线法简化：检查两点之间是否可直线通行，拉直折线
         if len(path) > 2:
-            path = self._global_planner._simplify_path(path)
+            path = planner._simplify_path(path)
             logger.info(f"视线法简化后路径点数量: {len(path)}")
 
         # 路径处理：视线法简化后不再做额外平滑
