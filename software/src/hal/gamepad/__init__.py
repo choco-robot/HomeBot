@@ -21,42 +21,74 @@ Xbox手柄驱动模块
     >>> print(f"左摇杆: ({x:.2f}, {y:.2f})")
 """
 
-from .xinput_core import (
-    # 核心类
-    XInputDriver,
-    XboxController,
-    ControllerState,
-    StickState,
-    
-    # 按键枚举
-    ButtonFlags as Button,
-    
-    # 便捷函数
-    get_connected_controllers,
-    wait_for_connection,
-    
-    # 常量
-    XINPUT_MAX_CONTROLLERS,
-    XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-    XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
-    XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
-)
+import sys
 
-__version__ = "1.0.0"
+# 根据平台选择后端
+# - Windows: 原生 XInput API，性能最佳
+# - Linux: 原生 /dev/input/js* 接口，无需额外 Python 依赖
+# - macOS / 其他: pygame 作为跨平台回退
+if sys.platform == "win32":
+    from .xinput_core import (
+        XInputDriver,
+        XInputDriver as XboxController,
+        ControllerState,
+        StickState,
+        ButtonFlags as Button,
+        get_connected_controllers,
+        wait_for_connection,
+        XINPUT_MAX_CONTROLLERS,
+        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
+    )
+elif sys.platform.startswith("linux"):
+    from .xinput_core import (
+        XInputDriver,
+    )
+    from .linux_js_backend import (
+        LinuxJsDriver as XboxController,
+        ControllerState,
+        StickState,
+        ButtonFlags as Button,
+        get_connected_controllers,
+        wait_for_connection,
+        XINPUT_MAX_CONTROLLERS,
+        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
+    )
+else:
+    from .xinput_core import (
+        XInputDriver,
+    )
+    from .pygame_backend import (
+        PygameDriver as XboxController,
+        ControllerState,
+        StickState,
+        ButtonFlags as Button,
+        get_connected_controllers,
+        wait_for_connection,
+        XINPUT_MAX_CONTROLLERS,
+        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
+    )
+
+__version__ = "1.1.0"
 __all__ = [
     # 核心类
     "XInputDriver",
-    "XboxController", 
+    "XboxController",
     "ControllerState",
     "StickState",
-    
+
     # 按键枚举
     "Button",
-    
+
     # 便捷函数
     "get_connected_controllers",
     "wait_for_connection",
-    
+
     # 常量
     "XINPUT_MAX_CONTROLLERS",
     "XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE",
