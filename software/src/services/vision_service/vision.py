@@ -53,8 +53,24 @@ class VisionService:
     def _init_camera(self):
         """初始化相机驱动."""
         from hal.camera.driver import CameraDriver
+        import cv2
         self._cam = CameraDriver(self._cam_device)
+        self._cam._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        self._cam._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        self._cam._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))  # 设置为 MJPG 编码
+        self._cam.capture_frame()  # 预热摄像头
         logger.info(f"Camera initialized: device={self._cam_device}, fps={self._fps}")
+        def decode_fourcc(code):
+            """把 fourcc 数字转回 4 字符字符串"""
+            return "".join([chr((code >> 8 * i) & 0xFF) for i in range(4)])
+        # 读取实际参数
+        real_fourcc = int(self._cam._cap.get(cv2.CAP_PROP_FOURCC))
+        real_w      = int(self._cam._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        real_h      = int(self._cam._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        real_fps    = int(self._cam._cap.get(cv2.CAP_PROP_FPS))
+        fmt_str     = decode_fourcc(real_fourcc)
+
+        logger.info(f"[INFO] Cam {self._cam_device}: {fmt_str}  {real_w}x{real_h} @ {real_fps} fps")
 
     def process_frame(self, frame):
         """处理图像帧 (子类可重写此方法添加视觉处理逻辑).
