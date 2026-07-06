@@ -28,9 +28,25 @@ Xbox手柄驱动模块
 import sys
 
 # 根据平台选择后端
+# - Windows: 原生 XInput API，性能最佳
+# - Linux: 原生 /dev/input/js* 接口，无需额外 Python 依赖
+# - macOS / 其他: pygame 作为跨平台回退
 if sys.platform == "win32":
     from .xinput_core import (
         XInputDriver as XboxController,
+        ControllerState,
+        StickState,
+        ButtonFlags as Button,
+        get_connected_controllers,
+        wait_for_connection,
+        XINPUT_MAX_CONTROLLERS,
+        XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+        XINPUT_GAMEPAD_TRIGGER_THRESHOLD,
+    )
+elif sys.platform.startswith("linux"):
+    from .linux_js_backend import (
+        LinuxJsDriver as XboxController,
         ControllerState,
         StickState,
         ButtonFlags as Button,
