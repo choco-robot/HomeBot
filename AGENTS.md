@@ -193,10 +193,12 @@ homebot/
 - 支持分辨率、帧率配置
 
 **游戏手柄驱动** (`hal/gamepad/`):
-- 基于 Windows XInput API
+- Windows: 基于原生 XInput API，性能最佳
+- Linux: 基于原生 `/dev/input/js*` joystick 接口，无需额外依赖
+- macOS / 其他平台: 使用 pygame 作为跨平台回退
 - 支持 Xbox 360/One/Series X|S 手柄
 - 按键、摇杆、扳机键读取
-- 震动控制反馈
+- 震动控制反馈（Windows 原生支持；Linux/macOS 视驱动能力而定）
 
 ### 2. 服务层 (Services)
 
