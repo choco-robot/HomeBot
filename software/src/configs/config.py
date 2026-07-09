@@ -4,7 +4,7 @@
 敏感配置（API密钥等）从 secrets 模块加载，不直接存储在此文件
 """
 import os
-from typing import Optional
+from typing import Optional, Dict, Tuple
 from dataclasses import dataclass, field, asdict
 
 import logging
@@ -353,6 +353,55 @@ class HumanFollowConfig:
 
 
 @dataclass
+class ArmTeleopConfig:
+    """机械臂 WLAN 遥操作配置"""
+    # 从端 arm_service 地址（WLAN 内从端机器人 IP）
+    slave_arm_addr: str = "tcp://192.168.137.159:5557"
+
+    # 主臂读取频率 / 下发频率
+    read_rate: float = 50.0            # Hz
+    send_rate: float = 30.0            # Hz
+
+    # 主臂扭矩：True=关闭扭矩方便拖动，False=保持使能
+    torque_off: bool = True
+
+    # 启动时是否默认开启遥操作
+    enabled_by_default: bool = False
+
+    # 通信超时（ms）
+    timeout_ms: int = 800
+
+    # 默认/最小/最大下发速度（舵机速度单位）
+    default_speed: int = 800
+    min_speed: int = 100
+    max_speed: int = 2000
+    hold_speed: int = 200              # 关闭遥操作时保持位置用的慢速
+
+    # 速度比例因子：deg/s -> servo speed，需根据 SO101 标定微调
+    speed_scale: float = 15.0
+
+    # 角度死区（度）：小于该值不发新命令，减少抖动
+    deadband_deg: float = 0.5
+
+    # 默认回放轨迹文件路径（热键 'p' 使用）
+    default_playback_file: str = ""
+
+    # 录制轨迹默认保存目录
+    trajectory_dir: str = "trajectories"
+
+    # 关节映射：master_joint -> (slave_joint, sign)
+    # 默认恒等映射；示例："shoulder": ("shoulder", -1)
+    joint_mapping: Dict[str, Tuple[str, int]] = field(default_factory=lambda: {
+        "base": ("base", 1),
+        "shoulder": ("shoulder", 1),
+        "elbow": ("elbow", 1),
+        "wrist_flex": ("wrist_flex", 1),
+        "wrist_roll": ("wrist_roll", 1),
+        "gripper": ("gripper", 1),
+    })
+
+
+@dataclass
 class BatteryConfig:
     """电池监测配置"""
     # 用于读取电压的舵机ID列表（按优先级排序）
@@ -385,6 +434,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     gamepad: GamepadConfig = field(default_factory=GamepadConfig)
+    arm_teleop: ArmTeleopConfig = field(default_factory=ArmTeleopConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -406,7 +456,8 @@ class Config:
             tts=TTSConfig(**data.get("tts", {})),
             llm=LLMConfig(**data.get("llm", {})),
             vision=VisionConfig(**data.get("vision", {})),
-            gamepad=GamepadConfig(**data.get("gamepad", {}))
+            gamepad=GamepadConfig(**data.get("gamepad", {})),
+            arm_teleop=ArmTeleopConfig(**data.get("arm_teleop", {}))
         )
 
 

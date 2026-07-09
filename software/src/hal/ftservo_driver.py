@@ -3,6 +3,7 @@
 基于 ftservo-python-sdk (scservo_sdk)
 支持 ST3215 等 STS 系列舵机
 """
+import logging
 import sys
 import time
 from typing import Dict, List, Optional, Tuple, Union
@@ -23,9 +24,10 @@ try:
         SMS_STS_LOBYTE = _SMS_STS_LOBYTE
     if 'SMS_STS_HIBYTE' not in dir():
         SMS_STS_HIBYTE = _SMS_STS_HIBYTE
-except ImportError:
+except Exception as _e:
     # 模拟模式 - 用于开发和测试
-    print("[FTServo] Warning: scservo_sdk not found, running in simulation mode")
+    logging.warning(f"scservo_sdk import failed: {_e}, using simulation mode")
+    print(f"[FTServo] Warning: scservo_sdk import failed ({_e}), running in simulation mode")
     COMM_SUCCESS = 0
     BROADCAST_ID = 0xFE
     SMS_STS_TORQUE_ENABLE = 40

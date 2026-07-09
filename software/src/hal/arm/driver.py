@@ -93,20 +93,21 @@ class ArmDriver:
 
         self._initialized = False
 
-    def initialize(self, auto_home: bool = False) -> bool:
+    def initialize(self, auto_home: bool = False, enable_torque: bool = True) -> bool:
         """
         初始化机械臂
         - 连接串口（仅独立模式）
-        - 设置位置模式
-        - 使能扭矩
+        - 使能扭矩（可选）
         - 读取当前位置
         - 可选：移动到初始位置
         
         Args:
             auto_home: 是否自动复位到 home 位置，默认 False
                       设为 True 时启动后会移动到配置的休息位置
+            enable_torque: 是否使能扭矩，默认 True。
+                           主臂读取器可在初始化时关闭扭矩以便手动拖动。
         """
-        print(f"[Arm] Initializing... (auto_home={auto_home})")
+        print(f"[Arm] Initializing... (auto_home={auto_home}, enable_torque={enable_torque})")
 
         # 如果是共享总线模式，检查总线是否已连接
         if self._shared_bus:
@@ -121,8 +122,9 @@ class ArmDriver:
                 return False
 
         # 使能扭矩
-        self.bus.torque_enable()
-        time.sleep(0.1)
+        if enable_torque:
+            self.bus.torque_enable()
+            time.sleep(0.1)
 
         # 读取当前位置（从实际舵机读取）
         self._read_current_positions()

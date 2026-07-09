@@ -86,6 +86,7 @@ class ArmResponse:
 # 控制源优先级
 PRIORITIES = {
     "emergency": 4,
+    "teleop": 3,    # 机械臂 WLAN 遥操作
     "auto": 3,
     "voice": 2,
     "web": 1,

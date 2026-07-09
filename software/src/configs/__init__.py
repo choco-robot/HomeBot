@@ -27,6 +27,7 @@ from configs.config import (
     GamepadConfig,
     HumanFollowConfig,
     BatteryConfig,
+    ArmTeleopConfig,
 )
 
 from configs.secrets import (
@@ -57,6 +58,7 @@ __all__ = [
     "GamepadConfig",
     "HumanFollowConfig",
     "BatteryConfig",
+    "ArmTeleopConfig",
     # 密钥
     "get_secrets",
     "reload_secrets",

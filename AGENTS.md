@@ -158,9 +158,10 @@ homebot/
 ```python
 PRIORITIES = {
     "emergency": 4,  # 紧急停止（最高）
+    "teleop": 3,     # 机械臂 WLAN 遥操作
+    "gamepad": 3,    # 游戏手柄控制
     "auto": 3,       # 自动模式（人体跟随）
-    "gamepad": 2,    # 游戏手柄控制
-    "voice": 2,      # 语音控制（与手柄同级）
+    "voice": 2,      # 语音控制
     "web": 1,        # 网页遥控（最低）
 }
 ```
@@ -199,7 +200,24 @@ PRIORITIES = {
 - 控制器 (`controller.py`): 视觉伺服 PID 控制
 - 主应用 (`follow.py`): 整合检测、跟踪、控制、底盘通信
 
-**语音交互** (`applications/speech_interaction/`):
+**机械臂 WLAN 遥操作** (`applications/arm_teleop/`):
+- 主臂读取 (`master_reader.py`): 通过 HAL `ArmDriver` 读取本地 SO101 主臂角度，默认可关闭扭矩以手动拖动
+- 从臂客户端 (`slave_client.py`): 通过 ZeroMQ REQ-REP 连接远端 `arm_service`
+- 遥操作核心 (`app.py`): 关节映射/限幅/死区、速度自适应、通信失败保护、开关控制、运行模式（遥操作/录制/回放）
+- 轨迹录制回放 (`recorder.py`): 录制主臂角度序列为 JSON，按时间戳回放，支持速度缩放与循环
+- 键盘热键 (`keyboard_input.py`): 运行时 `r` 录制、`p` 回放默认轨迹、`s` 停止回放、`e` 开关遥操作、`q` 退出
+- 图形界面 (`gui.py`): 基于 tkinter 的简易 GUI，支持参数设置、遥操作开关、录制/回放、实时日志
+- 入口 (`__main__.py`): CLI 参数指定从端地址、使能开关、扭矩模式、录制/回放文件、速度、循环等，或 `--gui` 启动 GUI
+- 典型用法：
+  ```bash
+  cd software/src
+  python -m applications.arm_teleop --enable --slave-addr tcp://192.168.x.x:5557
+  python -m applications.arm_teleop --enable --record trajectories/demo.json
+  python -m applications.arm_teleop --playback trajectories/demo.json --playback-speed 0.5 --loop 3
+  python -m applications.arm_teleop --gui
+  ```
+
+**语音交互** (`applications/speech_interaction`):
 - **Speech App** (`speech_app.py`): SUB模式订阅WakeupASR服务
 - **Dialogue Manager** (`dialogue_manager.py`): LLM对话管理，支持工具调用
 - **MCP Server** (`mcp_server.py`): 机器人控制工具集
@@ -374,6 +392,22 @@ cd software/src
 ..\..\venv\Scripts\python.exe -m applications.speech_interaction
 ```
 
+终端 7 - 机械臂 WLAN 遥操作（可选）：
+```bash
+cd software/src
+# 从端机器人先启动 arm_service
+python -m services.motion_service arm
+
+# 主控端运行遥操作应用
+python -m applications.arm_teleop --enable --slave-addr tcp://192.168.x.x:5557
+
+# 录制动作（按 r 停止并保存，或退出时保存）
+python -m applications.arm_teleop --enable --record trajectories/demo.json
+
+# 回放动作（0.5 倍速循环 3 次）
+python -m applications.arm_teleop --playback trajectories/demo.json --playback-speed 0.5 --loop 3
+```
+
 或者使用一键启动脚本：
 ```bash
 cd software
@@ -471,6 +505,24 @@ venv\Scripts\python.exe software/tools/download_models.py    # Windows
 # 或
 venv/bin/python software/tools/download_models.py             # Linux/macOS
 ```
+
+## GUI 打包为 exe
+
+遥操作应用支持独立的 Tkinter GUI，并可用 PyInstaller 打包成 exe：
+
+```bash
+cd d:\develop\HomeBot
+.venv\Scripts\activate
+pip install -r requirements-gui.txt
+python software/tools/build_arm_teleop_exe.py
+```
+
+打包完成后得到 `dist/HomeBotArmTeleop.exe`，可单独复制到其他 Windows 电脑运行。
+
+注意：
+- 打包时已排除 `opencv`、`flask`、`ultralytics`、`numpy` 等未使用的大库
+- 若主控电脑安装了飞特 `scservo_sdk`，可额外加入 `--hidden-import scservo_sdk`
+- exe 体积主要由 `pyzmq` 和 Python 运行时决定，通常在 15–30 MB
 
 ## 扩展开发
 

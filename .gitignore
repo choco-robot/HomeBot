@@ -87,3 +87,6 @@ secrets.json
 *.phone
 
 *.stp
+
+push-main.*
+requirements-gui.txt
