@@ -79,7 +79,7 @@ class TTSSecrets:
 @dataclass
 class LLMSecrets:
     """LLM 密钥配置"""
-    provider: str = "volcano"                 # 提供商: volcano / deepseek
+    provider: str = "volcano"                 # 提供商: volcano / deepseek / qwen
     api_key: str = ""
     api_url: str = ""                         # 默认在 load_secrets 中根据 provider 设置
     model: str = ""  # 火山Ark需要填写模型ID，如 ep-20250324123456-abcdef
@@ -160,6 +160,13 @@ def load_secrets() -> Secrets:
             api_key=_get_env("DEEPSEEK_API_KEY", _get_env("LLM_API_KEY", "")),
             api_url=_get_env("DEEPSEEK_API_URL", _get_env("LLM_API_URL", "https://api.deepseek.com/v1")),
             model=_get_env("DEEPSEEK_MODEL", _get_env("LLM_MODEL", "deepseek-chat")),
+        )
+    elif llm_provider == "qwen":
+        llm = LLMSecrets(
+            provider="qwen",
+            api_key=_get_env("QWEN_API_KEY", _get_env("LLM_API_KEY", "")),
+            api_url=_get_env("QWEN_API_URL", _get_env("LLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")),
+            model=_get_env("QWEN_MODEL", _get_env("LLM_MODEL", "qwen-turbo")),
         )
     else:
         # 默认火山Ark
@@ -271,7 +278,10 @@ def check_secrets(verbose: bool = True) -> dict:
         llm_ok = status["llm"]["configured"]
         llm_provider = status["llm"].get("provider", "volcano")
         status_icon = "[OK]" if llm_ok else "[MISSING]"
-        provider_name = "DeepSeek" if llm_provider == "deepseek" else "火山Ark"
+        provider_name = {
+            "deepseek": "DeepSeek",
+            "qwen": "通义千问",
+        }.get(llm_provider, "火山Ark")
         print(f"\n[LLM] {provider_name} LLM: {status_icon}")
         if llm_ok:
             print(f"   Provider: {llm_provider}")
@@ -281,6 +291,9 @@ def check_secrets(verbose: bool = True) -> dict:
             if llm_provider == "deepseek":
                 print("   [提示] 设置 DEEPSEEK_API_KEY 环境变量")
                 print("   模型默认使用 deepseek-chat")
+            elif llm_provider == "qwen":
+                print("   [提示] 设置 QWEN_API_KEY 环境变量")
+                print("   模型默认使用 qwen-turbo")
             else:
                 print("   [提示] 设置 ARK_API_KEY 和 ARK_MODEL_ID 环境变量")
                 print("   ARK_MODEL_ID 格式: ep-20250324123456-abcdef")

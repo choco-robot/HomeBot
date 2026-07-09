@@ -197,14 +197,31 @@ class LLMConfig:
         secrets = get_secrets()
         # 同步提供商
         if secrets.llm.provider:
-            self.provider = secrets.llm.provider
+            self.provider = secrets.llm.provider.lower()
         if not self.api_key:
             self.api_key = secrets.llm.api_key
+        
         # 非敏感配置可以从环境变量覆盖
         if secrets.llm.api_url:
             self.api_url = secrets.llm.api_url
         if secrets.llm.model:
             self.model = secrets.llm.model
+        
+        # 根据 provider 设置默认 URL 和 model
+        if self.provider == "deepseek":
+            if not self.api_url:
+                self.api_url = "https://api.deepseek.com/v1"
+            if not self.model:
+                self.model = "deepseek-chat"
+        elif self.provider == "volcano":
+            if not self.api_url:
+                self.api_url = "https://ark.cn-beijing.volces.com/api/v3"
+        elif self.provider == "qwen":
+            if not self.api_url:
+                self.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            if not self.model:
+                self.model = "qwen-turbo"
+        
         # 如果没有配置model，给出警告
         if not self.model:
             if self.provider == "deepseek":

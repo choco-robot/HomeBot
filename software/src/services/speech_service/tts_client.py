@@ -10,6 +10,21 @@ from typing import AsyncGenerator, Optional
 
 import websockets
 
+try:
+    from websockets.exceptions import InvalidStatus
+except ImportError:
+    InvalidStatus = None  # type: ignore
+
+try:
+    from websockets.exceptions import InvalidStatusCode
+except ImportError:
+    InvalidStatusCode = None  # type: ignore
+
+# 兼容不同 websockets 版本的 HTTP 拒绝异常
+_HTTP_REJECT_EXCEPTIONS = tuple(
+    exc for exc in (InvalidStatus, InvalidStatusCode) if exc is not None
+)
+
 from common.logging import get_logger
 from configs.config import get_config
 from configs.secrets import require_secrets
@@ -71,6 +86,7 @@ class VolcanoTTSClient:
             }
             
             logger.info(f"正在连接到火山引擎 TTS 服务器...")
+            logger.debug(f"连接参数: endpoint={self.endpoint}, resource_id={self._get_resource_id()}, voice_type={self.voice_type}")
             self.websocket = await websockets.connect(
                 self.endpoint, 
                 additional_headers=headers, 
@@ -88,6 +104,22 @@ class VolcanoTTSClient:
             
             self.is_connected = True
             return True
+            
+        except _HTTP_REJECT_EXCEPTIONS as e:
+            status = getattr(e, 'status_code', getattr(e, 'status', 'unknown'))
+            headers = getattr(e, 'headers', None)
+            body = getattr(e, 'body', None)
+            logger.error(f"连接火山引擎 TTS 服务器失败: HTTP {status}")
+            if headers:
+                logger.error(f"响应头: {dict(headers)}")
+            if body:
+                logger.error(f"响应体: {body}")
+            logger.error("HTTP 403 通常表示认证或授权失败, 请检查:")
+            logger.error("  1. VOLCANO_APPID 和 VOLCANO_ACCESS_TOKEN 是否正确")
+            logger.error("  2. VOLCANO_RESOURCE_ID 与 VOLCANO_VOICE_TYPE 是否匹配")
+            logger.error("  3. 火山控制台是否已开通对应 TTS 服务并拥有可用额度")
+            self.is_connected = False
+            return False
             
         except Exception as e:
             logger.error(f"连接火山引擎 TTS 服务器失败: {e}")
