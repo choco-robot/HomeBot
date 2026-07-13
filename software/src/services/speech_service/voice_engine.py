@@ -68,7 +68,7 @@ class VoiceEngine:
         
         # TTS相关
         self.tts_connected = False
-        self.tts_sample_rate = 16000  # 火山引擎 TTS 输出采样率
+        self.tts_sample_rate = self.tts_config.sample_rate  # 火山引擎 TTS 输出采样率
         self.tts_channels = 1
         self.tts_bytes_per_sample = 2  # 16-bit PCM
         

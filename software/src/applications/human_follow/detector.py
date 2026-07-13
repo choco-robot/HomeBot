@@ -238,7 +238,7 @@ class HumanDetector:
                 conf=self.conf_threshold,
                 classes=[self._mode_cfg["class_id"]],  # 只检测目标类别
                 imgsz=self.inference_size,
-                half=self.use_half,
+                quantize='fp16' if self.use_half else None,
                 device=self.device,
                 verbose=False  # 禁用ultralytics的默认输出
             )

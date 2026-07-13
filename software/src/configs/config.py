@@ -30,9 +30,9 @@ MODELS_DIR = os.path.join(PROJECT_ROOT, "software", "models")
 @dataclass
 class CameraConfig:
     """摄像头配置"""
-    device_id: int = 0
-    width: int = 1920     # 摄像头原始分辨率
-    height: int = 1080
+    device_id: int|str = '/dev/video0'
+    width: int = 640     # 摄像头原始分辨率
+    height: int = 480
     fps: int = 30
 
 
@@ -50,7 +50,7 @@ class WebCameraConfig:
 @dataclass
 class ArmConfig:
     """机械臂配置"""
-    serial_port: str = "/usr/local/dev/servobus"  # 与底盘共用串口
+    serial_port: str = "/dev/ttyACM0"  # 与底盘共用串口
     baudrate: int = 1000000
     # 舵机ID映射 (1-6号关节)
     base_id: int = 1
@@ -59,17 +59,18 @@ class ArmConfig:
     wrist_flex_id: int = 4
     wrist_roll_id: int = 5
     gripper_id: int = 6
+    urdf_path: str = "hardware/structure/URDF/SO101/so101_new_calib.urdf"
     # 连杆长度 (mm) 人工设置，AI勿动
     upper_arm_length: float = 115.0  # 大臂长度 (L1)
     forearm_length: float = 130.0    # 小臂长度 (L2)
     # 关节角度限制 (度) 人工设置，AI勿动
     joint_limits: dict = field(default_factory=lambda: {
-        "base": (-90, 90),
-        "shoulder": (0, 180),
-        "elbow": (0, 180),
-        "wrist_flex": (-90, 90),
-        "wrist_roll": (-180, 180),
-        "gripper": (0, 90),
+        "base": (-110, 110),
+        "shoulder": (-100, 100),  # 允许负值以到达某些位置
+        "elbow": (-90, 90),      # elbow_down 构型，elbow为负
+        "wrist_flex": (-100, 100),  # 扩展范围以支持竖直向下抓取
+        "wrist_roll": (-150, 150),
+        "gripper": (-15, 90),
     })
     # 默认速度/加速度
     default_speed: int = 1000
@@ -77,11 +78,11 @@ class ArmConfig:
     # 休息位置/待机位置 (度) - 服务启动时自动恢复到此位置 人工设置，AI勿动
     rest_position: dict = field(default_factory=lambda: {
         "base": 0,         # J1: 基座旋转
-        "shoulder": 15,   # J2: 肩关节（自然下垂）
-        "elbow": 150,       # J3: 肘关节
+        "shoulder": -60,   # J2: 肩关节（自然下垂）
+        "elbow": 60,       # J3: 肘关节
         "wrist_flex": 0,   # J4: 腕关节屈伸
         "wrist_roll": 0,   # J5: 腕关节旋转
-        "gripper": 45,     # J6: 夹爪（半开）
+        "gripper": 0,     # J6: 夹爪（半开）
     })
 
 
@@ -92,7 +93,7 @@ class ChassisConfig:
     chassis_type: str = "diff"
     
     # 串口配置（Windows: COM3, Linux: /dev/ttyUSB0）
-    serial_port: str = "/usr/local/dev/servobus"
+    serial_port: str = "/dev/ttyFollower"
     baudrate: int = 1000000
     
     # 舵机ID映射
@@ -190,6 +191,7 @@ class TTSConfig:
     encoding: str = "pcm"                     # 音频编码
     endpoint: str = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
     sample_rate: int = 16000                  # 输出采样率
+    dialect: str = ""
     
     def __post_init__(self):
         """从密钥管理加载敏感配置"""
@@ -213,7 +215,7 @@ class LLMConfig:
     敏感信息（api_key）从 secrets 模块加载
     如需修改，请在 .env.local 文件中设置
     """
-    provider: str = "volcano"                 # 提供商: volcano/deepseek/qwen
+    provider: str = "deepseek"                 # 提供商: volcano/deepseek/qwen
     api_key: str = ""                         # API密钥
     api_url: str = "https://ark.cn-beijing.volces.com/api/v3"  # API地址
     model: str = ""                           # 模型名称（火山Ark需要填写模型ID，如 ep-20250324123456-abcdef）
@@ -444,7 +446,7 @@ class GamepadConfig:
     arm_service_addr: str = "tcp://localhost:5557"
     
     # ========== 轮询配置 ==========
-    polling_interval: float = 0.02         # 50Hz (20ms)
+    polling_interval: float = 0.05         # 50Hz (20ms)
 
 
 @dataclass
@@ -461,7 +463,7 @@ class HumanFollowConfig:
     
     # 推理优化（边缘设备）
     inference_size: int = 320                 # 输入分辨率 320x320
-    use_half_precision: bool = False          # FP16半精度推理（需GPU支持）
+    use_half_precision: bool = True          # FP16半精度推理（需GPU支持）
     
     # 跟随控制配置
     target_distance: float = 1.0              # 目标距离（米）
@@ -550,6 +552,120 @@ class BatteryConfig:
     publish_interval: float = 5.0  # 电压信息发布间隔 (秒)
     pub_addr: str = "tcp://*:5555"  # 电池状态PUB地址
 
+@dataclass
+class MahjongConfig:
+    """麻将机器人配置"""
+    # 摄像头配置
+    top_camera_device_id: int = 1              # 顶置摄像头 OpenCV device_id
+    front_camera_device_id: int = 0            # 前置摄像头 OpenCV device_id
+    
+    # ZeroMQ 视频流地址
+    top_vision_addr: str = "tcp://127.0.0.1:5562"
+    front_vision_addr: str = "tcp://127.0.0.1:5560"
+    wrist1_vision_addr: str = "tcp://127.0.0.1:5580"
+    wrist2_vision_addr: str = "tcp://127.0.0.1:5581"
+
+    # 机械臂服务地址
+    arm_service_addr: str = "tcp://127.0.0.1:5557"
+    arm2_service_addr: str = "tcp://127.0.0.1:5558"
+    
+    # 检测模型
+    detector_model_path: str = "models/mahjong_yolo.pt"
+    detector_conf_threshold: float = 0.15
+    detector_inference_size: int = 640
+    detector_roi_enabled: bool = True
+    detector_roi_x: int = 0
+    detector_roi_y: int = 500
+    detector_roi_width: int = 1920
+    detector_roi_height: int = 320
+    
+    # 标定参数 (Homography 矩阵，3x3 展平为 9 个元素)
+    # 默认值是单位矩阵，表示未标定
+    homography_matrix: list = field(default_factory=lambda: [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+    ])
+    
+    # 标定文件路径（JSON 格式，包含 homography_matrix 和标定点）
+    # 如果文件存在，将覆盖 homography_matrix 配置
+    calibration_file: str = "calibration.json"
+    
+    # 牌桌物理尺寸 (mm)
+    table_width_mm: float = 600.0
+    table_height_mm: float = 400.0
+    
+    # 第一套机械臂 (arm) 底座相对于牌桌的偏移 (mm)
+    arm_offset_x: float = 0
+    arm_offset_y: float = 0
+    arm_offset_z: float = 50
+    arm_y_factor: float = 1.05
+    
+    # 第二套机械臂 (arm2) 底座相对于牌桌的偏移 (mm)
+    arm2_offset_x: float = 0
+    arm2_offset_y: float = -240
+    arm2_offset_z: float = -35
+    arm2_y_factor: float = 1.05
+
+    
+    # 第一套机械臂 (arm) 出牌槽位置 (机械臂坐标系 mm)
+    discard_slot_x: float = 250.0
+    discard_slot_y: float = -50.0
+    discard_slot_z: float = 100.0
+    
+    # 第二套机械臂 (arm2) 出牌槽位置 (机械臂坐标系 mm)
+    arm2_discard_slot_x: float = 250.0
+    arm2_discard_slot_y: float = 50.0
+    arm2_discard_slot_z: float = 130.0
+    
+    # 牌河区域裁剪配置 (从 1920x1080 画面中提取中间长条区域)
+    river_crop_x: int = 0              # 裁剪起始 X 坐标
+    river_crop_y: int = 420            # 裁剪起始 Y 坐标 (1080-320)/2 = 380
+    river_crop_width: int = 1920       # 裁剪宽度
+    river_crop_height: int = 320       # 裁剪高度
+    
+    # 采集图像保存配置
+    capture_save_original: bool = True     # 是否保存原始图
+    capture_save_cropped: bool = True      # 是否保存裁剪后的图
+    
+    # SVP NNN C 后端检测配置（海思 SD3403 平台）
+    # 当 detector_backend = "svp_nnn" 时生效
+    # C 后端为单次运行程序：Python 写图 -> 生成 JSON -> 调用子进程 -> 读 TXT 结果
+    # 路径配置说明：
+    #   - input_image / json_file / output_txt 留空时，会根据 working_dir 自动推断
+    #   - working_dir 留空时，使用 C 后端可执行文件所在目录作为工作目录
+    detector_backend: str = "yolo"      # 可选: "yolo" | "svp_nnn"
+    svp_nnn_executable: str = "src/main"
+    svp_nnn_model_path: str = "models/yolo11s-mj.om"
+    svp_nnn_input_image: str = ""          # 临时输入图（留空=自动推断到 working_dir 下）
+    svp_nnn_json_file: str = ""            # JSON 文件（留空=自动推断到 working_dir 下）
+    svp_nnn_output_txt: str = ""           # 结果 TXT（留空=自动推断 working_dir/out/result/txt/）
+    svp_nnn_working_dir: str = ""          # C 后端工作目录（留空=可执行文件所在目录）
+    svp_nnn_exec_timeout: float = 10.0     # 子进程调用超时（秒）
+    svp_nnn_backend_width: int = 0         # C 后端推理输入图像宽度（0=不缩放）
+    svp_nnn_backend_height: int = 0        # C 后端推理输入图像高度（0=不缩放）
+    
+    # MQTT 配置（云-端分离架构）
+    # EMQX Cloud 配置
+    mqtt_broker: str = "yc16a710.ala.cn-hangzhou.emqxsl.cn"
+    mqtt_port: int = 8883  # TLS/SSL 端口
+    mqtt_use_tls: bool = True  # 启用 TLS
+    mqtt_username: str = ""  # 从 secrets 加载
+    mqtt_password: str = ""  # 从 secrets 加载
+    mqtt_command_topic: str = "homebot/mahjong/command"
+    mqtt_status_topic: str = "homebot/mahjong/status"
+    mqtt_client_id_cloud: str = "mahjong_cloud"  # 会自动附加随机后缀
+    mqtt_client_id_robot: str = "mahjong_robot"  # 会自动附加随机后缀
+    
+    def __post_init__(self):
+        """从密钥管理加载 MQTT 认证配置"""
+        secrets = get_secrets()
+        if hasattr(secrets, 'mqtt'):
+            if not self.mqtt_username:
+                self.mqtt_username = secrets.mqtt.username
+            if not self.mqtt_password:
+                self.mqtt_password = secrets.mqtt.password
+
 
 @dataclass
 class Config:
@@ -571,6 +687,7 @@ class Config:
     navigation: NavigationConfig = field(default_factory=NavigationConfig)
     slam: SLAMConfig = field(default_factory=SLAMConfig)
     viser: ViserConfig = field(default_factory=ViserConfig)
+    mahjong: MahjongConfig = field(default_factory=MahjongConfig)
     
     def to_dict(self) -> dict:
         """转换为字典"""

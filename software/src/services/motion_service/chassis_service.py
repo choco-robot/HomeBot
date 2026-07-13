@@ -357,7 +357,11 @@ class ChassisService:
     
     def _execute_to_hardware(self, cmd: ControlCommand) -> None:
         """执行指令到底盘硬件"""
-        success = self.chassis.set_velocity(cmd.vx, cmd.vy, cmd.vz)
+        success = False
+        try_count = 3
+        while not success and try_count > 0:
+            success = self.chassis.set_velocity(cmd.vx, cmd.vy, cmd.vz)
+            try_count -= 1
         status = "OK" if success else "FAIL"
         print(f"[CHASSIS_SVC] [{status}] vx={cmd.vx:+.2f}, vz={cmd.vz:+.2f} [from {cmd.source}]")
 
