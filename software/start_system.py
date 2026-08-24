@@ -18,6 +18,13 @@ from pathlib import Path
 # 服务配置
 SERVICES = [
     {
+        "name": "Message Bus",
+        "module": "services.message_bus",
+        "port": 5590,  # broker XSUB（发布入口）
+        "port2": 5591,  # broker XPUB（订阅出口）
+        "desc": "Generic Pub/Sub Message Broker"
+    },
+    {
         "name": "Motion Service",
         "module": "services.motion_service",
         "port": 5556,  # 底盘服务端口

@@ -1,4 +1,5 @@
 pyzmq>=25.0.0
+click>=8.0
 opencv-python>=4.8.0
 pyserial>=3.5
 flask>=3.0.0

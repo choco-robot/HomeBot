@@ -90,3 +90,6 @@ secrets.json
 
 push-main.*
 requirements-gui.txt
+
+software/maps/
+software/cache/

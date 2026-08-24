@@ -106,6 +106,8 @@ class ZMQConfig:
     vision_pub_addr: str = "tcp://*:5560"
     speech_service_addr: str = "tcp://*:5570"   # 语音服务地址（备用）
     wakeup_pub_addr: str = "tcp://*:5571"       # 唤醒+ASR PUB地址
+    bus_xsub_addr: str = "tcp://*:5590"         # 消息总线发布入口（broker XSUB，发布者 connect 到此）
+    bus_xpub_addr: str = "tcp://*:5591"         # 消息总线订阅出口（broker XPUB，订阅者 connect 到此）
 
 
 @dataclass

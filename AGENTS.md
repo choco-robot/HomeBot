@@ -53,6 +53,7 @@ homebot/
 │   │   │   ├── speech_interaction/# 语音交互
 │   │   │   └── imitation_learning/# 模仿学习
 │   │   ├── services/          # 服务层
+│   │   │   ├── message_bus/       # 通用消息总线（XPUB-XSUB 代理，5590/5591）
 │   │   │   ├── motion_service/    # 运动控制服务
 │   │   │   │   ├── chassis_service.py   # 底盘服务（含仲裁器）
 │   │   │   │   └── chassis_arbiter/     # 仲裁器核心
@@ -65,6 +66,7 @@ homebot/
 │   │   │   ├── audio/         # 音频驱动
 │   │   │   └── ftservo_driver.py  # 飞特舵机底层驱动
 │   │   ├── examples/          # 示例代码
+│   │   ├── homebot_cli/       # 统一命令行工具（homebot 命令：start/stop/status/topic/move/doctor）
 │   │   └── tests/             # 测试代码
 │   ├── tools/                 # 辅助脚本（模型下载等）
 │   ├── models/                # 机器学习模型（YOLO 等）
@@ -147,6 +149,25 @@ homebot/
 - 震动控制反馈（Windows 原生支持；Linux/macOS 视驱动能力而定）
 
 ### 2. 服务层 (Services)
+
+**通用消息总线** (`services/message_bus/`):
+- XPUB-XSUB 代理（broker），为自定义消息提供统一的发布/订阅通道
+- XSUB bind `tcp://*:5590`（发布者 connect 到此），XPUB bind `tcp://*:5591`（订阅者 connect 到此）
+- 消息为 ZMQ multipart `[topic, json_payload]`，信封格式 `{"type", "data", "timestamp"}`
+- 新增消息通道无需申请端口；用户自定义消息约定使用 `user.*` / `ext.*` 前缀
+- 客户端封装见 `common/bus.py`：
+  ```python
+  from common.bus import BusPublisher, BusSubscriber
+
+  pub = BusPublisher()
+  pub.publish("user.temperature", {"value": 25.6})   # 发布自定义消息
+
+  sub = BusSubscriber()
+  sub.on_message("user.", lambda msg: print(msg))    # 按前缀订阅
+  sub.start()
+  ```
+- `common/bus.py` 另提供 `ZMQRequestClient`：带"超时自动重建 socket"的通用 REQ 客户端
+- 注意：视频流等大流量数据不走总线，继续用 vision_service 专用通道（5560）
 
 **底盘服务** (`services/motion_service/chassis_service.py`):
 - ZeroMQ REP 模式监听控制指令
@@ -337,7 +358,36 @@ pip install -r requirements.txt
 
 ### 启动方式
 
-**方式一：一键启动（推荐）**
+**方式零：homebot CLI（推荐，统一管理入口）**
+
+editable 安装后可直接使用 `homebot` 命令，或 `python -m homebot_cli`：
+
+```bash
+# 服务管理（后台运行，日志在 software/logs/<服务名>.log）
+homebot start                 # 启动核心服务: bus motion vision web
+homebot start speech          # 启动指定服务（可多个）
+homebot stop motion           # 停止服务
+homebot restart bus
+homebot status                # 查看各服务进程/端口状态
+homebot logs vision -f        # 查看/跟踪服务日志
+
+# 功能调用与调试
+homebot move --vx 0.2 -d 2                        # 底盘前进 2 秒后自动停止
+homebot topic echo user.                          # 订阅消息总线（类似 ros topic echo）
+homebot topic pub user.test '{"value": 1}'        # 向总线发布消息
+homebot doctor                                    # 环境检查（配置/密钥/串口/模型/端口）
+```
+
+**Tab 补全**（click 内置，支持 bash/zsh/fish；Windows 下推荐 Git Bash）：
+
+```bash
+eval "$(_HOMEBOT_COMPLETE=bash_source homebot)"   # bash / Git Bash，可写入 ~/.bashrc
+homebot completion --shell zsh                    # 查看其他 shell 的激活方法
+```
+
+注意：PowerShell / cmd 不支持 click 内置补全。
+
+**方式一：一键启动（窗口式）**
 ```bash
 cd software
 ..\venv\Scripts\python.exe start_system.py    # Windows
@@ -524,6 +574,22 @@ python software/tools/build_arm_teleop_exe.py
 - 若主控电脑安装了飞特 `scservo_sdk`，可额外加入 `--hidden-import scservo_sdk`
 - exe 体积主要由 `pyzmq` 和 Python 运行时决定，通常在 15–30 MB
 
+## CLI 打包为 exe
+
+CLI 工具（homebot_cli）可打包为单文件可执行程序，作为控制端/调试端工具使用：
+
+```bash
+venv\Scripts\python.exe software/tools/build_homebot_cli_exe.py   # Windows
+venv/bin/python software/tools/build_homebot_cli_exe.py           # Linux/macOS
+```
+
+打包完成后得到 `dist/homebot.exe`。
+
+注意：
+- 打包版仅包含远程调试命令（status / topic / move / doctor），通过网络连接机器人
+- `start` / `stop` / `restart` / `logs` 服务管理命令在打包版中不可用（运行时会提示）
+- 打包时已排除 `opencv`、`flask`、`ultralytics` 等大库，依赖仅 pyzmq/click
+
 ## 扩展开发
 
 添加新应用模块的步骤：
@@ -531,7 +597,8 @@ python software/tools/build_arm_teleop_exe.py
 2. 添加 `__init__.py` 和 `__main__.py`
 3. 使用 `ChassisArbiterClient` 与底盘服务通信
 4. 使用 `VisionSubscriber` 订阅图像流
+5. 需要自定义消息时，使用 `common/bus.py` 的 `BusPublisher` / `BusSubscriber` 通过消息总线（5590/5591）收发，无需新增端口
 
 ---
 
-*最后更新：2026-04-28*
+*最后更新：2026-08-24*

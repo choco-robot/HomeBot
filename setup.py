@@ -8,6 +8,7 @@ setup(
     package_dir={"": "software/src"},
     install_requires=[
         "pyzmq>=25.0.0",
+        "click>=8.0",
         "opencv-python>=4.8.0",
         "pyserial>=3.5",
         "flask>=3.0.0",
@@ -22,5 +23,10 @@ setup(
         "websockets>=12.0",
         "volcengine-python-sdk",
     ],
+    entry_points={
+        "console_scripts": [
+            "homebot=homebot_cli.main:cli",
+        ],
+    },
     include_package_data=True,
 )
