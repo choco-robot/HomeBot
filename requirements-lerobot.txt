@@ -1,0 +1,19 @@
+# LeRobot 集成（模仿学习数采/推理）专用依赖
+#
+# 不要装进项目主 venv——建议为 LeRobot 建独立环境：
+#   - LeRobot 官方支持 Python 3.10-3.12，本项目 venv 是 3.13，兼容性未验证
+#   - 推理（policy_runner）需要 torch（GPU 机器装 CUDA 版；机器人本机推理装 CPU 版）
+#   - 数采（lerobot.record）在连接机器人硬件的机器上运行即可
+#
+# 安装：
+#   uv venv venv-lerobot --python 3.12
+#   venv-lerobot\Scripts\python.exe -m pip install -r requirements-lerobot.txt   # 或 uv pip install
+#
+# 注意：HomeBot 侧代码以包形式被引用，运行时需把 software/src 加入 PYTHONPATH：
+#   set PYTHONPATH=E:\develop\HomeBot\homebot\software\src   (Windows)
+#   export PYTHONPATH=.../software/src                        (Linux/macOS)
+
+lerobot>=0.3.0
+torch>=2.4
+# 数采遥操作主臂（so101_leader）需要 feetech SDK：
+feetech-servo-sdk

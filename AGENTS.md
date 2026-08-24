@@ -250,6 +250,24 @@ PRIORITIES = {
   - `get_robot_status()`: 获取状态
 - 架构: WakeupASR(PUB) → SpeechApp(SUB) → TTS(本地)
 
+**模仿学习 / LeRobot 集成** (`applications/imitation_learning/`):
+- **Robot 适配器** (`robot.py`): `HomeBotRobot` 实现 LeRobot `Robot` 接口并注册为 `type="homebot"`，使 `lerobot.record` / `lerobot.teleoperate` 官方工具链可直接使用；机械臂用 LeRobot 标准关节命名（shoulder_pan 等）与校准流程
+- **底盘适配** (`chassis_adapter.py`): 双形态抽象——`omni3`（三轮全向，轮舵机注册到 lerobot 电机总线，共享串口）、`diff2`（双轮差动，懒加载 homebot-navi 分支的 diff_driver，合并后即用）、`none`（纯臂）
+- **关节映射** (`joint_map.py`): HomeBot ↔ LeRobot 关节命名与夹爪单位（度 ↔ 0-100）换算
+- **推理部署** (`policy_runner.py`): 服务级运行 ACT/SmolVLA——VisionSubscriber 取图 + arm_service 查询关节，策略输出经仲裁器下发（`source="auto"`，保留急停/超时保护），可跨机器运行
+- **校准验证** (`verify_calibration.py`): 对比 LeRobot 与 HomeBot 两套坐标系读数
+- **校准约定（重要）**: LeRobot 校准会把 homing offset 写入舵机寄存器；校准时必须将机械臂摆放到 HomeBot 零位姿态（各关节 0°），使两套坐标系重合，避免影响 web/手柄/语音等现有功能
+- 数采示例：
+  ```bash
+  lerobot.record --robot.type=homebot --robot.port=COM23 --robot.chassis_type=omni3 \
+      --teleop.type=so101_leader --teleop.port=COMxx ...
+  ```
+- 推理示例：
+  ```bash
+  python -m applications.imitation_learning run-policy --policy <训练输出目录> --robot-host 192.168.x.x
+  ```
+- lerobot 为独立依赖（`requirements-lerobot.txt`），不进主 venv
+
 ## 配置管理
 
 所有配置集中在 `software/src/configs/config.py`，使用 dataclass 定义：
