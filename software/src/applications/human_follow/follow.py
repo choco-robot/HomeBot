@@ -207,15 +207,17 @@ class HumanFollowApp:
             logger.warning(f"发送速度指令失败: {e}")
             return False
     
-    def _process_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
+    def _process_frame(self, frame: np.ndarray, display: bool = False) -> Optional[np.ndarray]:
         """
         处理单帧图像
         
         Args:
             frame: 输入图像
+            display: 是否需要可视化输出 (仅 display 模式才执行绘制,
+                     避免非显示模式下的全帧拷贝开销)
             
         Returns:
-            处理后的图像（调试用）
+            display=True 时返回可视化后的图像（调试用）, 否则返回 None
         """
         if frame is None:
             return None
@@ -300,7 +302,9 @@ class HumanFollowApp:
         # 更新FPS
         self._update_fps()
         
-        # 返回可视化图像（可选）
+        # 仅 display 模式才执行可视化 (内部有全帧拷贝, 非显示模式下跳过)
+        if not display:
+            return None
         return self._visualize(frame, target, detections)
     
     def _visualize(self, frame: np.ndarray, target, detections) -> np.ndarray:
@@ -456,7 +460,7 @@ class HumanFollowApp:
                     continue
                 
                 # 处理帧
-                output = self._process_frame(frame)
+                output = self._process_frame(frame, display=display)
                 
                 # 显示（调试用）
                 if display and output is not None:

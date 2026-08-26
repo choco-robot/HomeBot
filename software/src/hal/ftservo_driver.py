@@ -5,6 +5,7 @@
 """
 import logging
 import sys
+import threading
 import time
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
@@ -51,6 +52,15 @@ except Exception as _e:
         def ReadSpeed(self, scs_id):
             return 0, COMM_SUCCESS, 0
 
+        def ReadPosSpeed(self, scs_id):
+            return self._sim_positions.get(scs_id, 2048), 0, COMM_SUCCESS, 0
+
+        def SyncReadPos(self, scs_ids):
+            return {sid: self._sim_positions.get(sid, 2048) for sid in scs_ids}
+
+        def SyncReadPosSpeed(self, scs_ids):
+            return {sid: (self._sim_positions.get(sid, 2048), 0) for sid in scs_ids}
+
         def ReadVoltage(self, scs_id):
             return 120, COMM_SUCCESS, 0  # 模拟12.0V
 
@@ -62,6 +72,9 @@ except Exception as _e:
 
         def WriteSpec(self, scs_id, speed, acc):
             return COMM_SUCCESS, 0
+
+        def SyncWriteSpec(self, speed_dict, acc=50):
+            return COMM_SUCCESS
 
         def RegWritePosEx(self, scs_id, position, speed, acc):
             return COMM_SUCCESS, 0
@@ -157,6 +170,10 @@ class FTServoBus:
         self.packet_handler: Optional[sms_sts] = None
         self._connected = False
         self._simulation = False
+        # 串口访问互斥锁：scservo_sdk 的 PortHandler 非线程安全，
+        # 所有串口访问方法（read/write/sync_read 等）内部均持有该锁，
+        # 粒度为"单次串口事务"，调用方无需再自行加锁
+        self.lock = threading.RLock()
 
     def connect(self) -> bool:
         """连接舵机总线"""
@@ -211,7 +228,8 @@ class FTServoBus:
         if self._simulation:
             return True, 0
 
-        model_number, comm_result, error = self.packet_handler.ping(servo_id)
+        with self.lock:
+            model_number, comm_result, error = self.packet_handler.ping(servo_id)
         return comm_result == COMM_SUCCESS, model_number
 
     def write_position(self, servo_id: int, position: int,
@@ -234,9 +252,10 @@ class FTServoBus:
         if self._simulation:
             return True
 
-        comm_result, error = self.packet_handler.WritePosEx(
-            servo_id, position, speed, acc
-        )
+        with self.lock:
+            comm_result, error = self.packet_handler.WritePosEx(
+                servo_id, position, speed, acc
+            )
 
         if comm_result != COMM_SUCCESS:
             print(f"[FTServo] Write position failed for ID {servo_id}: {comm_result}")
@@ -251,20 +270,53 @@ class FTServoBus:
         if self._simulation:
             return 2048
 
-        position, comm_result, error = self.packet_handler.ReadPos(servo_id)
+        with self.lock:
+            position, comm_result, error = self.packet_handler.ReadPos(servo_id)
 
         if comm_result != COMM_SUCCESS:
             return None
         return position
 
     def sync_read_positions(self, servo_ids: List[int]) -> Dict[int, Optional[int]]:
-        """同步读取多个舵机位置"""
+        """
+        同步读取多个舵机位置（一次 SYNC_READ 广播，替代逐个 ReadPos）
+
+        Returns:
+            {servo_id: 位置值 or None, ...}，读取失败的舵机为 None
+        """
         if not self._connected:
             return {sid: None for sid in servo_ids}
 
-        positions = {}
-        positions = self.packet_handler.SyncReadPos(servo_ids)
-        return positions
+        with self.lock:
+            raw = self.packet_handler.SyncReadPos(servo_ids)
+
+        # SDK 对读取失败的舵机会省略键，统一补 None，保持返回契约完整
+        return {sid: raw.get(sid) for sid in servo_ids}
+
+    def sync_read_states(self, servo_ids: List[int]) -> Dict[int, Optional[ServoState]]:
+        """
+        同步读取多个舵机的位置和速度（一次 SYNC_READ 广播读 4 字节）
+
+        Returns:
+            {servo_id: ServoState or None, ...}，读取失败的舵机为 None
+        """
+        if not self._connected:
+            return {sid: None for sid in servo_ids}
+
+        if self._simulation:
+            return {sid: ServoState(id=sid, position=2048) for sid in servo_ids}
+
+        with self.lock:
+            raw = self.packet_handler.SyncReadPosSpeed(servo_ids)
+
+        states: Dict[int, Optional[ServoState]] = {}
+        for sid in servo_ids:
+            ps = raw.get(sid)
+            if ps is None:
+                states[sid] = None
+            else:
+                states[sid] = ServoState(id=sid, position=ps[0], speed=ps[1])
+        return states
 
     def set_wheel_mode(self, servo_id: int) -> bool:
         """设置舵机为轮式模式（连续旋转）"""
@@ -274,7 +326,8 @@ class FTServoBus:
         if self._simulation:
             return True
 
-        comm_result, error = self.packet_handler.WheelMode(servo_id)
+        with self.lock:
+            comm_result, error = self.packet_handler.WheelMode(servo_id)
 
         if comm_result != COMM_SUCCESS:
             print(f"[FTServo] Set wheel mode failed for ID {servo_id}")
@@ -299,10 +352,42 @@ class FTServoBus:
         if self._simulation:
             return True
 
-        comm_result, error = self.packet_handler.WriteSpec(servo_id, speed, acc)
+        with self.lock:
+            comm_result, error = self.packet_handler.WriteSpec(servo_id, speed, acc)
 
         if comm_result != COMM_SUCCESS:
-            print(f"[FTServo] Write speed failed for ID {servo_id}")
+            print(f"[FTServo] Write speed failed for ID {servo_id}: {comm_result}")
+            return False
+        return True
+
+    def sync_write_speeds(self, speeds: Dict[int, int], acc: int = 50) -> bool:
+        """
+        同步写入多个舵机速度（轮式模式下）
+
+        使用 SYNC_WRITE 广播指令一次写入所有舵机，不等待状态包返回，
+        相比逐个 write_speed（每次完整 TxRx，舵机掉线时单次超时约 50ms）
+        可大幅降低多轮底盘的控制延迟。
+
+        注意：txOnly 无回包，写失败无法感知，需配合低频读回校验补偿。
+
+        Args:
+            speeds: {servo_id: speed, ...}，速度范围 -32767 ~ 32767
+            acc: 加速度
+        """
+        if not self._connected:
+            return False
+
+        # 限制速度范围
+        speeds = {sid: max(-32767, min(32767, int(s))) for sid, s in speeds.items()}
+
+        if self._simulation:
+            return True
+
+        with self.lock:
+            comm_result = self.packet_handler.SyncWriteSpec(speeds, acc)
+
+        if comm_result != COMM_SUCCESS:
+            print(f"[FTServo] Sync write speeds failed: {comm_result}")
             return False
         return True
 
@@ -315,9 +400,10 @@ class FTServoBus:
             servo_id = BROADCAST_ID
 
         # 写入扭矩使能寄存器 (地址40)，值1表示使能
-        comm_result, error = self.packet_handler.write1ByteTxRx(
-            servo_id, SMS_STS_TORQUE_ENABLE, 1
-        )
+        with self.lock:
+            comm_result, error = self.packet_handler.write1ByteTxRx(
+                servo_id, SMS_STS_TORQUE_ENABLE, 1
+            )
         return comm_result == COMM_SUCCESS
 
     def torque_disable(self, servo_id: int = -1) -> bool:
@@ -329,9 +415,10 @@ class FTServoBus:
             servo_id = BROADCAST_ID
 
         # 写入扭矩使能寄存器 (地址40)，值0表示失能
-        comm_result, error = self.packet_handler.write1ByteTxRx(
-            servo_id, SMS_STS_TORQUE_ENABLE, 0
-        )
+        with self.lock:
+            comm_result, error = self.packet_handler.write1ByteTxRx(
+                servo_id, SMS_STS_TORQUE_ENABLE, 0
+            )
         return comm_result == COMM_SUCCESS
 
     def sync_write_positions(self, positions: Dict[int, Tuple[int, int, int]]) -> bool:
@@ -348,19 +435,20 @@ class FTServoBus:
             return True
 
         # 使用 GroupSyncWrite
-        self.packet_handler.SyncWritePosEx(positions)
+        with self.lock:
+            self.packet_handler.SyncWritePosEx(positions)
 
         return True
 
     def get_state(self, servo_id: int) -> Optional[ServoState]:
-        """获取舵机状态"""
+        """获取舵机状态（一次 ReadPosSpeed 事务同时读取位置+速度）"""
         if not self._connected or self._simulation:
             return ServoState(id=servo_id, position=2048)
 
-        position, comm_result1, error1 = self.packet_handler.ReadPos(servo_id)
-        speed, comm_result2, error2 = self.packet_handler.ReadSpeed(servo_id)
+        with self.lock:
+            position, speed, comm_result, error = self.packet_handler.ReadPosSpeed(servo_id)
 
-        if comm_result1 != COMM_SUCCESS:
+        if comm_result != COMM_SUCCESS:
             return None
 
         return ServoState(
@@ -385,7 +473,8 @@ class FTServoBus:
         if self._simulation:
             return 12.0  # 模拟模式返回默认电压
         
-        voltage, comm_result, error = self.packet_handler.ReadVoltage(servo_id)
+        with self.lock:
+            voltage, comm_result, error = self.packet_handler.ReadVoltage(servo_id)
         
         if comm_result != COMM_SUCCESS:
             return None
@@ -409,7 +498,8 @@ class FTServoBus:
         if self._simulation:
             return 25  # 模拟模式返回默认温度
         
-        temp, comm_result, error = self.packet_handler.ReadTemperature(servo_id)
+        with self.lock:
+            temp, comm_result, error = self.packet_handler.ReadTemperature(servo_id)
         
         if comm_result != COMM_SUCCESS:
             return None

@@ -151,6 +151,33 @@ class sms_sts(protocol_packet_handler):
                 print("%s" % self.getRxPacketError(scs_error))
         self.groupSyncRead.clearParam()
         return pos_dict
+
+    def SyncReadPosSpeed(self, scs_ids):
+        """同步读取多个舵机的位置和速度（从 PRESENT_POSITION_L 起读 4 字节）
+
+        Returns:
+            {scs_id: (position, speed), ...}，读取失败的舵机不在字典中
+        """
+        for scs_id in scs_ids:
+            self.groupSyncRead.addParam(scs_id)
+        scs_comm_result = self.groupSyncRead.txRxPacket()
+        if scs_comm_result != COMM_SUCCESS:
+            print("%s" % self.getTxRxResult(scs_comm_result))
+        pos_speed_dict = {}
+        for scs_id in scs_ids:
+            scs_data_result, scs_error = self.groupSyncRead.isAvailable(scs_id, SMS_STS_PRESENT_POSITION_L, 4)
+            if scs_data_result == True:
+                scs_present_position = self.groupSyncRead.getData(scs_id, SMS_STS_PRESENT_POSITION_L, 2)
+                scs_present_speed = self.groupSyncRead.getData(scs_id, SMS_STS_PRESENT_SPEED_L, 2)
+                pos_speed_dict[scs_id] = (self.scs_tohost(scs_present_position, 15),
+                                          self.scs_tohost(scs_present_speed, 15))
+            else:
+                print("[ID:%03d] groupSyncRead getdata failed" % scs_id)
+                continue
+            if scs_error != 0:
+                print("%s" % self.getRxPacketError(scs_error))
+        self.groupSyncRead.clearParam()
+        return pos_speed_dict
     
     def RegWritePosEx(self, scs_id, position, speed, acc):
         position = self.scs_toscs(position, 15)
@@ -167,6 +194,22 @@ class sms_sts(protocol_packet_handler):
         speed = self.scs_toscs(speed, 15)
         txpacket = [acc, 0, 0, 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
         return self.writeTxRx(scs_id, SMS_STS_ACC, len(txpacket), txpacket)
+
+    def SyncWriteSpec(self, speed_dict, acc=50):
+        """轮式模式速度同步写（SYNC_WRITE 广播指令，不等待状态包返回）
+
+        数据布局与 WriteSpec 一致：[acc, 0, 0, 0, 0, speed_l, speed_h]
+
+        Args:
+            speed_dict: {scs_id: speed, ...}，speed 带符号，范围 -32767 ~ 32767
+            acc: 加速度
+        """
+        self.groupSyncWrite.clearParam()
+        for scs_id, speed in speed_dict.items():
+            speed = self.scs_toscs(speed, 15)
+            txpacket = [acc, 0, 0, 0, 0, self.scs_lobyte(speed), self.scs_hibyte(speed)]
+            self.groupSyncWrite.addParam(scs_id, txpacket)
+        return self.groupSyncWrite.txPacket()
 
     def LockEprom(self, scs_id):
         return self.write1ByteTxRx(scs_id, SMS_STS_LOCK, 1)
