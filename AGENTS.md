@@ -134,6 +134,8 @@ homebot/
 **舵机驱动** (`hal/ftservo_driver.py`):
 - 封装 ftservo-python-sdk (scservo_sdk)
 - 支持位置模式、速度模式（轮式）
+- 所有串口访问方法内部持有 RLock（单次事务粒度），多线程共享总线（底盘+机械臂+电池）安全，调用方无需加锁
+- 多舵机读取用 `sync_read_positions` / `sync_read_states`（一次 SYNC_READ 广播），避免逐个 TxRx
 - 自动模拟模式（SDK 未安装时）
 
 **摄像头驱动** (`hal/camera/driver.py`):
@@ -170,10 +172,12 @@ homebot/
 - 注意：视频流等大流量数据不走总线，继续用 vision_service 专用通道（5560）
 
 **底盘服务** (`services/motion_service/chassis_service.py`):
-- ZeroMQ REP 模式监听控制指令
+- ZeroMQ REP 模式监听控制指令（RCVTIMEO 阻塞接收）
 - **仲裁器核心逻辑**：优先级-based 控制权管理
 - 紧急停止锁定机制（触发后需归位解锁）
 - 1秒超时自动释放控制权
+- 轮速通过同步写（sync write）一次下发 3 轮，速度不变时跳过串口写
+- 电池电压读取与舵机读回校验在独立后台线程执行（约 5s 周期），不阻塞控制循环；串口互斥由 `FTServoBus` 各访问方法内部锁（`self.lock`，单次事务粒度）保证，底盘/机械臂/电池等所有访问方共享，调用方无需自行持锁
 
 控制源优先级（从高到低）：
 ```python

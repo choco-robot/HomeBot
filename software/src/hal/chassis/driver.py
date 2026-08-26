@@ -50,6 +50,9 @@ class ChassisDriver:
         self._current_vy = 0.0
         self._current_omega = 0.0
 
+        # 上次实际下发的各轮舵机速度值（用于去重，相同速度跳过串口写）
+        self._last_servo_speeds: Optional[List[int]] = None
+
         self._initialized = False
 
     def initialize(self) -> bool:
@@ -97,8 +100,11 @@ class ChassisDriver:
         self._current_vy = 0.0
         self._current_omega = 0.0
 
-        for servo_id in self.wheel_ids:
-            self.bus.write_speed(servo_id, 0)
+        # 同步写一次停止所有轮子（不等待回包，掉线时不会长时间阻塞）
+        self.bus.sync_write_speeds({sid: 0 for sid in self.wheel_ids})
+
+        # 清空速度缓存，保证 stop 后的下一条指令一定下发
+        self._last_servo_speeds = None
 
     def set_velocity(self, vx: float, vy: float, omega: float) -> bool:
         """
@@ -130,13 +136,20 @@ class ChassisDriver:
         # 轮子速度 = (vx, vy, omega) -> 各轮速度
         wheel_speeds = self._inverse_kinematics(vx, vy, omega)
         # print(wheel_speeds)
-        # 转换为舵机速度值并发送
-        for i, servo_id in enumerate(self.wheel_ids):
-            speed = wheel_speeds[i]
-            servo_speed = self._wheel_speed_to_servo(speed)
-            self.bus.write_speed(servo_id, servo_speed)
+        # 转换为舵机速度值
+        servo_speeds = [self._wheel_speed_to_servo(s) for s in wheel_speeds]
 
-        return True
+        # 速度去重：与上次下发完全一致则跳过串口写（web 端有心跳式重复指令）
+        if servo_speeds == self._last_servo_speeds:
+            return True
+
+        # 一条 SYNC_WRITE 广播指令写入全部 3 个轮子（txOnly 不等回包）
+        speeds_dict = {sid: spd for sid, spd in zip(self.wheel_ids, servo_speeds)}
+        success = self.bus.sync_write_speeds(speeds_dict)
+
+        if success:
+            self._last_servo_speeds = servo_speeds
+        return success
 
     def _inverse_kinematics(self, vx: float, vy: float, omega: float) -> List[float]:
         """

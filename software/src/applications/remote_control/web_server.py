@@ -541,6 +541,7 @@ class VideoStreamClient:
         self._thread: Optional[Thread] = None
         self._latest_frame: Optional[bytes] = None
         self._frame_lock = Lock()
+        self._frame_seq = 0  # 帧单调计数, 用于 MJPEG 去重
         
     def connect(self) -> bool:
         """连接到VisionService"""
@@ -548,6 +549,9 @@ class VideoStreamClient:
             self._context = zmq.Context()
             self._socket = self._context.socket(zmq.SUB)
             self._socket.setsockopt(zmq.RCVTIMEO, 1000)
+            self._socket.setsockopt(zmq.RCVHWM, 1)      # 最小接收队列, 队列满时丢弃旧帧
+            # 注意: 不要加 ZMQ_CONFLATE —— 与 multipart 消息组合会触发
+            # libzmq 断言崩溃 (fq.cpp !_more), 实测 A/B 已复现
             self._socket.setsockopt(zmq.SUBSCRIBE, b"")
             self._socket.connect(self.vision_addr)
             self._connected = True
@@ -614,6 +618,7 @@ class VideoStreamClient:
                     jpeg_bytes = parts[1]
                     with self._frame_lock:
                         self._latest_frame = jpeg_bytes
+                        self._frame_seq += 1
                     frame_count += 1
                     
                     # 每5秒打印一次统计
@@ -636,8 +641,16 @@ class VideoStreamClient:
         with self._frame_lock:
             return self._latest_frame
     
-    def generate_mjpeg(self) -> Generator[bytes, None, None]:
-        """生成MJPEG流用于HTTP响应"""
+    def get_frame_with_seq(self) -> Tuple[Optional[bytes], int]:
+        """获取最新的JPEG帧数据及其单调计数 (用于帧更新去重)"""
+        with self._frame_lock:
+            return self._latest_frame, self._frame_seq
+    
+    def generate_mjpeg(self, max_fps: float = 30.0) -> Generator[bytes, None, None]:
+        """生成MJPEG流用于HTTP响应
+        
+        仅在新帧到达时才推送 (按帧计数去重), 并通过 max_fps 限制最大帧率。
+        """
         import cv2
         import numpy as np
         
@@ -652,10 +665,18 @@ class VideoStreamClient:
         
         frame_count = 0
         last_log = time.time()
+        last_seq = -1
+        min_interval = 1.0 / max_fps if max_fps > 0 else 0
         
         while self._running:
-            frame = self.get_frame()
+            t0 = time.time()
+            frame, seq = self.get_frame_with_seq()
             if frame:
+                if seq == last_seq:
+                    # 无新帧, 短暂休眠等待下一帧
+                    time.sleep(0.005)
+                    continue
+                last_seq = seq
                 frame_count += 1
                 if time.time() - last_log > 5:
                     print(f"[Video] Streaming {frame_count} frames")
@@ -667,6 +688,11 @@ class VideoStreamClient:
                        b'Content-Type: image/jpeg\r\n'
                        b'Content-Length: ' + str(len(frame)).encode() + b'\r\n'
                        b'\r\n' + frame + b'\r\n')
+                
+                # 帧率上限: 补足最小帧间隔
+                elapsed = time.time() - t0
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
             else:
                 # 没有帧时发送占位图片
                 img = np.zeros((240, 320, 3), dtype=np.uint8)

@@ -148,22 +148,22 @@ class ArmService:
             self._current_priority = 0
     
     def _get_current_joint_states(self) -> Dict[str, float]:
-        """获取当前关节状态"""
+        """获取当前关节状态（一次 SYNC_READ 同步读获取全部关节位置）"""
         if not self.arm or not self.arm._initialized:
             return {}
         
+        joint_ids = self.arm.config.joint_ids
+        try:
+            positions = self.arm.bus.sync_read_positions(list(joint_ids.values()))
+        except Exception:
+            positions = {}
+        
         joint_states = {}
-        for joint_name, servo_id in self.arm.config.joint_ids.items():
-            try:
-                # 读取当前位置
-                pos = self.arm.bus.read_position(servo_id)
-                if pos is not None:
-                    angle = self.arm._pos_to_angle(pos)
-                    joint_states[joint_name] = angle
-                else:
-                    # 读取失败，使用缓存值
-                    joint_states[joint_name] = self.arm._current_angles.get(joint_name, 0)
-            except Exception as e:
+        for joint_name, servo_id in joint_ids.items():
+            pos = positions.get(servo_id)
+            if pos is not None:
+                joint_states[joint_name] = self.arm._pos_to_angle(pos)
+            else:
                 # 读取失败，使用缓存值
                 joint_states[joint_name] = self.arm._current_angles.get(joint_name, 0)
         

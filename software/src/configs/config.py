@@ -19,9 +19,14 @@ logger = logging.getLogger(__name__)
 class CameraConfig:
     """摄像头配置"""
     device_id: int = 1
-    width: int = 1920     # 摄像头原始分辨率
+    width: int = 1920     # 摄像头采集分辨率
     height: int = 1080
     fps: int = 30
+    # 发布分辨率（0=与采集分辨率相同）；发布给订阅端的图像缩放到该分辨率
+    publish_width: int = 640
+    publish_height: int = 480
+    # JPEG 编码质量 (1-100)，越高越清晰但编码越慢、帧越大
+    jpeg_quality: int = 70
 
 
 @dataclass
@@ -407,7 +412,9 @@ class ArmTeleopConfig:
 class BatteryConfig:
     """电池监测配置"""
     # 用于读取电压的舵机ID列表（按优先级排序）
-    servo_ids: list = field(default_factory=lambda: [1])  # 默认使用ID 1
+    # 注意：该配置由底盘服务使用（读底盘总线上的舵机），默认使用底盘后轮 ID 7；
+    # 机械臂总线上的 ID（如 1）在底盘服务中会读取超时
+    servo_ids: list = field(default_factory=lambda: [7])
     
     # 电压阈值配置 (3S锂电池)
     full_voltage: float = 12.6     # 满电电压 (V)

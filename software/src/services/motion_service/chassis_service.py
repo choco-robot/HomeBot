@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import threading
 import time
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
@@ -14,8 +15,11 @@ from .chassis_arbiter import ControlCommand, ArbiterResponse, PRIORITIES
 from .servo_bus_manager import ServoBusManager, get_servo_bus
 from hal.chassis.driver import ChassisDriver
 from hal.battery.driver import BatteryDriver
+from common.logging import get_logger
 from common.messages import MessageType, serialize
 from configs import get_config, ChassisConfig, BatteryConfig
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -141,7 +145,14 @@ class ChassisService:
         # 电池状态发布
         self._last_battery_publish_time: float = 0.0
         self._last_battery_state = None
-        
+
+        # 电池监测后台线程（读取+发布移出控制主循环，避免阻塞串口读 stall 控制链路）
+        self._battery_stop_event = threading.Event()
+        self._battery_thread: Optional[threading.Thread] = None
+
+        # _execute_to_hardware 日志去重状态（仅在速度/来源/结果变化时输出）
+        self._last_exec_log_state = None
+
         self._lock = Lock()
         self._context: Optional[zmq.Context] = None
         self._rep_socket: Optional[zmq.Socket] = None
@@ -213,6 +224,45 @@ class ChassisService:
         # 低电量警告
         if battery_state.is_valid and self.battery.is_critical_battery():
             print(f"[CHASSIS_SVC] [WARNING] 电池电量严重不足！请立即充电！")
+
+    def _battery_loop(self) -> None:
+        """
+        电池监测后台线程：周期性读取电池状态并发布，顺带做低频舵机在线校验。
+
+        电池读取是阻塞串口 TxRx（单次超时约 50ms），放在独立线程避免 stall 控制主循环。
+        串口互斥由 FTServoBus 方法内部锁保证，无需在此持锁。
+        """
+        while self._running:
+            # 按发布间隔等待，停止事件可立即打断
+            if self._battery_stop_event.wait(self._battery_publish_interval):
+                break
+            if self._servo_bus is None:
+                continue
+            self._publish_battery_state()
+            self._verify_wheel_servos()
+
+    def _verify_wheel_servos(self) -> None:
+        """
+        低频校验轮子舵机在线状态（一次 SYNC_READ 同步读读回 3 个轮子的位置）。
+
+        补偿 sync write（txOnly）无回包、写失败无感知的风险。
+        """
+        bus = self._servo_bus
+        if bus is None or not bus.is_connected():
+            return
+
+        chassis_cfg = get_config().chassis
+        wheel_ids = [chassis_cfg.left_front_id, chassis_cfg.right_front_id, chassis_cfg.rear_id]
+        try:
+            positions = bus.sync_read_positions(wheel_ids)
+        except Exception as e:
+            logger.warning(f"[CHASSIS_SVC] 舵机校验异常: {e}")
+            return
+
+        for wheel_id in wheel_ids:
+            if positions.get(wheel_id) is None:
+                logger.warning(f"[CHASSIS_SVC] 舵机校验失败: 轮子舵机 ID {wheel_id} 无响应，"
+                               f"同步写指令可能未生效")
     
     def _arbitrate(self, cmd: ControlCommand) -> ArbiterResponse:
         """仲裁核心逻辑"""
@@ -303,8 +353,12 @@ class ChassisService:
     def _execute_to_hardware(self, cmd: ControlCommand) -> None:
         """执行指令到底盘硬件"""
         success = self.chassis.set_velocity(cmd.vx, cmd.vy, cmd.vz)
-        status = "OK" if success else "FAIL"
-        print(f"[CHASSIS_SVC] [{status}] vx={cmd.vx:+.2f}, vz={cmd.vz:+.2f} [from {cmd.source}]")
+        # 仅在速度/来源/执行结果变化时输出，避免心跳式重复指令刷屏
+        log_state = (cmd.vx, cmd.vy, cmd.vz, cmd.source, success)
+        if log_state != self._last_exec_log_state:
+            self._last_exec_log_state = log_state
+            status = "OK" if success else "FAIL"
+            print(f"[CHASSIS_SVC] [{status}] vx={cmd.vx:+.2f}, vz={cmd.vz:+.2f} [from {cmd.source}]")
     
     def _parse_request(self, data: Dict[str, Any]) -> Optional[ControlCommand]:
         """解析REQ请求数据"""
@@ -355,9 +409,10 @@ class ChassisService:
         # 启动ZeroMQ
         self._context = zmq.Context()
         
-        # REP socket用于接收控制命令
+        # REP socket用于接收控制命令（10ms 阻塞接收超时，替代 NOBLOCK 忙轮询）
         self._rep_socket = self._context.socket(zmq.REP)
         self._rep_socket.setsockopt(zmq.LINGER, 0)
+        self._rep_socket.setsockopt(zmq.RCVTIMEO, 10)
         self._rep_socket.bind(self.rep_addr)
         
         # PUB socket用于发布电池状态
@@ -371,13 +426,19 @@ class ChassisService:
         
         # 发布一次初始电池状态
         self._publish_battery_state(force=True)
-        
+
+        # 启动电池监测后台线程（周期性读取+发布电池状态，含低频舵机校验）
+        self._battery_thread = threading.Thread(
+            target=self._battery_loop, name="battery-monitor", daemon=True
+        )
+        self._battery_thread.start()
+
         try:
             while self._running:
                 try:
-                    request_data = self._rep_socket.recv_json(flags=zmq.NOBLOCK)
+                    request_data = self._rep_socket.recv_json()
                     cmd = self._parse_request(request_data)
-                    
+
                     if cmd is None:
                         response = ArbiterResponse(
                             success=False, message="请求格式错误",
@@ -386,14 +447,13 @@ class ChassisService:
                         )
                     else:
                         response = self._arbitrate(cmd)
-                    
+
                     self._rep_socket.send_json(asdict(response))
-                    
+
                 except zmq.Again:
+                    # RCVTIMEO 超时：做控制权超时检查等 housekeeping
                     with self._lock:
                         self._check_timeout()
-                        self._publish_battery_state()
-                    time.sleep(0.001)
                     continue
                     
         except KeyboardInterrupt:
@@ -406,6 +466,11 @@ class ChassisService:
         if not getattr(self, '_stopped', False):
             self._stopped = True
             self._running = False
+            # 停止电池监测后台线程，避免关闭后继续访问串口
+            self._battery_stop_event.set()
+            if self._battery_thread is not None:
+                self._battery_thread.join(timeout=1.0)
+                self._battery_thread = None
             self.chassis.stop()
             self.chassis.close()
             if self._rep_socket:

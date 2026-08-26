@@ -36,6 +36,8 @@ class VisionService:
             
         # 创建 PUB socket 用于发布图像帧
         self._pub_socket = create_socket(zmq.PUB, bind=True, address=pub_addr)
+        # 限制发送队列长度: 慢订阅者时在发布端丢弃旧帧, 避免延迟累积
+        self._pub_socket.setsockopt(zmq.SNDHWM, 2)
         logger.info(f"VisionService PUB socket bound to {pub_addr}")
         
         # 相机配置
@@ -43,6 +45,10 @@ class VisionService:
         self._fps = getattr(config.camera, 'fps', 30) if hasattr(config, 'camera') else 30
         self._width = getattr(config.camera, 'width', 640) if hasattr(config, 'camera') else 640
         self._height = getattr(config.camera, 'height', 480) if hasattr(config, 'camera') else 480
+        # 发布分辨率与 JPEG 质量 (0 表示与采集分辨率相同)
+        self._pub_width = getattr(config.camera, 'publish_width', 0) if hasattr(config, 'camera') else 0
+        self._pub_height = getattr(config.camera, 'publish_height', 0) if hasattr(config, 'camera') else 0
+        self._jpeg_quality = getattr(config.camera, 'jpeg_quality', 70) if hasattr(config, 'camera') else 70
         
         # 相机驱动 (延迟初始化)
         self._cam = None
@@ -57,7 +63,12 @@ class VisionService:
         self._cam = CameraDriver(self._cam_device)
         self._cam._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         self._cam._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        self._cam._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))  # 设置为 MJPG 编码
+        # 采集端缓冲与帧率设置 (部分驱动不支持, 失败静默忽略)
+        self._cam._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 最小化驱动缓冲, 降低采集延迟
+        self._cam._cap.set(cv2.CAP_PROP_FPS, self._fps)
+        # FOURCC 必须最后设置: 之后再动 WIDTH/HEIGHT/FPS/BUFFERSIZE 会把格式重置回
+        # 默认 YUY2 (实测 DSHOW 下 1080p 从 MJPG 22fps 掉到 YUY2 5fps)
+        self._cam._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))  # MJPG 编码
         self._cam.capture_frame()  # 预热摄像头
         logger.info(f"Camera initialized: device={self._cam_device}, fps={self._fps}")
         def decode_fourcc(code):
@@ -116,8 +127,15 @@ class VisionService:
                 # 2. 处理图像 (子类可扩展)
                 processed_frame = self.process_frame(frame)
                 
-                # 3. 编码并发布
-                ret, buf = cv2.imencode('.jpg', processed_frame)
+                # 3. 按发布分辨率缩放 (仅当配置了发布分辨率且与采集不同时)
+                if (self._pub_width > 0 and self._pub_height > 0
+                        and (self._pub_width != self._width or self._pub_height != self._height)):
+                    processed_frame = cv2.resize(processed_frame, (self._pub_width, self._pub_height),
+                                                 interpolation=cv2.INTER_AREA)
+                
+                # 4. 编码并发布
+                ret, buf = cv2.imencode('.jpg', processed_frame,
+                                        [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality])
                 if not ret:
                     logger.warning("failed to encode frame")
                     continue
@@ -218,16 +236,20 @@ class VisionSubscriber:
         
         self._sub_socket = create_socket(zmq.SUB, bind=False, address=sub_addr)
         self._sub_socket.setsockopt(zmq.RCVHWM, 1)
-        self._sub_socket.setsockopt(zmq.CONFLATE, 1)
+        # 注意: 不要加 ZMQ_CONFLATE —— 与 multipart 消息组合会触发
+        # libzmq 断言崩溃 (fq.cpp !_more), 实测 A/B 已复现;
+        # RCVHWM=1 + 后台线程持续消费已能保证只留最新帧
         self._sub_socket.setsockopt(zmq.SUBSCRIBE, b"")
         self._sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
         
         # 后台线程相关
-        self._latest_frame = None
+        self._latest_frame = None       # 解码后的最新帧 (懒解码, 可能为 None)
+        self._latest_jpeg = None        # 最新帧的原始 JPEG bytes
         self._frame_lock = Lock()
         self._running = False
         self._thread = None
         self._frame_id = 0
+        self._decoded_frame_id = -1     # _latest_frame 对应的 frame_id (避免重复解码)
         
         logger.info(f"VisionSubscriber connected to {sub_addr}")
 
@@ -251,24 +273,19 @@ class VisionSubscriber:
         logger.info("VisionSubscriber stopped")
 
     def _receive_loop(self):
-        """后台线程持续接收图像帧."""
-        import cv2
-        import numpy as np
-        
+        """后台线程持续接收图像帧 (仅缓存原始 JPEG, 解码延迟到 read_frame)."""
         while self._running:
             try:
                 parts = self._sub_socket.recv_multipart()
                 if len(parts) == 2:
                     frame_id_str = parts[0].decode()
                     buf = parts[1]
-                    img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
-                    if img is not None:
-                        with self._frame_lock:
-                            self._latest_frame = img
-                            try:
-                                self._frame_id = int(frame_id_str)
-                            except ValueError:
-                                self._frame_id += 1
+                    with self._frame_lock:
+                        self._latest_jpeg = buf
+                        try:
+                            self._frame_id = int(frame_id_str)
+                        except ValueError:
+                            self._frame_id += 1
             except zmq.Again:
                 # 超时，继续循环
                 continue
@@ -277,17 +294,32 @@ class VisionSubscriber:
 
     def read_frame(self, timeout: int = 1000):
         """读取最新帧图像（非阻塞，从内存直接获取）.
-        
+
+        懒解码: 仅当缓存的帧比上次解码更新时才执行 JPEG 解码,
+        同一帧多次调用返回同一解码结果。
+
         Args:
             timeout: 保留参数，兼容性用途（实际不阻塞等待）
             
         Returns:
-            (frame_id, frame) 元组,如果没有帧返回 (None, None)
+            (frame_id, frame) 元组,如果没有帧返回 (None, None)。
+            注意: 返回的帧为内部缓存引用, 调用方不应原地修改它。
         """
+        import cv2
+        import numpy as np
+        
         with self._frame_lock:
-            if self._latest_frame is None:
+            if self._latest_jpeg is None:
                 return None, None
-            return self._frame_id, self._latest_frame.copy()
+            # 同一帧已解码过, 直接复用结果
+            if self._latest_frame is not None and self._decoded_frame_id == self._frame_id:
+                return self._frame_id, self._latest_frame
+            img = cv2.imdecode(np.frombuffer(self._latest_jpeg, np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                return None, None
+            self._latest_frame = img
+            self._decoded_frame_id = self._frame_id
+            return self._frame_id, img
 
     def read_loop(self, callback=None, display: bool = False):
         """持续读取图像帧.

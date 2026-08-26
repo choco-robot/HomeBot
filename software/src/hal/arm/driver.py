@@ -141,11 +141,12 @@ class ArmDriver:
         return True
 
     def _read_current_positions(self) -> None:
-        """读取当前所有关节位置"""
+        """读取当前所有关节位置（一次 SYNC_READ 同步读）"""
         positions = self.bus.sync_read_positions(list(self.config.joint_ids.values()))
         for joint_name, servo_id in self.config.joint_ids.items():
-            if servo_id in positions:
-                angle = self._pos_to_angle(positions[servo_id])
+            pos = positions.get(servo_id)
+            if pos is not None:
+                angle = self._pos_to_angle(pos)
                 self._current_angles[joint_name] = angle
             else:
                 # 如果读取失败，使用默认值
@@ -365,10 +366,12 @@ class ArmDriver:
         return self._current_angles.copy()
 
     def get_joint_states(self) -> Dict[str, Optional[ServoState]]:
-        """获取所有关节状态"""
+        """获取所有关节状态（一次 SYNC_READ 同步读获取全部关节位置+速度）"""
+        servo_ids = list(self.config.joint_ids.values())
+        bus_states = self.bus.sync_read_states(servo_ids)
         states = {}
         for joint_name, servo_id in self.config.joint_ids.items():
-            states[joint_name] = self.bus.get_state(servo_id)
+            states[joint_name] = bus_states.get(servo_id)
         return states
 
     def enable_torque(self) -> bool:
