@@ -31,7 +31,7 @@ def load_policy(policy_path: str, device: str = "cuda"):
     """
     try:
         import torch  # noqa: F401
-        from lerobot.configs import PreTrainedConfig
+        from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
     except ImportError as e:
         raise ImportError(

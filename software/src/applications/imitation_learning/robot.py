@@ -45,7 +45,7 @@ ARM_MOTOR_IDS = {
 try:
     from lerobot.cameras import make_cameras_from_configs
     from lerobot.cameras.configs import CameraConfig
-    from lerobot.lerobot_types import RobotAction, RobotObservation
+    from lerobot.types import RobotAction, RobotObservation
     from lerobot.motors import Motor, MotorCalibration, MotorNormMode
     from lerobot.motors.feetech import FeetechMotorsBus, OperatingMode
     from lerobot.robots import Robot, RobotConfig

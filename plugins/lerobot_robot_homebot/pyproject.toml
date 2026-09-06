@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_robot_homebot"
+version = "0.1.0"
+description = "LeRobot 第三方机器人插件：将 HomeBot 注册为 lerobot robot（type=\"homebot\"）"
+requires-python = ">=3.10"
+# 插件自动发现机制（register_third_party_devices/plugins）自 lerobot 0.4.0 起提供
+dependencies = ["lerobot>=0.4.0"]
+
+# 注意：不声明 homebot 依赖——HomeBot 代码通过 PYTHONPATH=software/src 提供，
+# 避免把主 venv 的重依赖（ultralytics/sherpa-onnx 等）拖进 lerobot 环境。
+
+[tool.setuptools.packages.find]
+include = ["lerobot_robot_homebot*"]

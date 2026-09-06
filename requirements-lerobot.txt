@@ -12,8 +12,13 @@
 # 注意：HomeBot 侧代码以包形式被引用，运行时需把 software/src 加入 PYTHONPATH：
 #   set PYTHONPATH=E:\develop\HomeBot\homebot\software\src   (Windows)
 #   export PYTHONPATH=.../software/src                        (Linux/macOS)
+#
+# 插件封装包（让 lerobot CLI 自动发现 --robot.type=homebot，插件发现需 lerobot>=0.4.0）：
+#   venv-lerobot\Scripts\python.exe -m pip install -e ./plugins/lerobot_robot_homebot
 
-lerobot>=0.3.0
+lerobot>=0.4.0
 torch>=2.4
+# policy_runner 经 HomeBot 服务通道（ZMQ）取图与下发动作：
+pyzmq>=25.0.0
 # 数采遥操作主臂（so101_leader）需要 feetech SDK：
 feetech-servo-sdk

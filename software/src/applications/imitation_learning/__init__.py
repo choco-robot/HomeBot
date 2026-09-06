@@ -9,3 +9,9 @@
 
 数据采集用 lerobot 官方 CLI（lerobot.record），详见 AGENTS.md。
 """
+
+# lerobot 第三方设备查找约定（make_device_from_device_class）：在配置类的
+# 父包中按"配置类名去掉 Config 后缀"查找设备类，必须在此暴露
+from .robot import HomeBotRobot, HomeBotRobotConfig
+
+__all__ = ["HomeBotRobot", "HomeBotRobotConfig"]

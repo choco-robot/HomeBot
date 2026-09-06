@@ -6,6 +6,7 @@
 2. omni3 运动学正逆解往返一致、限幅
 3. 底盘适配器工厂三种形态（diff2 在 main 上懒加载报错）
 4. lerobot 未安装时 robot.py 可导入、实例化报友好错误；已安装则验证注册成功
+5. lerobot_robot_homebot 插件封装包可导入，命名符合插件发现约定
 
 运行方式:
     cd software/src
@@ -150,6 +151,25 @@ def test_robot_import_without_lerobot():
         print("[OK] lerobot 未安装，robot.py 可导入且实例化报友好错误")
 
 
+def test_lerobot_plugin_package():
+    """lerobot_robot_homebot 插件封装包可导入，命名符合 lerobot 插件发现约定"""
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[3]
+    plugin_dir = repo_root / "plugins" / "lerobot_robot_homebot"
+    assert plugin_dir.is_dir(), "插件封装包目录不存在"
+    if str(plugin_dir) not in sys.path:
+        sys.path.insert(0, str(plugin_dir))
+
+    import lerobot_robot_homebot as plugin
+
+    assert plugin.__name__.startswith("lerobot_robot_")
+    assert plugin.HomeBotRobot.__name__ == "HomeBotRobot"
+    assert plugin.HomeBotRobotConfig.__name__ == "HomeBotRobotConfig"
+    print("[OK] lerobot_robot_homebot 插件封装包可导入，命名符合发现约定")
+
+
 def main():
     print("=" * 60)
     print("模仿学习（LeRobot 集成）测试")
@@ -159,6 +179,7 @@ def main():
     test_omni3_kinematics()
     test_chassis_factory()
     test_robot_import_without_lerobot()
+    test_lerobot_plugin_package()
 
     print("=" * 60)
     print("全部测试通过")

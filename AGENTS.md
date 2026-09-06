@@ -256,6 +256,7 @@ PRIORITIES = {
 - **关节映射** (`joint_map.py`): HomeBot ↔ LeRobot 关节命名与夹爪单位（度 ↔ 0-100）换算
 - **推理部署** (`policy_runner.py`): 服务级运行 ACT/SmolVLA——VisionSubscriber 取图 + arm_service 查询关节，策略输出经仲裁器下发（`source="auto"`，保留急停/超时保护），可跨机器运行
 - **校准验证** (`verify_calibration.py`): 对比 LeRobot 与 HomeBot 两套坐标系读数
+- **插件封装包** (`plugins/lerobot_robot_homebot/`): LeRobot 第三方插件（包名前缀 `lerobot_robot_`，要求 lerobot≥0.4.0），在 venv-lerobot 中 `pip install -e ./plugins/lerobot_robot_homebot` 后，官方 CLI 自动发现 `--robot.type=homebot`；详见 `docs/LeRobot 生态接入.md`
 - **校准约定（重要）**: LeRobot 校准会把 homing offset 写入舵机寄存器；校准时必须将机械臂摆放到 HomeBot 零位姿态（各关节 0°），使两套坐标系重合，避免影响 web/手柄/语音等现有功能
 - 数采示例：
   ```bash
